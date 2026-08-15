@@ -1,6 +1,7 @@
 package com.example.personalmemoryai.indexing
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -16,51 +17,125 @@ class OcrEngine(
     private val context: Context
 ) {
 
-    private val recognizer =
+    private val latinRecognizer =
         TextRecognition.getClient(
             TextRecognizerOptions.DEFAULT_OPTIONS
         )
 
+    private val arabicRecognizer =
+        ArabicOcrEngine(context)
+
     suspend fun process(uri: Uri): OcrResult {
 
-        val image = InputImage.fromFilePath(
-            context,
-            uri
-        )
+        val latinText =
+            try {
+                recognizeLatin(uri)
+            } catch (e: Exception) {
+                ""
+            }
 
-        val result = recognizer.process(image).await()
+        val arabicText =
+            try {
+                recognizeArabic(uri)
+            } catch (e: Exception) {
+                ""
+            }
 
-        val text = result.text.trim()
+        val combined =
+            combineResults(
+                latinText,
+                arabicText
+            )
 
         return OcrResult(
-            text = text,
-            language = detectLanguage(text)
+            text = combined,
+            language = detectLanguage(combined)
         )
     }
 
-    private fun detectLanguage(text: String): String {
+    private suspend fun recognizeLatin(
+        uri: Uri
+    ): String {
+
+        val image =
+            InputImage.fromFilePath(
+                context,
+                uri
+            )
+
+        val result =
+            latinRecognizer
+                .process(image)
+                .await()
+
+        return result.text.trim()
+    }
+
+    private fun recognizeArabic(
+        uri: Uri
+    ): String {
+
+        val bitmap =
+            context.contentResolver
+                .openInputStream(uri)
+                ?.use {
+                    BitmapFactory.decodeStream(it)
+                }
+                ?: return ""
+
+        return arabicRecognizer
+            .recognize(bitmap)
+    }
+
+    private fun combineResults(
+        latin: String,
+        arabic: String
+    ): String {
+
+        val parts =
+            linkedSetOf<String>()
+
+        if (latin.isNotBlank()) {
+            parts.add(latin)
+        }
+
+        if (arabic.isNotBlank()) {
+            parts.add(arabic)
+        }
+
+        return parts.joinToString("\n")
+    }
+
+    private fun detectLanguage(
+        text: String
+    ): String {
 
         if (text.isBlank()) {
             return "none"
         }
 
-        val hasArabic = text.any { char ->
-            char in '\u0600'..'\u06FF'
-        }
+        val arabic =
+            text.any {
+                it in '\u0600'..'\u06FF'
+            }
 
-        val hasLatin = text.any { char ->
-            char in 'A'..'Z' || char in 'a'..'z'
-        }
+        val latin =
+            text.any {
+                it in 'A'..'Z' ||
+                it in 'a'..'z'
+            }
 
         return when {
-            hasArabic && hasLatin -> "mixed"
-            hasArabic -> "ar"
-            hasLatin -> "en"
+            arabic && latin -> "mixed"
+            arabic -> "ar"
+            latin -> "en"
             else -> "unknown"
         }
     }
 
     fun close() {
-        recognizer.close()
+
+        latinRecognizer.close()
+        arabicRecognizer.close()
     }
 }
