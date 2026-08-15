@@ -1,34 +1,29 @@
 package com.example.personalmemoryai
 
-import android.net.Uri
+import android.content.Intent
 import android.os.Bundle
-import android.provider.OpenableColumns
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.databinding.ActivityMainBinding
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.example.personalmemoryai.indexing.ImageIndexer
+import com.example.personalmemoryai.ui.ImageResultAdapter
+import com.example.personalmemoryai.ui.ImageViewerActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
-    private val recognizer by lazy {
-        TextRecognition.getClient(
-            TextRecognizerOptions.DEFAULT_OPTIONS
-        )
-    }
+    private lateinit var database: AppDatabase
 
-    private val indexedImages = mutableListOf<ImageRecord>()
+    private lateinit var indexer: ImageIndexer
+
+    private lateinit var adapter: ImageResultAdapter
 
     private val imagePicker =
         registerForActivityResult(
@@ -36,254 +31,195 @@ class MainActivity : AppCompatActivity() {
         ) { uris ->
 
             if (uris.isNullOrEmpty()) {
-                showStatus("لم يتم اختيار أي صورة")
                 return@registerForActivityResult
             }
 
-            val limited = uris.take(100)
-
-            showStatus(
-                "تم اختيار ${limited.size} صورة\nبدء الفهرسة..."
-            )
-
-            indexImages(limited)
+            indexImages(uris.take(100))
         }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
         super.onCreate(savedInstanceState)
 
-        binding = ActivityMainBinding.inflate(layoutInflater)
+        binding =
+            ActivityMainBinding.inflate(
+                layoutInflater
+            )
+
         setContentView(binding.root)
 
+        database =
+            AppDatabase.getInstance(this)
+
+        indexer =
+            ImageIndexer(this)
+
+        adapter =
+            ImageResultAdapter { image ->
+
+                val intent =
+                    Intent(
+                        this,
+                        ImageViewerActivity::class.java
+                    )
+
+                intent.putExtra(
+                    ImageViewerActivity.EXTRA_URI,
+                    image.uri
+                )
+
+                startActivity(intent)
+            }
+
+        binding.resultsRecyclerView.layoutManager =
+            LinearLayoutManager(this)
+
+        binding.resultsRecyclerView.adapter =
+            adapter
+
         binding.selectButton.setOnClickListener {
+
             imagePicker.launch("image/*")
         }
 
         binding.searchButton.setOnClickListener {
-            performSearch(
-                binding.searchEditText.text.toString()
-            )
+
+            performSearch()
         }
 
-        showStatus(
-            "Personal Memory AI\n\n" +
-                    "جاهز لفهرسة الصور."
-        )
+        updateCounter()
     }
 
-    private fun indexImages(uris: List<Uri>) {
+    private fun indexImages(
+        uris: List<android.net.Uri>
+    ) {
 
-        lifecycleScope.launch {
+        binding.progressBar.visibility =
+            android.view.View.VISIBLE
 
-            binding.progressBar.max = uris.size
-            binding.progressBar.progress = 0
+        binding.selectButton.isEnabled =
+            false
 
-            var completed = 0
+        lifecycleScope.launch(
+            Dispatchers.IO
+        ) {
+
+            var processed = 0
 
             for (uri in uris) {
 
-                try {
+                processed++
 
-                    val record = processImage(uri)
+                val result =
+                    indexer.indexImage(uri)
 
-                    indexedImages.add(record)
+                withContext(
+                    Dispatchers.Main
+                ) {
 
-                    completed++
+                    binding.statusText.text =
+                        "فهرسة $processed / ${uris.size}"
 
-                    withContext(Dispatchers.Main) {
-
-                        binding.progressBar.progress = completed
-
-                        binding.counterText.text =
-                            "$completed / ${uris.size}"
-
-                        binding.statusText.text =
-                            "فهرسة الصورة $completed من ${uris.size}"
-                    }
-
-                } catch (e: Exception) {
-
-                    completed++
-
-                    withContext(Dispatchers.Main) {
-
-                        binding.progressBar.progress = completed
-
-                        binding.statusText.text =
-                            "خطأ في صورة $completed: ${e.message}"
-                    }
                 }
             }
 
-            saveIndex()
+            val count =
+                database.imageDao().count()
 
-            withContext(Dispatchers.Main) {
+            withContext(
+                Dispatchers.Main
+            ) {
+
+                binding.progressBar.visibility =
+                    android.view.View.GONE
+
+                binding.selectButton.isEnabled =
+                    true
+
+                binding.counterText.text =
+                    "الفهرس: $count صورة"
 
                 binding.statusText.text =
-                    "اكتملت الفهرسة\n\n" +
-                            "الصور المفهرسة: ${indexedImages.size}\n" +
-                            "يمكنك الآن البحث."
+                    "اكتملت الفهرسة"
+
             }
         }
     }
 
-    private suspend fun processImage(uri: Uri): ImageRecord {
+    private fun performSearch() {
 
-        val inputImage =
-            InputImage.fromFilePath(
-                this,
-                uri
-            )
-
-        val result =
-            recognizer
-                .process(inputImage)
-                .await()
-
-        val text = result.text
-
-        val name = getFileName(uri)
-
-        return ImageRecord(
-            uri = uri.toString(),
-            name = name,
-            ocrText = text
-        )
-    }
-
-    private fun performSearch(query: String) {
+        val query =
+            binding.searchEditText
+                .text
+                .toString()
+                .trim()
 
         if (query.isBlank()) {
-            showStatus("اكتب شيئًا للبحث.")
-            return
-        }
 
-        val normalized =
-            query.trim().lowercase()
+            lifecycleScope.launch(
+                Dispatchers.IO
+            ) {
 
-        val results =
-            indexedImages.filter { image ->
+                val all =
+                    database.imageDao()
+                        .getAll()
 
-                image.name.lowercase()
-                    .contains(normalized) ||
+                withContext(
+                    Dispatchers.Main
+                ) {
 
-                image.ocrText.lowercase()
-                    .contains(normalized)
-            }
-
-        if (results.isEmpty()) {
-
-            showStatus(
-                "لم أجد نتائج لـ:\n\n$query"
-            )
-
-            return
-        }
-
-        val output = StringBuilder()
-
-        output.append(
-            "نتائج البحث عن:\n\"$query\"\n\n"
-        )
-
-        output.append(
-            "عدد النتائج: ${results.size}\n\n"
-        )
-
-        results.take(20).forEachIndexed { index, image ->
-
-            output.append(
-                "${index + 1}. ${image.name}\n"
-            )
-
-            val text =
-                image.ocrText
-                    .replace("\n", " ")
-                    .take(180)
-
-            if (text.isNotBlank()) {
-
-                output.append(
-                    "   OCR: $text\n"
-                )
-            }
-
-            output.append("\n")
-        }
-
-        showStatus(output.toString())
-    }
-
-    private fun saveIndex() {
-
-        val array = JSONArray()
-
-        indexedImages.forEach { image ->
-
-            val obj = JSONObject()
-
-            obj.put("uri", image.uri)
-            obj.put("name", image.name)
-            obj.put("ocr", image.ocrText)
-
-            array.put(obj)
-        }
-
-        getSharedPreferences(
-            "memory_index",
-            MODE_PRIVATE
-        )
-            .edit()
-            .putString(
-                "images",
-                array.toString()
-            )
-            .apply()
-    }
-
-    private fun getFileName(uri: Uri): String {
-
-        var result = "unknown"
-
-        contentResolver.query(
-            uri,
-            arrayOf(OpenableColumns.DISPLAY_NAME),
-            null,
-            null,
-            null
-        )?.use { cursor ->
-
-            if (cursor.moveToFirst()) {
-
-                val index =
-                    cursor.getColumnIndex(
-                        OpenableColumns.DISPLAY_NAME
-                    )
-
-                if (index >= 0) {
-                    result = cursor.getString(index)
+                    adapter.submitList(all)
                 }
             }
+
+            return
         }
 
-        return result
+        lifecycleScope.launch(
+            Dispatchers.IO
+        ) {
+
+            val results =
+                database.imageDao()
+                    .searchText(query)
+
+            withContext(
+                Dispatchers.Main
+            ) {
+
+                adapter.submitList(results)
+
+                binding.statusText.text =
+                    "عدد النتائج: ${results.size}"
+            }
+        }
     }
 
-    private fun showStatus(text: String) {
+    private fun updateCounter() {
 
-        binding.statusText.text = text
+        lifecycleScope.launch(
+            Dispatchers.IO
+        ) {
+
+            val count =
+                database.imageDao()
+                    .count()
+
+            withContext(
+                Dispatchers.Main
+            ) {
+
+                binding.counterText.text =
+                    "الفهرس: $count صورة"
+            }
+        }
     }
 
     override fun onDestroy() {
 
-        recognizer.close()
+        indexer.close()
 
         super.onDestroy()
     }
 }
-
-data class ImageRecord(
-    val uri: String,
-    val name: String,
-    val ocrText: String
-)
