@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "SignalHunter"
+rootProject.name = "PersonalMemoryAI"
 include(":app")
