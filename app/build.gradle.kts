@@ -1,5 +1,3 @@
-implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -37,6 +35,8 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.13.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("com.google.android.material:material:1.13.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
 
     // Local OCR
     implementation("com.google.mlkit:text-recognition:16.0.1")
