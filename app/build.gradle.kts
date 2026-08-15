@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("kotlin-kapt")
 }
 
 android {
@@ -14,8 +15,8 @@ android {
         minSdk = 23
         targetSdk = 35
 
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.2"
     }
 
     buildFeatures {
@@ -42,10 +43,18 @@ dependencies {
     // Material
     implementation("com.google.android.material:material:1.11.0")
 
-    // Kotlin Coroutines
+    // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 
-    // Local OCR
+    // Room
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
+
+    // ML Kit - Latin / English OCR
     implementation("com.google.mlkit:text-recognition:16.0.1")
+
+    // Arabic OCR will be handled by a separate engine
+    // in the next implementation step.
 }
