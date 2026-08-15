@@ -9,6 +9,10 @@
         android:theme="@style/Theme.PersonalMemoryAI">
 
         <activity
+            android:name=".ui.ImageViewerActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true">
 
