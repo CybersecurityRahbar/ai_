@@ -3,7 +3,9 @@ package com.example.personalmemoryai.database
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "images")
+@Entity(
+    tableName = "images"
+)
 data class ImageEntity(
 
     @PrimaryKey(autoGenerate = true)
