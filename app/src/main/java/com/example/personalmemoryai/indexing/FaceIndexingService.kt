@@ -70,7 +70,7 @@ class FaceIndexingService(
                         box.bottom,
 
                     detectionConfidence =
-                        face.detectionConfidenceSafe(),
+                        face.detection.detectionConfidence,
 
                     qualityScore =
                         face.quality.score,
@@ -215,12 +215,7 @@ class FaceIndexingService(
         return "vision-1.0/$model/$version"
     }
 
-    private fun FaceAnalysisService.AnalyzedFace
-        .detectionConfidenceSafe(): Float {
-
-        return 1.0f
-            .coerceIn(0f, 1f)
-    }
+  
 
     companion object {
 
