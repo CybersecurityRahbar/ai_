@@ -15,6 +15,7 @@ import com.example.personalmemoryai.ui.ImageResultAdapter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.example.personalmemoryai.ui.ImageViewerActivity
 
 class MainActivity : AppCompatActivity() {
 
