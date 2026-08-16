@@ -1,8 +1,8 @@
 package com.example.personalmemoryai.repository
 
 import com.example.personalmemoryai.database.EmbeddingDao
-import com.example.personalmemoryai.database.FaceDao
 import com.example.personalmemoryai.database.EmbeddingEntity
+import com.example.personalmemoryai.database.FaceDao
 import com.example.personalmemoryai.database.FaceEntity
 import com.example.personalmemoryai.vision.FaceMatchingEngine
 import kotlinx.coroutines.Dispatchers
@@ -18,34 +18,47 @@ class FaceRepository(
         embedding: FloatArray?,
         modelName: String?,
         modelVersion: String?
-    ): Long = withContext(
-        Dispatchers.IO
-    ) {
+    ): Long = withContext(Dispatchers.IO) {
+
+        val validEmbedding =
+            embedding
+                ?.takeIf { it.isNotEmpty() }
+
+        val faceToStore =
+            if (validEmbedding != null) {
+                face.copy(
+                    hasEmbedding = true,
+                    usableForMatching = face.usableForMatching
+                )
+            } else {
+                face.copy(
+                    hasEmbedding = false,
+                    usableForMatching = false
+                )
+            }
 
         val faceId =
-            faceDao.insert(
-                face
-            )
+            faceDao.insert(faceToStore)
 
-        if (
-            embedding != null &&
-            embedding.isNotEmpty()
-        ) {
+        if (validEmbedding != null) {
 
             embeddingDao.insert(
                 EmbeddingEntity(
                     ownerType = OWNER_FACE,
                     ownerId = faceId,
-                    vector = embedding,
-                    dimension = embedding.size,
-                    modelName =
-                        modelName ?: "unknown",
-                    modelVersion =
-                        modelVersion ?: "unknown",
+                    vector = validEmbedding,
+                    dimension = validEmbedding.size,
+                    modelName = modelName ?: MODEL_UNKNOWN,
+                    modelVersion = modelVersion ?: MODEL_UNKNOWN,
                     normalized = true,
-                    createdAt =
-                        System.currentTimeMillis()
+                    createdAt = System.currentTimeMillis()
                 )
+            )
+
+            faceDao.updateEmbeddingStatus(
+                faceId = faceId,
+                hasEmbedding = true,
+                usableForMatching = face.usableForMatching
             )
         }
 
@@ -54,13 +67,16 @@ class FaceRepository(
 
     suspend fun deleteFace(
         faceId: Long
-    ) = withContext(
-        Dispatchers.IO
-    ) {
+    ) = withContext(Dispatchers.IO) {
 
+        /*
+         * Delete the vector first because EmbeddingEntity
+         * currently uses a generic owner reference rather
+         * than a Room foreign key.
+         */
         embeddingDao.deleteForOwner(
-            OWNER_FACE,
-            faceId
+            ownerType = OWNER_FACE,
+            ownerId = faceId
         )
 
         faceDao.deleteById(
@@ -72,13 +88,12 @@ class FaceRepository(
         embeddings: List<EmbeddingEntity>
     ): List<FaceMatchingEngine.Candidate> {
 
-        return withContext(
-            Dispatchers.Default
-        ) {
+        return withContext(Dispatchers.Default) {
 
             embeddings.mapNotNull { embedding ->
 
                 if (
+                    embedding.ownerType != OWNER_FACE ||
                     embedding.vector.isEmpty()
                 ) {
                     return@mapNotNull null
@@ -90,19 +105,15 @@ class FaceRepository(
                     )
                         ?: return@mapNotNull null
 
+                if (!face.hasEmbedding) {
+                    return@mapNotNull null
+                }
+
                 FaceMatchingEngine.Candidate(
-
-                    faceId =
-                        face.id,
-
-                    personId =
-                        face.personId,
-
-                    embedding =
-                        embedding.vector,
-
-                    qualityScore =
-                        face.qualityScore
+                    faceId = face.id,
+                    personId = face.personId,
+                    embedding = embedding.vector,
+                    qualityScore = face.qualityScore
                 )
             }
         }
@@ -110,7 +121,8 @@ class FaceRepository(
 
     companion object {
 
-        private const val OWNER_FACE =
-            "FACE"
+        private const val OWNER_FACE = "FACE"
+
+        private const val MODEL_UNKNOWN = "unknown"
     }
 }
