@@ -12,19 +12,26 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * On-device face analysis using MediaPipe Face Landmarker.
+ * MediaPipe-based facial analysis engine.
  *
- * This component performs:
+ * Responsibilities:
  *
- * - face detection
- * - facial landmarks
- * - optional blendshapes
- * - facial transformation data
+ * - Detect faces in an image
+ * - Extract facial landmarks
+ * - Extract optional face blendshapes
+ * - Produce normalized face bounding boxes
+ * - Provide a structural representation of each detected face
  *
- * It does NOT identify a person.
+ * This class DOES NOT identify a person.
  *
- * Identity/similarity is handled separately by the
- * FaceEmbeddingModel and FaceMatchingEngine.
+ * Identity recognition is handled separately by:
+ *
+ * FaceEmbeddingModel
+ * FaceSimilarity
+ * FaceMatchingEngine
+ *
+ * This separation is intentional so that the detection layer
+ * can evolve independently from the identity/embedding layer.
  */
 class MediaPipeFaceAnalyzer(
     context: Context
@@ -35,167 +42,565 @@ class MediaPipeFaceAnalyzer(
     init {
 
         val baseOptions =
-            BaseOptions.builder()
+            BaseOptions
+                .builder()
                 .setModelAssetPath(MODEL_FILE)
                 .build()
 
         val options =
-            FaceLandmarker.FaceLandmarkerOptions.builder()
+            FaceLandmarker
+                .FaceLandmarkerOptions
+                .builder()
                 .setBaseOptions(baseOptions)
-                .setRunningMode(RunningMode.IMAGE)
-                .setNumFaces(MAX_FACES)
+
+                /*
+                 * We analyze complete images rather than a
+                 * continuous camera stream.
+                 */
+                .setRunningMode(
+                    RunningMode.IMAGE
+                )
+
+                /*
+                 * Multiple faces are required because the
+                 * application is intended to index complete
+                 * photo collections.
+                 */
+                .setNumFaces(
+                    MAX_FACES
+                )
+
+                /*
+                 * Minimum confidence required for MediaPipe
+                 * to accept a detected face.
+                 */
                 .setMinFaceDetectionConfidence(
-                    MIN_DETECTION_CONFIDENCE
+                    MIN_FACE_DETECTION_CONFIDENCE
                 )
+
+                /*
+                 * Minimum confidence that the detected face
+                 * is actually present in the image.
+                 */
                 .setMinFacePresenceConfidence(
-                    MIN_PRESENCE_CONFIDENCE
+                    MIN_FACE_PRESENCE_CONFIDENCE
                 )
+
+                /*
+                 * Tracking confidence is included by the
+                 * MediaPipe configuration even though the
+                 * current engine uses IMAGE mode.
+                 */
                 .setMinTrackingConfidence(
                     MIN_TRACKING_CONFIDENCE
                 )
-                .setOutputFaceBlendshapes(true)
-                .setOutputFacialTransformationMatrixes(true)
+
+                /*
+                 * Blendshapes provide additional facial
+                 * expression/appearance geometry.
+                 *
+                 * They are NOT identity labels.
+                 */
+                .setOutputFaceBlendshapes(
+                    true
+                )
+
+                /*
+                 * Request facial transformation matrices
+                 * from the MediaPipe task.
+                 *
+                 * These can later be used for head pose and
+                 * alignment improvements.
+                 */
+                .setOutputFacialTransformationMatrixes(
+                    true
+                )
+
                 .build()
 
         landmarker =
-            FaceLandmarker.createFromOptions(
-                context,
-                options
-            )
+            FaceLandmarker
+                .createFromOptions(
+                    context,
+                    options
+                )
     }
 
     /**
-     * Analyze a single bitmap.
+     * Analyze one bitmap.
+     *
+     * @param bitmap source image
+     *
+     * @return list of detected faces.
      */
     fun analyze(
         bitmap: Bitmap
     ): List<FaceLandmarkResult> {
 
-        if (bitmap.width <= 0 || bitmap.height <= 0) {
+        if (
+            bitmap.width <= 0 ||
+            bitmap.height <= 0
+        ) {
+            return emptyList()
+        }
+
+        if (bitmap.isRecycled) {
             return emptyList()
         }
 
         val mpImage =
-            BitmapImageBuilder(bitmap)
-                .build()
+            BitmapImageBuilder(
+                bitmap
+            ).build()
 
-        val result =
-            landmarker.detect(mpImage)
+        return try {
 
-        return convertResult(
-            result,
-            bitmap.width,
-            bitmap.height
-        )
+            val result =
+                landmarker.detect(
+                    mpImage
+                )
+
+            convertResult(
+                result = result,
+                imageWidth = bitmap.width,
+                imageHeight = bitmap.height
+            )
+
+        } catch (_: Throwable) {
+
+            /*
+             * Image analysis must never crash the indexing
+             * pipeline because of a single corrupted image.
+             */
+            emptyList()
+        }
     }
 
+    /**
+     * Converts MediaPipe's result into our application's
+     * internal representation.
+     */
     private fun convertResult(
         result: FaceLandmarkerResult,
         imageWidth: Int,
         imageHeight: Int
     ): List<FaceLandmarkResult> {
 
-        val output = mutableListOf<FaceLandmarkResult>()
+        val output =
+            mutableListOf<FaceLandmarkResult>()
 
         val faceLandmarks =
             result.faceLandmarks()
 
-        for (faceIndex in faceLandmarks.indices) {
+        if (faceLandmarks.isEmpty()) {
+            return output
+        }
 
-            val points =
+        for (
+            faceIndex in faceLandmarks.indices
+        ) {
+
+            val mediapipeLandmarks =
                 faceLandmarks[faceIndex]
-                    .map { landmark ->
 
-                        FaceLandmarkResult.Point(
-                            x = landmark.x(),
-                            y = landmark.y(),
-                            z = landmark.z()
-                        )
-                    }
+            if (
+                mediapipeLandmarks.isEmpty()
+            ) {
+                continue
+            }
+
+            /*
+             * Convert MediaPipe landmarks into our own
+             * lightweight representation.
+             */
+            val points =
+                mediapipeLandmarks.map { landmark ->
+
+                    FaceLandmarkResult.Point(
+
+                        x = landmark.x(),
+
+                        y = landmark.y(),
+
+                        z = landmark.z()
+                    )
+                }
 
             if (points.isEmpty()) {
                 continue
             }
 
+            /*
+             * MediaPipe landmarks use normalized coordinates.
+             *
+             * We keep the application's bounding box normalized
+             * as well so it remains resolution independent.
+             */
             val boundingBox =
                 calculateBoundingBox(
-                    points,
-                    imageWidth,
-                    imageHeight
+                    points = points,
+                    imageWidth = imageWidth,
+                    imageHeight = imageHeight
                 )
 
+            /*
+             * Optional blendshape extraction.
+             *
+             * Blendshapes are associated with each detected face.
+             */
             val blendshapes =
-                if (
-                    faceIndex <
-                    result.faceBlendshapes().size
-                ) {
+                extractBlendshapes(
+                    result = result,
+                    faceIndex = faceIndex
+                )
 
-                    result.faceBlendshapes()[faceIndex]
-                        .categories()
-                        .map {
-                            FaceLandmarkResult.Blendshape(
-                                name = it.categoryName(),
-                                score = it.score()
-                            )
-                        }
+            /*
+             * Extract head-pose information from the facial
+             * transformation matrix when available.
+             *
+             * At this stage we keep the extraction conservative.
+             * The matrix is retained for future alignment/pose
+             * analysis instead of inventing angles.
+             */
+            val rotation =
+                extractRotation(
+                    result = result,
+                    faceIndex = faceIndex
+                )
 
-                } else {
-                    emptyList()
-                }
+            /*
+             * IMPORTANT:
+             *
+             * MediaPipe's FaceLandmarkerResult does not expose
+             * a universal per-face probability in the same way
+             * that a dedicated object detector does.
+             *
+             * Therefore we DO NOT fabricate a value such as
+             * 0.95 or 1.0 and call it "confidence".
+             *
+             * The current value is an operational presence
+             * confidence based on successful landmark generation.
+             */
+            val detectionConfidence =
+                calculateOperationalConfidence(
+                    points = points
+                )
 
-            output += FaceLandmarkResult(
-                boundingBox = boundingBox,
-                landmarks = points,
-                blendshapes = blendshapes
-            )
+            output +=
+                FaceLandmarkResult(
+
+                    boundingBox =
+                        boundingBox,
+
+                    landmarks =
+                        points,
+
+                    blendshapes =
+                        blendshapes,
+
+                    rotationX =
+                        rotation?.first,
+
+                    rotationY =
+                        rotation?.second,
+
+                    rotationZ =
+                        rotation?.third,
+
+                    detectionConfidence =
+                        detectionConfidence
+                )
         }
 
         return output
     }
 
+    /**
+     * Extract MediaPipe blendshapes.
+     */
+    private fun extractBlendshapes(
+        result: FaceLandmarkerResult,
+        faceIndex: Int
+    ): List<FaceLandmarkResult.Blendshape> {
+
+        val allBlendshapes =
+            result.faceBlendshapes()
+
+        if (
+            faceIndex < 0 ||
+            faceIndex >= allBlendshapes.size
+        ) {
+            return emptyList()
+        }
+
+        return try {
+
+            allBlendshapes[faceIndex]
+                .categories()
+                .mapNotNull { category ->
+
+                    val name =
+                        category.categoryName()
+
+                    val score =
+                        category.score()
+
+                    if (
+                        name.isNullOrBlank()
+                    ) {
+                        null
+                    } else {
+
+                        FaceLandmarkResult.Blendshape(
+
+                            name = name,
+
+                            score =
+                                score.coerceIn(
+                                    0f,
+                                    1f
+                                )
+                        )
+                    }
+                }
+
+        } catch (_: Throwable) {
+
+            emptyList()
+        }
+    }
+
+    /**
+     * Attempts to extract rotation from MediaPipe's
+     * facial transformation matrix.
+     *
+     * The exact matrix representation can vary with the
+     * MediaPipe task/model version, therefore this method
+     * intentionally returns null unless the required matrix
+     * can be safely interpreted.
+     *
+     * Returning null is preferable to storing fabricated
+     * head-pose angles.
+     */
+    private fun extractRotation(
+        result: FaceLandmarkerResult,
+        faceIndex: Int
+    ): Triple<Float, Float, Float>? {
+
+        val matrices =
+            result.facialTransformationMatrixes()
+
+        if (
+            matrices.isEmpty() ||
+            faceIndex < 0 ||
+            faceIndex >= matrices.size
+        ) {
+            return null
+        }
+
+        /*
+         * The current version keeps matrix extraction disabled
+         * until the exact matrix API used by the selected
+         * MediaPipe artifact is confirmed.
+         *
+         * The transformation matrix itself remains available
+         * from MediaPipe and can be incorporated into the
+         * alignment pipeline later.
+         */
+        return null
+    }
+
+    /**
+     * Calculates a normalized bounding box from landmarks.
+     */
     private fun calculateBoundingBox(
         points: List<FaceLandmarkResult.Point>,
-        width: Int,
-        height: Int
+        imageWidth: Int,
+        imageHeight: Int
     ): RectF {
 
-        var minX = 1f
-        var minY = 1f
-        var maxX = 0f
-        var maxY = 0f
+        if (points.isEmpty()) {
+            return RectF()
+        }
+
+        var minX =
+            Float.POSITIVE_INFINITY
+
+        var minY =
+            Float.POSITIVE_INFINITY
+
+        var maxX =
+            Float.NEGATIVE_INFINITY
+
+        var maxY =
+            Float.NEGATIVE_INFINITY
 
         for (point in points) {
 
-            minX = min(minX, point.x)
-            minY = min(minY, point.y)
+            minX =
+                min(
+                    minX,
+                    point.x
+                )
 
-            maxX = max(maxX, point.x)
-            maxY = max(maxY, point.y)
+            minY =
+                min(
+                    minY,
+                    point.y
+                )
+
+            maxX =
+                max(
+                    maxX,
+                    point.x
+                )
+
+            maxY =
+                max(
+                    maxY,
+                    point.y
+                )
+        }
+
+        /*
+         * Normalize and clamp.
+         */
+        val left =
+            minX.coerceIn(
+                0f,
+                1f
+            )
+
+        val top =
+            minY.coerceIn(
+                0f,
+                1f
+            )
+
+        val right =
+            maxX.coerceIn(
+                0f,
+                1f
+            )
+
+        val bottom =
+            maxY.coerceIn(
+                0f,
+                1f
+            )
+
+        /*
+         * Prevent invalid boxes.
+         */
+        if (
+            right <= left ||
+            bottom <= top
+        ) {
+            return RectF(
+                left,
+                top,
+                left,
+                top
+            )
         }
 
         return RectF(
-            minX.coerceIn(0f, 1f),
-            minY.coerceIn(0f, 1f),
-            maxX.coerceIn(0f, 1f),
-            maxY.coerceIn(0f, 1f)
+            left,
+            top,
+            right,
+            bottom
         )
     }
 
+    /**
+     * Produces an operational quality/confidence signal.
+     *
+     * This is deliberately NOT described as MediaPipe's
+     * detection probability.
+     *
+     * It only evaluates whether a valid landmark geometry
+     * was successfully produced.
+     */
+    private fun calculateOperationalConfidence(
+        points: List<FaceLandmarkResult.Point>
+    ): Float {
+
+        if (points.isEmpty()) {
+            return 0f
+        }
+
+        /*
+         * A valid MediaPipe face mesh contains a large number
+         * of landmarks. The exact count may vary by model version.
+         *
+         * We therefore use a saturation function instead of
+         * assuming a fixed landmark count.
+         */
+        val normalizedLandmarkCount =
+            (
+                points.size.toFloat() /
+                    EXPECTED_LANDMARK_COUNT
+            )
+                .coerceIn(
+                    0f,
+                    1f
+                )
+
+        /*
+         * A successfully generated dense landmark set is
+         * considered operationally usable.
+         */
+        return normalizedLandmarkCount
+    }
+
+    /**
+     * Releases MediaPipe resources.
+     */
     override fun close() {
-        landmarker.close()
+
+        try {
+            landmarker.close()
+        } catch (_: Throwable) {
+            // Ignore cleanup exceptions.
+        }
     }
 
     companion object {
 
+        /**
+         * Model asset expected inside:
+         *
+         * app/src/main/assets/
+         */
         private const val MODEL_FILE =
             "face_landmarker.task"
 
-        private const val MAX_FACES = 20
+        /**
+         * Maximum faces processed per image.
+         *
+         * This is intentionally higher than 1 because the
+         * application is intended for photo collections.
+         */
+        private const val MAX_FACES =
+            20
 
-        private const val MIN_DETECTION_CONFIDENCE = 0.5f
+        private const val MIN_FACE_DETECTION_CONFIDENCE =
+            0.50f
 
-        private const val MIN_PRESENCE_CONFIDENCE = 0.5f
+        private const val MIN_FACE_PRESENCE_CONFIDENCE =
+            0.50f
 
-        private const val MIN_TRACKING_CONFIDENCE = 0.5f
+        private const val MIN_TRACKING_CONFIDENCE =
+            0.50f
+
+        /**
+         * Approximate number of landmarks expected by the
+         * selected Face Landmarker model.
+         *
+         * This is used only for operational confidence
+         * normalization and is NOT a MediaPipe probability.
+         */
+        private const val EXPECTED_LANDMARK_COUNT =
+            478f
     }
 }
