@@ -23,6 +23,13 @@ import androidx.room.PrimaryKey
             parentColumns = ["id"],
             childColumns = ["imageId"],
             onDelete = ForeignKey.CASCADE
+        ),
+
+        ForeignKey(
+            entity = PersonEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["personId"],
+            onDelete = ForeignKey.SET_NULL
         )
     ],
 
