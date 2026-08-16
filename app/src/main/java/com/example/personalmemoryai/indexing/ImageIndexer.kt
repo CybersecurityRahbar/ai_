@@ -146,9 +146,9 @@ class ImageIndexer(
 
             entity.copy(id = id)
 
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
 
-            e.printStackTrace()
+            t.printStackTrace()
 
             null
         }
