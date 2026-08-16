@@ -19,29 +19,57 @@ class ArabicOcrEngine(
     private fun prepareTessData() {
 
         val tessDir =
-            File(context.filesDir, "tesseract")
+            File(
+                context.filesDir,
+                "tesseract"
+            )
 
         val tessDataDir =
-            File(tessDir, "tessdata")
+            File(
+                tessDir,
+                "tessdata"
+            )
 
         if (!tessDataDir.exists()) {
             tessDataDir.mkdirs()
         }
 
         val target =
-            File(tessDataDir, "ara.traineddata")
+            File(
+                tessDataDir,
+                "ara.traineddata"
+            )
 
-        if (!target.exists()) {
+        if (!target.exists() ||
+            target.length() < 100_000
+        ) {
 
-            context.assets.open(
-                "tessdata/ara.traineddata"
-            ).use { input ->
-
-                FileOutputStream(target).use { output ->
-
-                    input.copyTo(output)
-                }
+            if (target.exists()) {
+                target.delete()
             }
+
+            context.assets
+                .open(
+                    "tessdata/ara.traineddata"
+                )
+                .use { input ->
+
+                    FileOutputStream(
+                        target
+                    ).use { output ->
+
+                        input.copyTo(output)
+                    }
+                }
+        }
+
+        if (!target.exists() ||
+            target.length() < 100_000
+        ) {
+
+            throw IllegalStateException(
+                "Arabic OCR model ara.traineddata is missing or invalid"
+            )
         }
     }
 
@@ -53,25 +81,44 @@ class ArabicOcrEngine(
                 "tesseract"
             ).absolutePath
 
-        return TessBaseAPI().apply {
+        val engine =
+            TessBaseAPI()
 
-            init(
+        val initialized =
+            engine.init(
                 basePath,
                 "ara"
             )
 
-            pageSegMode =
-                TessBaseAPI.PageSegMode.PSM_AUTO
+        if (!initialized) {
+
+            engine.recycle()
+
+            throw IllegalStateException(
+                "Failed to initialize Arabic Tesseract OCR"
+            )
         }
+
+        engine.pageSegMode =
+            TessBaseAPI.PageSegMode.PSM_AUTO
+
+        return engine
     }
 
-    fun recognize(bitmap: Bitmap): String {
+    fun recognize(
+        bitmap: Bitmap
+    ): String {
+
+        if (bitmap.isRecycled) {
+            return ""
+        }
 
         if (tess == null) {
             tess = createEngine()
         }
 
-        val engine = tess ?: return ""
+        val engine =
+            tess ?: return ""
 
         engine.setImage(bitmap)
 
