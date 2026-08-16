@@ -1,5 +1,7 @@
 package com.example.personalmemoryai.ui
 
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
@@ -29,9 +31,20 @@ class ImageViewerActivity : AppCompatActivity() {
             return
         }
 
-        binding.imageView.setImageURI(
-            Uri.parse(uriString)
-        )
+        try {
+
+            binding.imageView.setImageURI(
+                Uri.parse(uriString)
+            )
+
+        } catch (t: Throwable) {
+
+            t.printStackTrace()
+
+            finish()
+
+            return
+        }
 
         binding.closeButton.setOnClickListener {
             finish()
@@ -42,5 +55,29 @@ class ImageViewerActivity : AppCompatActivity() {
 
         const val EXTRA_URI =
             "image_uri"
+
+        fun start(
+            context: Context,
+            uri: String
+        ) {
+
+            val intent =
+                Intent(
+                    context,
+                    ImageViewerActivity::class.java
+                ).apply {
+
+                    putExtra(
+                        EXTRA_URI,
+                        uri
+                    )
+
+                    addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+
+            context.startActivity(intent)
+        }
     }
 }
