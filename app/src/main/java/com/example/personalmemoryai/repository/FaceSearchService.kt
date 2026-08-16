@@ -2,6 +2,7 @@ package com.example.personalmemoryai.repository
 
 import android.graphics.Bitmap
 import com.example.personalmemoryai.database.EmbeddingDao
+import com.example.personalmemoryai.database.FaceDao
 import com.example.personalmemoryai.vision.FaceAnalysisService
 import com.example.personalmemoryai.vision.FaceMatch
 import com.example.personalmemoryai.vision.FaceMatchingEngine
@@ -11,16 +12,12 @@ import kotlinx.coroutines.withContext
 class FaceSearchService(
     private val analysisService: FaceAnalysisService,
     private val embeddingDao: EmbeddingDao,
-    private val matchingEngine: FaceMatchingEngine =
-        FaceMatchingEngine()
+    private val faceDao: FaceDao,
+    private val matchingEngine:
+        FaceMatchingEngine =
+            FaceMatchingEngine()
 ) {
 
-    /**
-     * Searches the local face index using a query image.
-     *
-     * If multiple faces are present in the query image,
-     * each face becomes an independent search query.
-     */
     suspend fun search(
         queryBitmap: Bitmap,
         limit: Int = 20
@@ -41,20 +38,23 @@ class FaceSearchService(
         }
 
         val storedEmbeddings =
-            embeddingDao.getAllForFaceSearch()
+            embeddingDao
+                .getAllForFaceSearch()
 
         val candidates =
-            storedEmbeddings.mapNotNull {
+            storedEmbeddings.mapNotNull { embedding ->
+
+                val face =
+                    faceDao.getById(
+                        embedding.ownerId
+                    )
+                        ?: return@mapNotNull null
 
                 if (
-                    it.vector.isEmpty()
+                    embedding.vector.isEmpty()
                 ) {
                     return@mapNotNull null
                 }
-
-                val face =
-                    it.face
-                        ?: return@mapNotNull null
 
                 FaceMatchingEngine.Candidate(
 
@@ -65,14 +65,14 @@ class FaceSearchService(
                         face.personId,
 
                     embedding =
-                        it.vector,
+                        embedding.vector,
 
                     qualityScore =
                         face.qualityScore
                 )
             }
 
-        val result =
+        val matchesByQueryFace =
             mutableMapOf<
                 Int,
                 List<FaceMatch>
@@ -82,11 +82,11 @@ class FaceSearchService(
             index in analyzed.indices
         ) {
 
-            val query =
+            val queryFace =
                 analyzed[index]
 
             val embedding =
-                query.embedding
+                queryFace.embedding
                     ?: continue
 
             val matches =
@@ -101,7 +101,7 @@ class FaceSearchService(
                         limit
                 )
 
-            result[index] =
+            matchesByQueryFace[index] =
                 matches
         }
 
@@ -110,7 +110,7 @@ class FaceSearchService(
                 analyzed.size,
 
             matches =
-                result
+                matchesByQueryFace
         )
     }
 
