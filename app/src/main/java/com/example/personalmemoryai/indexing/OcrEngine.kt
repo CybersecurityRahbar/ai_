@@ -1,12 +1,14 @@
 package com.example.personalmemoryai.indexing
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.tasks.await
+import kotlin.math.max
 
 data class OcrResult(
     val text: String,
@@ -25,21 +27,28 @@ class OcrEngine(
     private val arabicRecognizer =
         ArabicOcrEngine(context)
 
-    suspend fun process(uri: Uri): OcrResult {
+    suspend fun process(
+        uri: Uri
+    ): OcrResult {
 
-        val latinText =
-            try {
+        var latinText = ""
+        var arabicText = ""
+
+        // English / Latin OCR
+        try {
+            latinText =
                 recognizeLatin(uri)
-            } catch (e: Exception) {
-                ""
-            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
-        val arabicText =
-            try {
+        // Arabic OCR
+        try {
+            arabicText =
                 recognizeArabic(uri)
-            } catch (e: Exception) {
-                ""
-            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         val combined =
             combineResults(
@@ -57,7 +66,7 @@ class OcrEngine(
         uri: Uri
     ): String {
 
-        val image =
+        val inputImage =
             InputImage.fromFilePath(
                 context,
                 uri
@@ -65,7 +74,7 @@ class OcrEngine(
 
         val result =
             latinRecognizer
-                .process(image)
+                .process(inputImage)
                 .await()
 
         return result.text.trim()
@@ -76,15 +85,78 @@ class OcrEngine(
     ): String {
 
         val bitmap =
-            context.contentResolver
-                .openInputStream(uri)
-                ?.use {
-                    BitmapFactory.decodeStream(it)
-                }
+            decodeSampledBitmap(
+                uri,
+                1600
+            )
                 ?: return ""
 
-        return arabicRecognizer
-            .recognize(bitmap)
+        return try {
+
+            arabicRecognizer
+                .recognize(bitmap)
+
+        } finally {
+
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
+    }
+
+    private fun decodeSampledBitmap(
+        uri: Uri,
+        maxDimension: Int
+    ): Bitmap? {
+
+        val bounds =
+            BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+
+        context.contentResolver
+            .openInputStream(uri)
+            ?.use {
+                BitmapFactory.decodeStream(
+                    it,
+                    null,
+                    bounds
+                )
+            }
+
+        if (bounds.outWidth <= 0 ||
+            bounds.outHeight <= 0
+        ) {
+            return null
+        }
+
+        var sample = 1
+
+        while (
+            max(
+                bounds.outWidth / sample,
+                bounds.outHeight / sample
+            ) > maxDimension
+        ) {
+            sample *= 2
+        }
+
+        val options =
+            BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig =
+                    Bitmap.Config.ARGB_8888
+            }
+
+        return context.contentResolver
+            .openInputStream(uri)
+            ?.use {
+                BitmapFactory.decodeStream(
+                    it,
+                    null,
+                    options
+                )
+            }
     }
 
     private fun combineResults(
@@ -114,28 +186,37 @@ class OcrEngine(
             return "none"
         }
 
-        val arabic =
+        val hasArabic =
             text.any {
                 it in '\u0600'..'\u06FF'
             }
 
-        val latin =
+        val hasLatin =
             text.any {
                 it in 'A'..'Z' ||
                 it in 'a'..'z'
             }
 
         return when {
-            arabic && latin -> "mixed"
-            arabic -> "ar"
-            latin -> "en"
-            else -> "unknown"
+
+            hasArabic && hasLatin ->
+                "mixed"
+
+            hasArabic ->
+                "ar"
+
+            hasLatin ->
+                "en"
+
+            else ->
+                "unknown"
         }
     }
 
     fun close() {
 
         latinRecognizer.close()
+
         arabicRecognizer.close()
     }
 }
