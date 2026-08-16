@@ -12,7 +12,7 @@ android {
     defaultConfig {
         applicationId = "com.example.personalmemoryai"
 
-        minSdk = 23
+        minSdk = 24
         targetSdk = 35
 
         versionCode = 2
