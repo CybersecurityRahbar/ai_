@@ -2,24 +2,33 @@ package com.example.personalmemoryai.vision
 
 import android.content.Context
 import android.graphics.Bitmap
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.roundToInt
 
 /**
- * Generic TensorFlow Lite face-embedding runner.
+ * Generic TensorFlow Lite face embedding runner.
  *
- * Designed for common float32 face-embedding models whose
- * input is an RGB image and whose output is a 1-D feature
- * vector.
+ * Responsibilities:
  *
- * The class reads the model input/output tensor metadata
- * at runtime instead of hard-coding the embedding dimension.
+ * - Load a local .tflite model
+ * - Inspect its input/output tensors
+ * - Resize the face image
+ * - Convert RGB pixels according to tensor type
+ * - Run inference locally
+ * - Return a normalized embedding vector
+ *
+ * IMPORTANT:
+ * The preprocessing configuration must match the model
+ * that is actually placed in assets.
  */
 class TFLiteFaceEmbeddingModel(
     context: Context,
-    private val modelFileName: String = DEFAULT_MODEL
+    private val modelFileName: String = DEFAULT_MODEL,
+    private val preprocessing: Preprocessing =
+        Preprocessing.NEGATIVE_ONE_TO_ONE
 ) : FaceEmbeddingModel {
 
     private val interpreter: Interpreter
@@ -28,13 +37,16 @@ class TFLiteFaceEmbeddingModel(
     private val inputHeight: Int
     private val inputChannels: Int
 
+    private val inputType: DataType
+    private val outputType: DataType
+
     private val outputDimension: Int
 
     override val modelName: String =
         modelFileName.substringBeforeLast(".")
 
     override val modelVersion: String =
-        "tflite-runtime"
+        "tflite"
 
     override val embeddingDimension: Int
         get() = outputDimension
@@ -68,38 +80,58 @@ class TFLiteFaceEmbeddingModel(
             inputTensor.shape()
 
         require(inputShape.size == 4) {
-            "Face embedding model must use a 4D input tensor. " +
-                "Actual shape: ${inputShape.contentToString()}"
+            "Face embedding input must be 4D. " +
+                "Actual shape: " +
+                inputShape.contentToString()
         }
 
-        inputHeight = inputShape[1]
-        inputWidth = inputShape[2]
-        inputChannels = inputShape[3]
+        inputHeight =
+            inputShape[1]
+
+        inputWidth =
+            inputShape[2]
+
+        inputChannels =
+            inputShape[3]
 
         require(
             inputChannels == 3
         ) {
-            "Expected RGB input with 3 channels. " +
-                "Actual channels: $inputChannels"
+            "Only RGB models are supported. " +
+                "Channels: $inputChannels"
         }
+
+        inputType =
+            inputTensor.dataType()
 
         val outputTensor =
             interpreter.getOutputTensor(0)
+
+        outputType =
+            outputTensor.dataType()
 
         val outputShape =
             outputTensor.shape()
 
         outputDimension =
-            outputShape
-                .fold(1) { accumulator, value ->
-                    accumulator * value
-                }
+            outputShape.fold(
+                1
+            ) { total, dimension ->
+                total * dimension
+            }
 
         require(
             outputDimension > 1
         ) {
-            "Invalid face embedding output dimension: " +
-                "$outputDimension"
+            "Invalid embedding dimension: " +
+                outputDimension
+        }
+
+        require(
+            outputType == DataType.FLOAT32
+        ) {
+            "The current embedding decoder expects FLOAT32 output. " +
+                "Actual output type: $outputType"
         }
     }
 
@@ -110,7 +142,7 @@ class TFLiteFaceEmbeddingModel(
         require(
             !faceBitmap.isRecycled
         ) {
-            "Face bitmap has already been recycled."
+            "Input face bitmap is recycled."
         }
 
         val resized =
@@ -122,7 +154,7 @@ class TFLiteFaceEmbeddingModel(
             )
 
         val input =
-            bitmapToInputBuffer(
+            createInputBuffer(
                 resized
             )
 
@@ -145,18 +177,31 @@ class TFLiteFaceEmbeddingModel(
         )
     }
 
-    private fun bitmapToInputBuffer(
+    private fun createInputBuffer(
         bitmap: Bitmap
     ): ByteBuffer {
 
-        val bytesPerFloat = 4
+        val bytesPerValue =
+            when (inputType) {
+
+                DataType.FLOAT32 -> 4
+
+                DataType.UINT8 -> 1
+
+                DataType.INT8 -> 1
+
+                else ->
+                    throw IllegalArgumentException(
+                        "Unsupported input type: $inputType"
+                    )
+            }
 
         val buffer =
             ByteBuffer.allocateDirect(
                 inputWidth *
                     inputHeight *
                     inputChannels *
-                    bytesPerFloat
+                    bytesPerValue
             )
 
         buffer.order(
@@ -181,36 +226,28 @@ class TFLiteFaceEmbeddingModel(
 
         for (pixel in pixels) {
 
-            val r =
+            val red =
                 ((pixel shr 16) and 0xFF)
 
-            val g =
+            val green =
                 ((pixel shr 8) and 0xFF)
 
-            val b =
-                (pixel and 0xFF)
+            val blue =
+                pixel and 0xFF
 
-            /*
-             * Standard [-1, 1] normalization.
-             *
-             * IMPORTANT:
-             * This is correct only for models trained with this
-             * preprocessing convention.
-             *
-             * If the selected model requires [0, 1] or another
-             * preprocessing pipeline, this function must be
-             * changed to match that model.
-             */
-            buffer.putFloat(
-                r / 127.5f - 1f
+            putChannel(
+                buffer,
+                red
             )
 
-            buffer.putFloat(
-                g / 127.5f - 1f
+            putChannel(
+                buffer,
+                green
             )
 
-            buffer.putFloat(
-                b / 127.5f - 1f
+            putChannel(
+                buffer,
+                blue
             )
         }
 
@@ -219,8 +256,79 @@ class TFLiteFaceEmbeddingModel(
         return buffer
     }
 
+    private fun putChannel(
+        buffer: ByteBuffer,
+        value: Int
+    ) {
+
+        when (inputType) {
+
+            DataType.FLOAT32 -> {
+
+                val normalized =
+                    when (preprocessing) {
+
+                        Preprocessing.ZERO_TO_ONE ->
+                            value / 255f
+
+                        Preprocessing.NEGATIVE_ONE_TO_ONE ->
+                            value / 127.5f - 1f
+
+                        Preprocessing.RAW ->
+                            value.toFloat()
+                    }
+
+                buffer.putFloat(
+                    normalized
+                )
+            }
+
+            DataType.UINT8 -> {
+
+                buffer.put(
+                    value
+                        .coerceIn(
+                            0,
+                            255
+                        )
+                        .toByte()
+                )
+            }
+
+            DataType.INT8 -> {
+
+                val centered =
+                    value - 128
+
+                buffer.put(
+                    centered
+                        .coerceIn(
+                            -128,
+                            127
+                        )
+                        .toByte()
+                )
+            }
+
+            else -> {
+                error(
+                    "Unsupported input type: $inputType"
+                )
+            }
+        }
+    }
+
     override fun close() {
         interpreter.close()
+    }
+
+    enum class Preprocessing {
+
+        ZERO_TO_ONE,
+
+        NEGATIVE_ONE_TO_ONE,
+
+        RAW
     }
 
     companion object {
@@ -228,6 +336,7 @@ class TFLiteFaceEmbeddingModel(
         private const val DEFAULT_MODEL =
             "face_embedding.tflite"
 
-        private const val DEFAULT_THREADS = 4
+        private const val DEFAULT_THREADS =
+            4
     }
 }
