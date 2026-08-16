@@ -185,7 +185,7 @@ class MainActivity : AppCompatActivity() {
 
                     database
                         .imageDao()
-                        .search(
+                        .searchText(
                             query.trim()
                         )
                 }
