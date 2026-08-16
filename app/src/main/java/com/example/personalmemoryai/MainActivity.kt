@@ -1,16 +1,17 @@
 package com.example.personalmemoryai
 
-import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.personalmemoryai.database.AppDatabase
+import com.example.personalmemoryai.database.ImageEntity
 import com.example.personalmemoryai.databinding.ActivityMainBinding
 import com.example.personalmemoryai.indexing.ImageIndexer
 import com.example.personalmemoryai.ui.ImageResultAdapter
-import com.example.personalmemoryai.ui.ImageViewerActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -20,10 +21,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
 
     private lateinit var database: AppDatabase
-
-    private lateinit var indexer: ImageIndexer
-
     private lateinit var adapter: ImageResultAdapter
+
+    private var indexer: ImageIndexer? = null
 
     private val imagePicker =
         registerForActivityResult(
@@ -31,45 +31,61 @@ class MainActivity : AppCompatActivity() {
         ) { uris ->
 
             if (uris.isNullOrEmpty()) {
+                showStatus("لم يتم اختيار أي صورة")
                 return@registerForActivityResult
             }
 
-            indexImages(uris.take(100))
+            val limitedUris = uris.take(100)
+
+            showStatus(
+                "تم اختيار ${limitedUris.size} صورة\nبدء الفهرسة..."
+            )
+
+            indexImages(limitedUris)
         }
 
-    override fun onCreate(
-        savedInstanceState: Bundle?
-    ) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         binding =
-            ActivityMainBinding.inflate(
-                layoutInflater
-            )
+            ActivityMainBinding.inflate(layoutInflater)
 
         setContentView(binding.root)
 
         database =
-            AppDatabase.getInstance(this)
+            AppDatabase.getInstance(applicationContext)
 
         indexer =
-            ImageIndexer(this)
+            ImageIndexer(applicationContext)
+
+        setupRecyclerView()
+
+        binding.selectButton.setOnClickListener {
+            imagePicker.launch("image/*")
+        }
+
+        binding.searchButton.setOnClickListener {
+            performSearch(
+                binding.searchEditText.text
+                    .toString()
+            )
+        }
+
+        showStatus(
+            "Personal Memory AI\n\nجاهز لفهرسة الصور."
+        )
+    }
+
+    private fun setupRecyclerView() {
 
         adapter =
             ImageResultAdapter { image ->
 
-                val intent =
-                    Intent(
+                ImageViewerActivity
+                    .start(
                         this,
-                        ImageViewerActivity::class.java
+                        image.uri
                     )
-
-                intent.putExtra(
-                    ImageViewerActivity.EXTRA_URI,
-                    image.uri
-                )
-
-                startActivity(intent)
             }
 
         binding.resultsRecyclerView.layoutManager =
@@ -77,148 +93,144 @@ class MainActivity : AppCompatActivity() {
 
         binding.resultsRecyclerView.adapter =
             adapter
-
-        binding.selectButton.setOnClickListener {
-
-            imagePicker.launch("image/*")
-        }
-
-        binding.searchButton.setOnClickListener {
-
-            performSearch()
-        }
-
-        updateCounter()
     }
 
     private fun indexImages(
-        uris: List<android.net.Uri>
+        uris: List<Uri>
     ) {
 
-        binding.progressBar.visibility =
-            android.view.View.VISIBLE
+        lifecycleScope.launch {
 
-        binding.selectButton.isEnabled =
-            false
+            binding.progressBar.visibility =
+                android.view.View.VISIBLE
 
-        lifecycleScope.launch(
-            Dispatchers.IO
-        ) {
+            binding.progressBar.max =
+                uris.size
 
-            var processed = 0
+            binding.progressBar.progress =
+                0
+
+            var completed = 0
+            var failed = 0
 
             for (uri in uris) {
 
-                processed++
+                try {
 
-                val result =
-                    indexer.indexImage(uri)
+                    val entity =
+                        withContext(Dispatchers.IO) {
+                            indexer?.indexImage(uri)
+                        }
 
-                withContext(
-                    Dispatchers.Main
-                ) {
+                    if (entity != null) {
+                        completed++
+                    } else {
+                        failed++
+                    }
 
-                    binding.statusText.text =
-                        "فهرسة $processed / ${uris.size}"
+                } catch (t: Throwable) {
 
+                    failed++
+
+                    t.printStackTrace()
                 }
-            }
 
-            val count =
-                database.imageDao().count()
+                completed.coerceAtLeast(0)
 
-            withContext(
-                Dispatchers.Main
-            ) {
+                val processed =
+                    completed + failed
 
-                binding.progressBar.visibility =
-                    android.view.View.GONE
-
-                binding.selectButton.isEnabled =
-                    true
+                binding.progressBar.progress =
+                    processed
 
                 binding.counterText.text =
-                    "الفهرس: $count صورة"
+                    "$processed / ${uris.size}"
 
                 binding.statusText.text =
-                    "اكتملت الفهرسة"
-
+                    "فهرسة الصورة $processed من ${uris.size}\n" +
+                    "نجح: $completed | فشل: $failed"
             }
+
+            binding.progressBar.visibility =
+                android.view.View.GONE
+
+            loadAllImages()
+
+            binding.statusText.text =
+                "اكتملت الفهرسة\n\n" +
+                "تمت معالجة: ${uris.size}\n" +
+                "نجح: $completed\n" +
+                "فشل: $failed"
         }
     }
 
-    private fun performSearch() {
-
-        val query =
-            binding.searchEditText
-                .text
-                .toString()
-                .trim()
+    private fun performSearch(
+        query: String
+    ) {
 
         if (query.isBlank()) {
 
-            lifecycleScope.launch(
-                Dispatchers.IO
-            ) {
-
-                val all =
-                    database.imageDao()
-                        .getAll()
-
-                withContext(
-                    Dispatchers.Main
-                ) {
-
-                    adapter.submitList(all)
-                }
-            }
+            showStatus(
+                "اكتب شيئًا للبحث."
+            )
 
             return
         }
 
-        lifecycleScope.launch(
-            Dispatchers.IO
-        ) {
+        lifecycleScope.launch {
 
             val results =
-                database.imageDao()
-                    .searchText(query)
+                withContext(Dispatchers.IO) {
 
-            withContext(
-                Dispatchers.Main
-            ) {
+                    database
+                        .imageDao()
+                        .search(
+                            query.trim()
+                        )
+                }
 
-                adapter.submitList(results)
+            adapter.submitList(results)
 
-                binding.statusText.text =
-                    "عدد النتائج: ${results.size}"
-            }
+            binding.counterText.text =
+                "النتائج: ${results.size}"
+
+            binding.statusText.text =
+                if (results.isEmpty()) {
+                    "لم أجد نتائج لـ:\n$query"
+                } else {
+                    "تم العثور على ${results.size} نتيجة لـ:\n$query"
+                }
         }
     }
 
-    private fun updateCounter() {
+    private fun loadAllImages() {
 
-        lifecycleScope.launch(
-            Dispatchers.IO
-        ) {
+        lifecycleScope.launch {
 
-            val count =
-                database.imageDao()
-                    .count()
+            val images =
+                withContext(Dispatchers.IO) {
 
-            withContext(
-                Dispatchers.Main
-            ) {
+                    database
+                        .imageDao()
+                        .getAll()
+                }
 
-                binding.counterText.text =
-                    "الفهرس: $count صورة"
-            }
+            adapter.submitList(images)
+
+            binding.counterText.text =
+                "الفهرس: ${images.size} صورة"
         }
+    }
+
+    private fun showStatus(
+        text: String
+    ) {
+        binding.statusText.text = text
     }
 
     override fun onDestroy() {
 
-        indexer.close()
+        indexer?.close()
 
         super.onDestroy()
     }
