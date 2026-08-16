@@ -75,6 +75,9 @@ class MainActivity : AppCompatActivity() {
         showStatus(
             "Personal Memory AI\n\nجاهز لفهرسة الصور."
         )
+
+        // ===== التعديل الأول: استعادة الصور المخزنة عند بدء التشغيل =====
+        loadAllImages()
     }
 
     private fun setupRecyclerView() {
@@ -99,6 +102,12 @@ class MainActivity : AppCompatActivity() {
     private fun indexImages(
         uris: List<Uri>
     ) {
+
+        // ===== التعديل الثالث: التحقق من وجود صور قبل البدء =====
+        if (uris.isEmpty()) {
+            showStatus("لم يتم اختيار أي صور للفهرسة.")
+            return
+        }
 
         lifecycleScope.launch {
 
@@ -180,27 +189,39 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
 
-            val results =
-                withContext(Dispatchers.IO) {
+            // ===== التعديل الثاني: إضافة try-catch لحماية التطبيق من الانهيار =====
+            try {
+                val results =
+                    withContext(Dispatchers.IO) {
 
-                    database
-                        .imageDao()
-                        .searchText(
-                            query.trim()
-                        )
-                }
+                        database
+                            .imageDao()
+                            .searchText(
+                                query.trim()
+                            )
+                    }
 
-            adapter.submitList(results)
+                adapter.submitList(results)
 
-            binding.counterText.text =
-                "النتائج: ${results.size}"
+                binding.counterText.text =
+                    "النتائج: ${results.size}"
 
-            binding.statusText.text =
-                if (results.isEmpty()) {
-                    "لم أجد نتائج لـ:\n$query"
-                } else {
-                    "تم العثور على ${results.size} نتيجة لـ:\n$query"
-                }
+                binding.statusText.text =
+                    if (results.isEmpty()) {
+                        "لم أجد نتائج لـ:\n$query"
+                    } else {
+                        "تم العثور على ${results.size} نتيجة لـ:\n$query"
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                showStatus("حدث خطأ أثناء البحث: ${e.message}")
+                // يمكن إضافة Toast لعرض الخطأ للمستخدم
+                Toast.makeText(
+                    this@MainActivity,
+                    "خطأ في البحث: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
