@@ -83,7 +83,7 @@ class ArabicOcrEngine(
     fun close() {
 
         tess?.clear()
-        tess?.end()
+        tess?.recycle()
         tess = null
     }
 }
