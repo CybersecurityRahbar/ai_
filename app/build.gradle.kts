@@ -31,6 +31,10 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+     aaptOptions {
+        noCompress("tflite")
+
+    }
 }
 
 dependencies {
@@ -56,4 +60,5 @@ dependencies {
     // Arabic / multilingual OCR
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
     implementation("com.google.mediapipe:tasks-vision:0.10.35")
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
 }
