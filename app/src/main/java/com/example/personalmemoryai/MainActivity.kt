@@ -1,5 +1,6 @@
 package com.example.personalmemoryai
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
@@ -13,6 +14,7 @@ import com.example.personalmemoryai.database.ImageEntity
 import com.example.personalmemoryai.indexing.FaceIndexCoordinator
 import com.example.personalmemoryai.indexing.ImageIndexer
 import com.example.personalmemoryai.semantic.SemanticSearchService
+import com.example.personalmemoryai.ui.DataCenterActivity
 import com.example.personalmemoryai.ui.ImageResultAdapter
 import com.example.personalmemoryai.ui.ImageViewerActivity
 import com.example.personalmemoryai.databinding.ActivityMainBinding
@@ -77,6 +79,9 @@ class MainActivity : AppCompatActivity() {
         binding.importModelButton.setOnClickListener {
             modelPicker.launch(arrayOf("application/octet-stream", "application/tflite", "*/*"))
         }
+        binding.dataCenterButton.setOnClickListener {
+            startActivity(Intent(this, DataCenterActivity::class.java))
+        }
         binding.buildVisualIndexButton.setOnClickListener { buildVisualIndex() }
         binding.buildFaceIndexButton.setOnClickListener { buildFaceIndex() }
         binding.searchButton.setOnClickListener { performSearch(binding.searchEditText.text.toString()) }
@@ -105,11 +110,7 @@ class MainActivity : AppCompatActivity() {
                         val percent = if (total > 0) ((copied * 100L) / total).toInt().coerceIn(0, 100) else 0
                         runOnUiThread {
                             binding.progressBar.progress = percent
-                            binding.counterText.text = if (total > 0) {
-                                "استيراد النموذج: $percent%"
-                            } else {
-                                "تم استيراد ${(copied / (1024 * 1024))} MB"
-                            }
+                            binding.counterText.text = if (total > 0) "استيراد النموذج: $percent%" else "تم استيراد ${(copied / (1024 * 1024))} MB"
                         }
                     }
                 }
@@ -128,9 +129,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateModelStatus() {
         lifecycleScope.launch {
             val installed = semanticSearchService.isModelInstalled()
-            val embeddings = withContext(Dispatchers.IO) {
-                semanticSearchService.imageEmbeddingCount()
-            }
+            val embeddings = withContext(Dispatchers.IO) { semanticSearchService.imageEmbeddingCount() }
             binding.modelStatusText.text = if (installed) {
                 val mb = semanticSearchService.modelSizeBytes() / (1024 * 1024)
                 "● MobileCLIP-S2 جاهز • ${mb} MB • بصمات الصور: $embeddings"
@@ -154,24 +153,20 @@ class MainActivity : AppCompatActivity() {
                 showStatus("استورد model.float16.tflite / MobileCLIP-S2 أولًا.")
                 return@launch
             }
-
             val total = withContext(Dispatchers.IO) { database.imageDao().count() }
             if (total == 0) {
                 showStatus("الفهرس فارغ. افهرس الصور أولًا.")
                 return@launch
             }
-
             setBusy(true)
             binding.progressBar.max = total
             binding.progressBar.progress = 0
             binding.statusText.text = "تهيئة MobileCLIP-S2 وبناء الفهرس البصري..."
-
             try {
                 semanticSearchService.indexAllImages { processed, count, embedded, skipped ->
                     runOnUiThread {
                         binding.progressBar.progress = processed
-                        val rateText = if (processed > 0) " • $processed/$count" else ""
-                        binding.counterText.text = "VISUAL INDEX$rateText"
+                        binding.counterText.text = "VISUAL INDEX • $processed/$count"
                         binding.statusText.text = "بناء الفهرس البصري: $processed / $count\nجديد: $embedded • موجود مسبقًا: $skipped"
                     }
                 }
@@ -190,36 +185,27 @@ class MainActivity : AppCompatActivity() {
     private fun buildFaceIndex() {
         lifecycleScope.launch {
             val total = withContext(Dispatchers.IO) { database.imageDao().count() }
-            if (total == 0L) {
+            if (total == 0) {
                 showStatus("الفهرس فارغ. افهرس الصور أولًا.")
                 return@launch
             }
-
             setBusy(true)
             binding.progressBar.max = total.toInt().coerceAtLeast(1)
             binding.progressBar.progress = 0
             binding.statusText.text = "FACE INTELLIGENCE • MediaPipe + MobileFaceNet..."
-
             try {
                 val result = withContext(Dispatchers.IO) {
                     faceIndexCoordinator.indexAllImages { progress ->
                         runOnUiThread {
                             binding.progressBar.progress = progress.processed
                             binding.counterText.text = "FACE INDEX • ${progress.processed}/${progress.total}"
-                            binding.statusText.text = "تحليل الوجوه: ${progress.processed}/${progress.total}\n" +
-                                "مكتشف: ${progress.detectedFaces} • بصمات: ${progress.indexedFaces} • فشل: ${progress.failedImages}"
+                            binding.statusText.text = "تحليل الوجوه: ${progress.processed}/${progress.total}\nمكتشف: ${progress.detectedFaces} • بصمات: ${progress.indexedFaces} • فشل: ${progress.failedImages}"
                         }
                     }
                 }
-
-                val clusters = withContext(Dispatchers.IO) {
-                    faceIndexCoordinator.buildPersonClusters()
-                }
-
+                val clusters = withContext(Dispatchers.IO) { faceIndexCoordinator.buildPersonClusters() }
                 updateFaceStatus()
-                binding.statusText.text = "اكتمل تحليل الوجوه.\n" +
-                    "الوجوه: ${result.detectedFaces} • البصمات: ${result.indexedFaces}\n" +
-                    "المجموعات الجديدة: ${clusters.createdClusters} • الوجوه المرتبطة: ${clusters.assignedFaces}"
+                binding.statusText.text = "اكتمل تحليل الوجوه.\nالوجوه: ${result.detectedFaces} • البصمات: ${result.indexedFaces}\nالمجموعات الجديدة: ${clusters.createdClusters} • الوجوه المرتبطة: ${clusters.assignedFaces}"
             } catch (e: Exception) {
                 showStatus("فشل فهرسة الوجوه: ${e.message}")
                 Toast.makeText(this@MainActivity, "فشل نظام الوجوه", Toast.LENGTH_LONG).show()
@@ -237,7 +223,6 @@ class MainActivity : AppCompatActivity() {
             var completed = 0
             var failed = 0
             val startedAt = System.currentTimeMillis()
-
             for (uri in uris) {
                 try {
                     val entity = withContext(Dispatchers.IO) { indexer?.indexImage(uri) }
@@ -253,7 +238,6 @@ class MainActivity : AppCompatActivity() {
                 binding.counterText.text = "$processed / ${uris.size} • ${String.format(Locale.US, "%.1f", rate)} صورة/ث"
                 binding.statusText.text = "تحليل الصورة $processed من ${uris.size}\nOCR + كائنات + بيانات الصورة"
             }
-
             setBusy(false)
             loadAllImages()
             binding.statusText.text = "اكتملت الفهرسة • تمت معالجة ${uris.size} صورة • نجح $completed • فشل $failed"
@@ -269,7 +253,6 @@ class MainActivity : AppCompatActivity() {
             showStatus("اكتب وصفًا أو كلمات للبحث.")
             return
         }
-
         lifecycleScope.launch {
             try {
                 val results = withContext(Dispatchers.IO) {
@@ -298,11 +281,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 adapter.submitList(results)
                 binding.counterText.text = "النتائج: ${results.size}"
-                binding.statusText.text = if (results.isEmpty()) {
-                    "لم توجد مطابقة للكلمات أو الكائنات: $normalized"
-                } else {
-                    "${results.size} نتيجة • OCR + YOLO object labels.\nText Encoder مؤجل كما هو مخطط."
-                }
+                binding.statusText.text = if (results.isEmpty()) "لم توجد مطابقة للكلمات أو الكائنات: $normalized" else "${results.size} نتيجة • OCR + YOLO object labels.\nText Encoder مؤجل كما هو مخطط."
             } catch (e: Exception) {
                 showStatus("حدث خطأ أثناء البحث: ${e.message}")
             }
@@ -323,9 +302,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 setBusy(true)
                 binding.statusText.text = "جاري تشغيل البحث البصري المحلي..."
-                val results = withContext(Dispatchers.IO) {
-                    semanticSearchService.searchSimilarImages(queryUri, limit = 30)
-                }
+                val results = withContext(Dispatchers.IO) { semanticSearchService.searchSimilarImages(queryUri, limit = 30) }
                 adapter.submitList(results.map { it.image })
                 binding.counterText.text = "النتائج الدلالية: ${results.size}"
                 binding.statusText.text = "تم ترتيب ${results.size} صورة حسب التشابه البصري من embeddings المخزنة."
@@ -350,6 +327,7 @@ class MainActivity : AppCompatActivity() {
         binding.progressBar.visibility = if (busy) View.VISIBLE else View.GONE
         binding.selectButton.isEnabled = !busy
         binding.importModelButton.isEnabled = !busy
+        binding.dataCenterButton.isEnabled = !busy
         binding.buildVisualIndexButton.isEnabled = !busy
         binding.buildFaceIndexButton.isEnabled = !busy
         binding.searchButton.isEnabled = !busy
