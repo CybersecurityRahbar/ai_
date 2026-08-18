@@ -34,9 +34,19 @@ class MainActivity : AppCompatActivity() {
             showStatus("لم يتم اختيار أي صورة")
             return@registerForActivityResult
         }
-        val limitedUris = uris.take(100)
-        showStatus("تم اختيار ${limitedUris.size} صورة\nبدء الفهرسة...")
+        val limitedUris = uris.take(1000)
+        showStatus("تم اختيار ${limitedUris.size} صورة • بدء التحليل المحلي...")
         indexImages(limitedUris)
+    }
+
+    private val modelPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) {
+            showStatus("لم يتم اختيار نموذج")
+            return@registerForActivityResult
+        }
+        importMobileClipModel(uri)
     }
 
     private val semanticImagePicker = registerForActivityResult(
@@ -60,19 +70,62 @@ class MainActivity : AppCompatActivity() {
 
         setupRecyclerView()
         binding.selectButton.setOnClickListener { imagePicker.launch("image/*") }
+        binding.importModelButton.setOnClickListener {
+            modelPicker.launch(arrayOf("application/octet-stream", "application/tflite", "*/*"))
+        }
         binding.searchButton.setOnClickListener { performSearch(binding.searchEditText.text.toString()) }
         binding.semanticSearchButton.setOnClickListener { semanticImagePicker.launch("image/*") }
 
-        showStatus("Personal Memory AI\n\nجاهز لفهرسة الصور والبحث بالنص والكائنات والبحث الدلالي بالصور.")
+        updateModelStatus()
         loadAllImages()
     }
 
     private fun setupRecyclerView() {
-        adapter = ImageResultAdapter { image ->
-            ImageViewerActivity.start(this, image.uri)
-        }
+        adapter = ImageResultAdapter { image -> ImageViewerActivity.start(this, image.uri) }
         binding.resultsRecyclerView.layoutManager = LinearLayoutManager(this)
         binding.resultsRecyclerView.adapter = adapter
+    }
+
+    private fun importMobileClipModel(uri: Uri) {
+        lifecycleScope.launch {
+            try {
+                binding.progressBar.visibility = android.view.View.VISIBLE
+                binding.progressBar.max = 100
+                binding.progressBar.progress = 0
+                binding.modelStatusText.text = "استيراد MobileCLIP-S2 FP16..."
+                withContext(Dispatchers.IO) {
+                    semanticSearchService.importModel(uri) { copied, total ->
+                        val percent = if (total > 0) ((copied * 100L) / total).toInt().coerceIn(0, 100) else 0
+                        runOnUiThread {
+                            binding.progressBar.progress = percent
+                            binding.counterText.text = if (total > 0) {
+                                "استيراد النموذج: $percent%"
+                            } else {
+                                "تم استيراد ${(copied / (1024 * 1024))} MB"
+                            }
+                        }
+                    }
+                }
+                binding.modelStatusText.text = "● MobileCLIP-S2 جاهز • محفوظ محليًا"
+                binding.statusText.text = "تم استيراد النموذج بنجاح. لن يحتاج التطبيق إلى تنزيله من الإنترنت."
+                binding.progressBar.visibility = android.view.View.GONE
+            } catch (e: Exception) {
+                binding.progressBar.visibility = android.view.View.GONE
+                binding.modelStatusText.text = "○ نموذج MobileCLIP غير متوفر"
+                showStatus("فشل استيراد النموذج: ${e.message}")
+                Toast.makeText(this@MainActivity, "فشل استيراد النموذج", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun updateModelStatus() {
+        val installed = semanticSearchService.isModelInstalled()
+        binding.modelStatusText.text = if (installed) {
+            val mb = semanticSearchService.modelSizeBytes() / (1024 * 1024)
+            "● MobileCLIP-S2 جاهز • ${mb} MB • تخزين محلي"
+        } else {
+            "○ MobileCLIP-S2 غير مستورد • اختر ملف .tflite"
+        }
     }
 
     private fun indexImages(uris: List<Uri>) {
@@ -82,6 +135,7 @@ class MainActivity : AppCompatActivity() {
             binding.progressBar.progress = 0
             var completed = 0
             var failed = 0
+            val startedAt = System.currentTimeMillis()
 
             for (uri in uris) {
                 try {
@@ -93,28 +147,22 @@ class MainActivity : AppCompatActivity() {
                 }
                 val processed = completed + failed
                 binding.progressBar.progress = processed
-                binding.counterText.text = "$processed / ${uris.size}"
-                binding.statusText.text =
-                    "فهرسة الصورة $processed من ${uris.size}\nنجح: $completed | فشل: $failed"
+                val elapsed = ((System.currentTimeMillis() - startedAt) / 1000L).coerceAtLeast(1L)
+                val rate = processed.toDouble() / elapsed
+                binding.counterText.text = "$processed / ${uris.size} • ${String.format(Locale.US, "%.1f", rate)} صورة/ث"
+                binding.statusText.text = "تحليل الصورة $processed من ${uris.size}\nOCR + كائنات + بيانات الصورة"
             }
 
             binding.progressBar.visibility = android.view.View.GONE
             loadAllImages()
-            binding.statusText.text =
-                "اكتملت الفهرسة\n\nتمت معالجة: ${uris.size}\nنجح: $completed\nفشل: $failed"
+            binding.statusText.text = "اكتملت الفهرسة • تمت معالجة ${uris.size} صورة • نجح $completed • فشل $failed"
         }
     }
 
-    /**
-     * Until Text Encoder is added, textual search is keyword-based over OCR and
-     * YOLO object labels. Multi-word queries are split so a query such as
-     * "رجل في غرفة وبجانبه كلب" can match images containing person + dog even
-     * though the exact sentence is not stored anywhere.
-     */
     private fun performSearch(query: String) {
         val normalized = query.trim()
         if (normalized.isBlank()) {
-            showStatus("اكتب شيئًا للبحث بالنص أو الكائنات.")
+            showStatus("اكتب وصفًا أو كلمات للبحث.")
             return
         }
 
@@ -122,14 +170,12 @@ class MainActivity : AppCompatActivity() {
             try {
                 val results = withContext(Dispatchers.IO) {
                     val exact = database.imageDao().searchTextAndObjects(normalized)
-                    val tokens = normalized
-                        .lowercase(Locale.getDefault())
+                    val tokens = normalized.lowercase(Locale.getDefault())
                         .split(Regex("[^\\p{L}\\p{Nd}]+"))
                         .map { it.trim() }
                         .filter { it.length >= 2 }
                         .filterNot { it in STOP_WORDS }
                         .distinct()
-
                     val scores = LinkedHashMap<Long, Pair<ImageEntity, Int>>()
                     for (token in tokens) {
                         for (image in database.imageDao().searchTextAndObjects(token)) {
@@ -141,26 +187,20 @@ class MainActivity : AppCompatActivity() {
                         val previous = scores[image.id]
                         scores[image.id] = image to ((previous?.second ?: 0) + 2)
                     }
-
-                    scores.values
-                        .sortedWith(compareByDescending<Pair<ImageEntity, Int>> { it.second }
-                            .thenByDescending { it.first.dateTaken ?: 0L })
-                        .map { it.first }
-                        .ifEmpty { exact }
+                    scores.values.sortedWith(
+                        compareByDescending<Pair<ImageEntity, Int>> { it.second }
+                            .thenByDescending { it.first.dateTaken ?: 0L }
+                    ).map { it.first }.ifEmpty { exact }
                 }
-
                 adapter.submitList(results)
                 binding.counterText.text = "النتائج: ${results.size}"
                 binding.statusText.text = if (results.isEmpty()) {
-                    "لم أجد صورًا تطابق كلمات البحث:\n$normalized"
+                    "لم توجد مطابقة للكلمات أو الكائنات: $normalized"
                 } else {
-                    "تم العثور على ${results.size} صورة مطابقة للكلمات والكائنات.\n" +
-                        "البحث الدلالي النصي عبر Text Encoder مؤجل حاليًا."
+                    "${results.size} نتيجة • المطابقة الحالية تعتمد على OCR + كائنات YOLO.\nText Encoder مؤجل كما هو مخطط."
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
                 showStatus("حدث خطأ أثناء البحث: ${e.message}")
-                Toast.makeText(this@MainActivity, "خطأ في البحث: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -168,23 +208,22 @@ class MainActivity : AppCompatActivity() {
     private fun semanticSearch(queryUri: Uri) {
         lifecycleScope.launch {
             try {
+                if (!semanticSearchService.isModelInstalled()) {
+                    showStatus("استورد نموذج MobileCLIP-S2 أولًا من بطاقة النماذج.")
+                    return@launch
+                }
                 binding.progressBar.visibility = android.view.View.VISIBLE
-                binding.statusText.text = "جاري تجهيز MobileCLIP-S2 والبحث الدلالي..."
+                binding.statusText.text = "جاري تشغيل البحث البصري المحلي..."
                 val results = withContext(Dispatchers.IO) {
                     semanticSearchService.ensureModel()
                     semanticSearchService.searchSimilarImages(queryUri, limit = 30)
                 }
                 adapter.submitList(results.map { it.image })
                 binding.counterText.text = "النتائج الدلالية: ${results.size}"
-                binding.statusText.text = if (results.isEmpty()) {
-                    "لا توجد صور مفهرسة دلاليًا بعد. فهرس الصور أولًا."
-                } else {
-                    "تم ترتيب ${results.size} صورة حسب التشابه البصري."
-                }
+                binding.statusText.text = "تم ترتيب ${results.size} صورة حسب التشابه البصري."
             } catch (e: Exception) {
-                e.printStackTrace()
                 showStatus("تعذر البحث الدلالي: ${e.message}")
-                Toast.makeText(this@MainActivity, "تعذر تشغيل MobileCLIP-S2: ${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "تعذر تشغيل MobileCLIP-S2", Toast.LENGTH_LONG).show()
             } finally {
                 binding.progressBar.visibility = android.view.View.GONE
             }
@@ -199,9 +238,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showStatus(text: String) {
-        binding.statusText.text = text
-    }
+    private fun showStatus(text: String) { binding.statusText.text = text }
 
     override fun onDestroy() {
         semanticSearchService.close()
