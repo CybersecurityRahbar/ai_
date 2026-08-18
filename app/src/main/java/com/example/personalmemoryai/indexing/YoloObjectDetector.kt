@@ -14,10 +14,7 @@ import kotlin.math.min
 
 /**
  * YOLO26n LiteRT/TFLite detector exported by Ultralytics as w8a32.
- *
- * The current model is an end-to-end detection export, whose common output is
- * [x1, y1, x2, y2, confidence, classId] per detection. The parser also checks
- * tensor shape at runtime instead of hard-coding 300 detections.
+ * The current end-to-end detection output is [x1,y1,x2,y2,confidence,classId].
  */
 class YoloObjectDetector(private val context: Context) : AutoCloseable {
 
@@ -77,24 +74,24 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
         val resizedWidth = max(1, (bitmap.width * scale).toInt())
         val resizedHeight = max(1, (bitmap.height * scale).toInt())
         val resized = Bitmap.createScaledBitmap(bitmap, resizedWidth, resizedHeight, true)
-        val canvasBitmap = Bitmap.createBitmap(inputWidth, inputHeight, Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(canvasBitmap)
+        val letterboxed = Bitmap.createBitmap(inputWidth, inputHeight, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(letterboxed)
         canvas.drawColor(android.graphics.Color.BLACK)
-        val left = (inputWidth - resizedWidth) / 2f
-        val top = (inputHeight - resizedHeight) / 2f
-        canvas.drawBitmap(resized, left, top, null)
+        val padLeft = (inputWidth - resizedWidth) / 2f
+        val padTop = (inputHeight - resizedHeight) / 2f
+        canvas.drawBitmap(resized, padLeft, padTop, null)
         resized.recycle()
+
+        require(inputTensor.dataType() == DataType.FLOAT32) {
+            "YOLO w8a32 expects FLOAT32 input, found ${inputTensor.dataType()}"
+        }
+
+        val pixels = IntArray(inputWidth * inputHeight)
+        letterboxed.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
+        letterboxed.recycle()
 
         val input = ByteBuffer.allocateDirect(inputWidth * inputHeight * 3 * 4)
             .order(ByteOrder.nativeOrder())
-        val pixels = IntArray(inputWidth * inputHeight)
-        canvasBitmap.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
-        canvasBitmap.recycle()
-
-        val inputType = inputTensor.dataType()
-        require(inputType == DataType.FLOAT32) {
-            "YOLO w8a32 expects FLOAT32 input, found $inputType"
-        }
         if (channelsLast) {
             for (pixel in pixels) {
                 input.putFloat(((pixel shr 16) and 0xFF) / 255f)
@@ -125,14 +122,12 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
         val output = Array(1) { FloatArray(outputSize) }
         tflite.run(input, output)
 
-        return parseEndToEnd(output[0], outputShape, inputWidth, inputHeight, scale, left, top)
+        return parseEndToEnd(output[0], outputShape, scale, padLeft, padTop)
     }
 
     private fun parseEndToEnd(
         values: FloatArray,
         shape: IntArray,
-        inputWidth: Int,
-        inputHeight: Int,
         scale: Float,
         padLeft: Float,
         padTop: Float
@@ -151,6 +146,7 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
             val classId = values[offset + 5].toInt()
             if (classId !in COCO_LABELS.indices) continue
 
+            val label = COCO_LABELS[classId]
             val x1 = (values[offset] - padLeft) / scale
             val y1 = (values[offset + 1] - padTop) / scale
             val x2 = (values[offset + 2] - padLeft) / scale
@@ -159,7 +155,8 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
 
             results += ObjectDetectionResult(
                 classId = classId,
-                label = COCO_LABELS[classId],
+                label = label,
+                arabicLabel = ObjectLabelCatalog.arabicAliases(label),
                 confidence = confidence,
                 left = x1.coerceAtLeast(0f),
                 top = y1.coerceAtLeast(0f),
