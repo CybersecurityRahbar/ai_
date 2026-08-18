@@ -39,6 +39,9 @@ interface ImageDao {
     """)
     suspend fun searchTextAndObjects(query: String): List<ImageEntity>
 
+    @Query("UPDATE images SET detectedObjects = :objects WHERE id = :imageId")
+    suspend fun updateDetectedObjects(imageId: Long, objects: String)
+
     @Query("SELECT COUNT(*) FROM images")
     suspend fun count(): Int
 
