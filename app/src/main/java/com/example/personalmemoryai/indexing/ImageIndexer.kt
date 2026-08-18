@@ -5,26 +5,20 @@ import android.net.Uri
 import android.provider.MediaStore
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
+import com.example.personalmemoryai.semantic.SemanticSearchService
 
 class ImageIndexer(
     private val context: Context
-) {
+) : AutoCloseable {
 
-    private val database =
-        AppDatabase.getInstance(context)
-
-    private val dao =
-        database.imageDao()
-
-    private val ocrEngine =
-        OcrEngine(context)
+    private val database = AppDatabase.getInstance(context)
+    private val dao = database.imageDao()
+    private val ocrEngine = OcrEngine(context)
+    private val semanticSearchService = SemanticSearchService(context)
 
     suspend fun indexImage(uri: Uri): ImageEntity? {
-
         return try {
-
             val resolver = context.contentResolver
-
             val projection = arrayOf(
                 MediaStore.Images.Media.DISPLAY_NAME,
                 MediaStore.Images.Media.SIZE,
@@ -43,118 +37,66 @@ class ImageIndexer(
             var dateTaken: Long? = null
             var dateModified: Long? = null
 
-            resolver.query(
-                uri,
-                projection,
-                null,
-                null,
-                null
-            )?.use { cursor ->
-
+            resolver.query(uri, projection, null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
-
-                    fun index(name: String): Int =
-                        cursor.getColumnIndex(name)
-
-                    val nameIndex =
-                        index(MediaStore.Images.Media.DISPLAY_NAME)
-
-                    if (nameIndex >= 0) {
-                        fileName =
-                            cursor.getString(nameIndex)
-                                ?: "Unknown"
-                    }
-
-                    val sizeIndex =
-                        index(MediaStore.Images.Media.SIZE)
-
-                    if (sizeIndex >= 0) {
-                        fileSize =
-                            cursor.getLong(sizeIndex)
-                    }
-
-                    val widthIndex =
-                        index(MediaStore.Images.Media.WIDTH)
-
-                    if (widthIndex >= 0) {
-                        width =
-                            cursor.getInt(widthIndex)
-                    }
-
-                    val heightIndex =
-                        index(MediaStore.Images.Media.HEIGHT)
-
-                    if (heightIndex >= 0) {
-                        height =
-                            cursor.getInt(heightIndex)
-                    }
-
-                    val mimeIndex =
-                        index(MediaStore.Images.Media.MIME_TYPE)
-
-                    if (mimeIndex >= 0) {
-                        mimeType =
-                            cursor.getString(mimeIndex)
-                    }
-
-                    val takenIndex =
-                        index(MediaStore.Images.Media.DATE_TAKEN)
-
-                    if (takenIndex >= 0) {
-                        dateTaken =
-                            cursor.getLong(takenIndex)
-                    }
-
-                    val modifiedIndex =
-                        index(MediaStore.Images.Media.DATE_MODIFIED)
-
-                    if (modifiedIndex >= 0) {
-                        dateModified =
-                            cursor.getLong(modifiedIndex) * 1000
-                    }
+                    fun index(name: String): Int = cursor.getColumnIndex(name)
+                    val nameIndex = index(MediaStore.Images.Media.DISPLAY_NAME)
+                    if (nameIndex >= 0) fileName = cursor.getString(nameIndex) ?: "Unknown"
+                    val sizeIndex = index(MediaStore.Images.Media.SIZE)
+                    if (sizeIndex >= 0) fileSize = cursor.getLong(sizeIndex)
+                    val widthIndex = index(MediaStore.Images.Media.WIDTH)
+                    if (widthIndex >= 0) width = cursor.getInt(widthIndex)
+                    val heightIndex = index(MediaStore.Images.Media.HEIGHT)
+                    if (heightIndex >= 0) height = cursor.getInt(heightIndex)
+                    val mimeIndex = index(MediaStore.Images.Media.MIME_TYPE)
+                    if (mimeIndex >= 0) mimeType = cursor.getString(mimeIndex)
+                    val takenIndex = index(MediaStore.Images.Media.DATE_TAKEN)
+                    if (takenIndex >= 0) dateTaken = cursor.getLong(takenIndex)
+                    val modifiedIndex = index(MediaStore.Images.Media.DATE_MODIFIED)
+                    if (modifiedIndex >= 0) dateModified = cursor.getLong(modifiedIndex) * 1000
                 }
             }
 
-            val existing =
-                dao.findByUri(uri.toString())
+            val existing = dao.findByUri(uri.toString())
+            if (existing != null) return existing
 
-            if (existing != null) {
-                return existing
+            val ocr = ocrEngine.process(uri)
+            val entity = ImageEntity(
+                uri = uri.toString(),
+                fileName = fileName,
+                filePath = uri.toString(),
+                dateTaken = dateTaken,
+                dateModified = dateModified,
+                fileSize = fileSize,
+                width = width,
+                height = height,
+                mimeType = mimeType,
+                ocrText = ocr.text,
+                ocrLanguage = ocr.language,
+                indexedAt = System.currentTimeMillis()
+            )
+
+            val id = dao.insert(entity)
+            val saved = entity.copy(id = id)
+
+            // Semantic indexing is deliberately best-effort. OCR/database
+            // indexing remains usable if the large model cannot be downloaded.
+            try {
+                semanticSearchService.ensureModel()
+                semanticSearchService.indexImageAndStore(saved)
+            } catch (semanticError: Throwable) {
+                semanticError.printStackTrace()
             }
 
-            val ocr =
-                ocrEngine.process(uri)
-
-            val entity =
-                ImageEntity(
-                    uri = uri.toString(),
-                    fileName = fileName,
-                    filePath = uri.toString(),
-                    dateTaken = dateTaken,
-                    dateModified = dateModified,
-                    fileSize = fileSize,
-                    width = width,
-                    height = height,
-                    mimeType = mimeType,
-                    ocrText = ocr.text,
-                    ocrLanguage = ocr.language,
-                    indexedAt = System.currentTimeMillis()
-                )
-
-            val id =
-                dao.insert(entity)
-
-            entity.copy(id = id)
-
+            saved
         } catch (t: Throwable) {
-
             t.printStackTrace()
-
             null
         }
     }
 
-    fun close() {
+    override fun close() {
         ocrEngine.close()
+        semanticSearchService.close()
     }
 }
