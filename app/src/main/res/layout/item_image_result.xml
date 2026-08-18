@@ -43,6 +43,15 @@
         android:maxLines="2" />
 
     <TextView
+        android:id="@+id/detectedObjects"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:paddingTop="6dp"
+        android:maxLines="3" />
+
+    <TextView
         android:id="@+id/ocrText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
