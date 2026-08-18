@@ -24,6 +24,21 @@ interface ImageDao {
     """)
     suspend fun searchText(query: String): List<ImageEntity>
 
+    @Query("""
+        SELECT * FROM images
+        WHERE detectedObjects LIKE '%' || :query || '%'
+        ORDER BY dateTaken DESC
+    """)
+    suspend fun searchObjects(query: String): List<ImageEntity>
+
+    @Query("""
+        SELECT * FROM images
+        WHERE ocrText LIKE '%' || :query || '%'
+           OR detectedObjects LIKE '%' || :query || '%'
+        ORDER BY dateTaken DESC
+    """)
+    suspend fun searchTextAndObjects(query: String): List<ImageEntity>
+
     @Query("SELECT COUNT(*) FROM images")
     suspend fun count(): Int
 
