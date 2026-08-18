@@ -53,4 +53,8 @@ interface ImageDao {
 
     @Query("SELECT * FROM images WHERE uri = :uri LIMIT 1")
     suspend fun findByUri(uri: String): ImageEntity?
+
+    /** Original source URI is retained in filePath for portable duplicate detection. */
+    @Query("SELECT * FROM images WHERE filePath = :sourceUri LIMIT 1")
+    suspend fun findBySourceUri(sourceUri: String): ImageEntity?
 }
