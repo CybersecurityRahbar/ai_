@@ -8,13 +8,7 @@ import com.example.personalmemoryai.database.ImageEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Image-to-image semantic retrieval.
- *
- * Until the compatible MobileCLIP-S2 Text Encoder is installed, the query
- * side is another image. The same 512-D image space is used for both indexed
- * images and query images, so cosine similarity is a valid retrieval metric.
- */
+/** Image-to-image semantic retrieval using the locally imported MobileCLIP-S2 FP16 model. */
 class SemanticSearchService(context: Context) : AutoCloseable {
 
     private val appContext = context.applicationContext
@@ -22,14 +16,21 @@ class SemanticSearchService(context: Context) : AutoCloseable {
     private val modelManager = MobileClipModelManager(appContext)
     private val encoder = MobileClipImageEncoder(appContext, modelManager)
 
-    suspend fun ensureModel(
-        onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> }
-    ) {
-        modelManager.ensureModel(onProgress)
+    suspend fun ensureModel() {
+        if (!modelManager.isInstalled()) {
+            throw IllegalStateException("لم يتم استيراد نموذج MobileCLIP-S2 بعد")
+        }
         encoder.load()
     }
 
+    suspend fun importModel(source: Uri, onProgress: (Long, Long) -> Unit = { _, _ -> }) {
+        modelManager.importModel(source, onProgress)
+        encoder.close()
+    }
+
     fun isModelInstalled(): Boolean = modelManager.isInstalled()
+
+    fun modelSizeBytes(): Long = modelManager.installedSizeBytes()
 
     suspend fun indexImage(image: ImageEntity): EmbeddingEntity = withContext(Dispatchers.Default) {
         val vector = encoder.encode(Uri.parse(image.uri))
@@ -46,30 +47,23 @@ class SemanticSearchService(context: Context) : AutoCloseable {
 
     suspend fun indexImageAndStore(image: ImageEntity): Long {
         val embedding = indexImage(image)
-        database.embeddingDao().deleteForOwner(
-            embedding.ownerType,
-            embedding.ownerId
-        )
+        database.embeddingDao().deleteForOwner(embedding.ownerType, embedding.ownerId)
         return database.embeddingDao().insert(embedding)
     }
 
-    suspend fun searchSimilarImages(
-        queryUri: Uri,
-        limit: Int = 30
-    ): List<ScoredImage> = withContext(Dispatchers.Default) {
-        val query = encoder.encode(queryUri)
-        val embeddings = database.embeddingDao().getAllForImageSearch()
-        val results = ArrayList<ScoredImage>(embeddings.size)
-
-        for (embedding in embeddings) {
-            if (embedding.dimension != query.size) continue
-            val score = cosine(query, embedding.vector)
-            val image = database.imageDao().getById(embedding.ownerId) ?: continue
-            results += ScoredImage(image, score)
+    suspend fun searchSimilarImages(queryUri: Uri, limit: Int = 30): List<ScoredImage> =
+        withContext(Dispatchers.Default) {
+            val query = encoder.encode(queryUri)
+            val embeddings = database.embeddingDao().getAllForImageSearch()
+            val results = ArrayList<ScoredImage>(embeddings.size)
+            for (embedding in embeddings) {
+                if (embedding.dimension != query.size) continue
+                val score = cosine(query, embedding.vector)
+                val image = database.imageDao().getById(embedding.ownerId) ?: continue
+                results += ScoredImage(image, score)
+            }
+            results.sortedByDescending { it.score }.take(limit)
         }
-
-        results.sortedByDescending { it.score }.take(limit)
-    }
 
     private fun cosine(a: FloatArray, b: FloatArray): Float {
         var dot = 0.0
@@ -84,12 +78,7 @@ class SemanticSearchService(context: Context) : AutoCloseable {
         return (dot / (kotlin.math.sqrt(normA) * kotlin.math.sqrt(normB))).toFloat()
     }
 
-    data class ScoredImage(
-        val image: ImageEntity,
-        val score: Float
-    )
+    data class ScoredImage(val image: ImageEntity, val score: Float)
 
-    override fun close() {
-        encoder.close()
-    }
+    override fun close() = encoder.close()
 }
