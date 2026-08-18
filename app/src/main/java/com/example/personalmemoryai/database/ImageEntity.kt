@@ -33,5 +33,8 @@ data class ImageEntity(
 
     val ocrLanguage: String,
 
+    /** JSON-like compact list of detected object labels and confidences. */
+    val detectedObjects: String,
+
     val indexedAt: Long
 )
