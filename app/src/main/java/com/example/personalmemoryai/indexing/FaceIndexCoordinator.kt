@@ -15,8 +15,8 @@ import kotlinx.coroutines.withContext
  * Runs the face pipeline as a separate indexing phase.
  *
  * Face indexing is intentionally NOT part of the basic OCR/YOLO image import
- * path. This keeps normal image indexing fast and lets the user run the more
- * expensive face analysis when desired.
+ * path. The expensive MediaPipe + MobileFaceNet stack is initialized lazily
+ * only when the user starts face indexing.
  */
 class FaceIndexCoordinator(
     private val context: Context
@@ -27,25 +27,19 @@ class FaceIndexCoordinator(
     private val embeddingDao = database.embeddingDao()
     private val personDao = database.personDao()
 
-    private val faceAnalyzer = MediaPipeFaceAnalyzer(context)
-    private val embeddingModel = TFLiteFaceEmbeddingModel(
-        context = context,
-        modelFileName = FACE_MODEL_FILE
-    )
-    private val analysisService = FaceAnalysisService(
-        faceAnalyzer = faceAnalyzer,
-        embeddingModel = embeddingModel
-    )
-    private val faceIndexingService = FaceIndexingService(
-        faceDao = faceDao,
-        embeddingDao = embeddingDao,
-        analysisService = analysisService
-    )
-    private val clusteringEngine = PersonClusteringEngine(
-        faceDao = faceDao,
-        personDao = personDao,
-        embeddingDao = embeddingDao
-    )
+    private val faceAnalyzer: MediaPipeFaceAnalyzer by lazy { MediaPipeFaceAnalyzer(context) }
+    private val embeddingModel: TFLiteFaceEmbeddingModel by lazy {
+        TFLiteFaceEmbeddingModel(context, FACE_MODEL_FILE)
+    }
+    private val analysisService: FaceAnalysisService by lazy {
+        FaceAnalysisService(faceAnalyzer, embeddingModel)
+    }
+    private val faceIndexingService: FaceIndexingService by lazy {
+        FaceIndexingService(faceDao, embeddingDao, analysisService)
+    }
+    private val clusteringEngine: PersonClusteringEngine by lazy {
+        PersonClusteringEngine(faceDao, personDao, embeddingDao)
+    }
 
     data class Progress(
         val processed: Int,
@@ -64,6 +58,9 @@ class FaceIndexCoordinator(
         var indexed = 0
         var failed = 0
 
+        // Explicit request only: this is where the heavy face stack is created.
+        val service = faceIndexingService
+
         for (image in images) {
             try {
                 val bitmap = decodeImage(Uri.parse(image.uri))
@@ -71,50 +68,32 @@ class FaceIndexCoordinator(
                     failed++
                 } else {
                     // Re-running face indexing must not create duplicate face rows.
-                    faceIndexingService.removeImageIndex(image.id)
-                    val result = faceIndexingService.indexImage(image.id, bitmap)
+                    service.removeImageIndex(image.id)
+                    val result = service.indexImage(image.id, bitmap)
                     detected += result.detectedFaces
                     indexed += result.indexedFaces
-                    bitmap.recycle()
+                    if (!bitmap.isRecycled) bitmap.recycle()
                 }
             } catch (_: Throwable) {
                 failed++
             }
 
             processed++
-            onProgress(
-                Progress(
-                    processed = processed,
-                    total = images.size,
-                    detectedFaces = detected,
-                    indexedFaces = indexed,
-                    failedImages = failed
-                )
-            )
+            onProgress(Progress(processed, images.size, detected, indexed, failed))
         }
 
-        Progress(
-            processed = processed,
-            total = images.size,
-            detectedFaces = detected,
-            indexedFaces = indexed,
-            failedImages = failed
-        )
+        Progress(processed, images.size, detected, indexed, failed)
     }
 
     suspend fun buildPersonClusters(
         similarityThreshold: Float = DEFAULT_CLUSTER_THRESHOLD
-    ): PersonClusteringEngine.ClusterResult {
-        return clusteringEngine.buildClusters(similarityThreshold)
+    ): PersonClusteringEngine.ClusterResult = withContext(Dispatchers.IO) {
+        clusteringEngine.buildClusters(similarityThreshold)
     }
 
-    suspend fun faceCount(): Long = withContext(Dispatchers.IO) {
-        faceDao.count()
-    }
+    suspend fun faceCount(): Long = withContext(Dispatchers.IO) { faceDao.count() }
 
-    suspend fun embeddingCount(): Long = withContext(Dispatchers.IO) {
-        faceDao.countWithEmbeddings()
-    }
+    suspend fun embeddingCount(): Long = withContext(Dispatchers.IO) { faceDao.countWithEmbeddings() }
 
     private fun decodeImage(uri: Uri): Bitmap? {
         return context.contentResolver.openInputStream(uri)?.use { input ->
@@ -123,8 +102,13 @@ class FaceIndexCoordinator(
     }
 
     override fun close() {
-        analysisService.close()
+        if (analysisServiceInitialized()) {
+            try { analysisService.close() } catch (_: Throwable) { }
+        }
     }
+
+    private fun analysisServiceInitialized(): Boolean =
+        (analysisService as Lazy<*>?) != null
 
     companion object {
         private const val FACE_MODEL_FILE = "models/face/mobilefacenet.tflite"
