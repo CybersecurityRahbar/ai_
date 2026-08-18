@@ -31,9 +31,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-     aaptOptions {
-        noCompress("tflite")
 
+    androidResources {
+        noCompress += "tflite"
     }
 }
 
