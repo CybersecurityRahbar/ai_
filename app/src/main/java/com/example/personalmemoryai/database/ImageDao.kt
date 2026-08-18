@@ -17,6 +17,9 @@ interface ImageDao {
     @Query("SELECT * FROM images WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): ImageEntity?
 
+    @Query("SELECT * FROM images WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<Long>): List<ImageEntity>
+
     @Query("""
         SELECT * FROM images
         WHERE ocrText LIKE '%' || :query || '%'
