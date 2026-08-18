@@ -27,17 +27,15 @@ class FaceIndexCoordinator(
     private val embeddingDao = database.embeddingDao()
     private val personDao = database.personDao()
 
-    private val faceAnalyzer: MediaPipeFaceAnalyzer by lazy { MediaPipeFaceAnalyzer(context) }
-    private val embeddingModel: TFLiteFaceEmbeddingModel by lazy {
-        TFLiteFaceEmbeddingModel(context, FACE_MODEL_FILE)
+    private val faceAnalyzerLazy = lazy { MediaPipeFaceAnalyzer(context) }
+    private val embeddingModelLazy = lazy { TFLiteFaceEmbeddingModel(context, FACE_MODEL_FILE) }
+    private val analysisServiceLazy = lazy {
+        FaceAnalysisService(faceAnalyzerLazy.value, embeddingModelLazy.value)
     }
-    private val analysisService: FaceAnalysisService by lazy {
-        FaceAnalysisService(faceAnalyzer, embeddingModel)
+    private val faceIndexingServiceLazy = lazy {
+        FaceIndexingService(faceDao, embeddingDao, analysisServiceLazy.value)
     }
-    private val faceIndexingService: FaceIndexingService by lazy {
-        FaceIndexingService(faceDao, embeddingDao, analysisService)
-    }
-    private val clusteringEngine: PersonClusteringEngine by lazy {
+    private val clusteringEngineLazy = lazy {
         PersonClusteringEngine(faceDao, personDao, embeddingDao)
     }
 
@@ -59,7 +57,7 @@ class FaceIndexCoordinator(
         var failed = 0
 
         // Explicit request only: this is where the heavy face stack is created.
-        val service = faceIndexingService
+        val service = faceIndexingServiceLazy.value
 
         for (image in images) {
             try {
@@ -67,7 +65,6 @@ class FaceIndexCoordinator(
                 if (bitmap == null) {
                     failed++
                 } else {
-                    // Re-running face indexing must not create duplicate face rows.
                     service.removeImageIndex(image.id)
                     val result = service.indexImage(image.id, bitmap)
                     detected += result.detectedFaces
@@ -88,7 +85,7 @@ class FaceIndexCoordinator(
     suspend fun buildPersonClusters(
         similarityThreshold: Float = DEFAULT_CLUSTER_THRESHOLD
     ): PersonClusteringEngine.ClusterResult = withContext(Dispatchers.IO) {
-        clusteringEngine.buildClusters(similarityThreshold)
+        clusteringEngineLazy.value.buildClusters(similarityThreshold)
     }
 
     suspend fun faceCount(): Long = withContext(Dispatchers.IO) { faceDao.count() }
@@ -102,13 +99,10 @@ class FaceIndexCoordinator(
     }
 
     override fun close() {
-        if (analysisServiceInitialized()) {
-            try { analysisService.close() } catch (_: Throwable) { }
+        if (analysisServiceLazy.isInitialized()) {
+            try { analysisServiceLazy.value.close() } catch (_: Throwable) { }
         }
     }
-
-    private fun analysisServiceInitialized(): Boolean =
-        (analysisService as Lazy<*>?) != null
 
     companion object {
         private const val FACE_MODEL_FILE = "models/face/mobilefacenet.tflite"
