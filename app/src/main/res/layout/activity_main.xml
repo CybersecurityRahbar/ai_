@@ -47,7 +47,7 @@
         android:id="@+id/searchEditText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="ابحث بالعربية أو الإنجليزية أو الأرقام..."
+        android:hint="بحث OCR بالعربية أو الإنجليزية أو الأرقام..."
         android:inputType="text"
         android:textDirection="locale" />
 
@@ -55,7 +55,13 @@
         android:id="@+id/searchButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="بحث" />
+        android:text="بحث بالنص المستخرج" />
+
+    <Button
+        android:id="@+id/semanticSearchButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="بحث دلالي بصورة مشابهة" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/resultsRecyclerView"
