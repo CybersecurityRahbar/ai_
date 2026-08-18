@@ -2,6 +2,7 @@ package com.example.personalmemoryai
 
 import android.net.Uri
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -73,6 +74,7 @@ class MainActivity : AppCompatActivity() {
         binding.importModelButton.setOnClickListener {
             modelPicker.launch(arrayOf("application/octet-stream", "application/tflite", "*/*"))
         }
+        binding.buildVisualIndexButton.setOnClickListener { buildVisualIndex() }
         binding.searchButton.setOnClickListener { performSearch(binding.searchEditText.text.toString()) }
         binding.semanticSearchButton.setOnClickListener { semanticImagePicker.launch("image/*") }
 
@@ -89,7 +91,7 @@ class MainActivity : AppCompatActivity() {
     private fun importMobileClipModel(uri: Uri) {
         lifecycleScope.launch {
             try {
-                binding.progressBar.visibility = android.view.View.VISIBLE
+                setBusy(true)
                 binding.progressBar.max = 100
                 binding.progressBar.progress = 0
                 binding.modelStatusText.text = "استيراد MobileCLIP-S2 FP16..."
@@ -106,11 +108,11 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
-                binding.modelStatusText.text = "● MobileCLIP-S2 جاهز • محفوظ محليًا"
-                binding.statusText.text = "تم استيراد النموذج بنجاح. لن يحتاج التطبيق إلى تنزيله من الإنترنت."
-                binding.progressBar.visibility = android.view.View.GONE
+                setBusy(false)
+                updateModelStatus()
+                binding.statusText.text = "تم استيراد MobileCLIP-S2. اضغط BUILD VISUAL INDEX لإنشاء البصمات البصرية الدائمة."
             } catch (e: Exception) {
-                binding.progressBar.visibility = android.view.View.GONE
+                setBusy(false)
                 binding.modelStatusText.text = "○ نموذج MobileCLIP غير متوفر"
                 showStatus("فشل استيراد النموذج: ${e.message}")
                 Toast.makeText(this@MainActivity, "فشل استيراد النموذج", Toast.LENGTH_LONG).show()
@@ -119,18 +121,62 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateModelStatus() {
-        val installed = semanticSearchService.isModelInstalled()
-        binding.modelStatusText.text = if (installed) {
-            val mb = semanticSearchService.modelSizeBytes() / (1024 * 1024)
-            "● MobileCLIP-S2 جاهز • ${mb} MB • تخزين محلي"
-        } else {
-            "○ MobileCLIP-S2 غير مستورد • اختر ملف .tflite"
+        lifecycleScope.launch {
+            val installed = semanticSearchService.isModelInstalled()
+            val embeddings = withContext(Dispatchers.IO) {
+                semanticSearchService.imageEmbeddingCount()
+            }
+            binding.modelStatusText.text = if (installed) {
+                val mb = semanticSearchService.modelSizeBytes() / (1024 * 1024)
+                "● MobileCLIP-S2 جاهز • ${mb} MB • بصمات الصور: $embeddings"
+            } else {
+                "○ MobileCLIP-S2 غير مستورد • اختر ملف .tflite"
+            }
+        }
+    }
+
+    private fun buildVisualIndex() {
+        lifecycleScope.launch {
+            if (!semanticSearchService.isModelInstalled()) {
+                showStatus("استورد model.float16.tflite / MobileCLIP-S2 أولًا.")
+                return@launch
+            }
+
+            val total = withContext(Dispatchers.IO) { database.imageDao().count() }
+            if (total == 0) {
+                showStatus("الفهرس فارغ. افهرس الصور أولًا.")
+                return@launch
+            }
+
+            setBusy(true)
+            binding.progressBar.max = total
+            binding.progressBar.progress = 0
+            binding.statusText.text = "تهيئة MobileCLIP-S2 وبناء الفهرس البصري..."
+
+            try {
+                semanticSearchService.indexAllImages { processed, count, embedded, skipped ->
+                    runOnUiThread {
+                        binding.progressBar.progress = processed
+                        val rateText = if (processed > 0) " • $processed/$count" else ""
+                        binding.counterText.text = "VISUAL INDEX$rateText"
+                        binding.statusText.text = "بناء الفهرس البصري: $processed / $count\nجديد: $embedded • موجود مسبقًا: $skipped"
+                    }
+                }
+                val finalCount = semanticSearchService.imageEmbeddingCount()
+                binding.modelStatusText.text = "● MobileCLIP-S2 جاهز • بصمات الصور: $finalCount"
+                binding.statusText.text = "اكتمل الفهرس البصري. البحث بالصورة أصبح يعتمد على embeddings محفوظة بدل إعادة تحليل كل الصور."
+            } catch (e: Exception) {
+                showStatus("فشل بناء الفهرس البصري: ${e.message}")
+                Toast.makeText(this@MainActivity, "فشل بناء الفهرس البصري", Toast.LENGTH_LONG).show()
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
     private fun indexImages(uris: List<Uri>) {
         lifecycleScope.launch {
-            binding.progressBar.visibility = android.view.View.VISIBLE
+            setBusy(true)
             binding.progressBar.max = uris.size
             binding.progressBar.progress = 0
             var completed = 0
@@ -153,9 +199,12 @@ class MainActivity : AppCompatActivity() {
                 binding.statusText.text = "تحليل الصورة $processed من ${uris.size}\nOCR + كائنات + بيانات الصورة"
             }
 
-            binding.progressBar.visibility = android.view.View.GONE
+            setBusy(false)
             loadAllImages()
             binding.statusText.text = "اكتملت الفهرسة • تمت معالجة ${uris.size} صورة • نجح $completed • فشل $failed"
+            if (semanticSearchService.isModelInstalled()) {
+                binding.statusText.append("\nاضغط BUILD VISUAL INDEX لإضافة embeddings للصور الجديدة.")
+            }
         }
     }
 
@@ -197,7 +246,7 @@ class MainActivity : AppCompatActivity() {
                 binding.statusText.text = if (results.isEmpty()) {
                     "لم توجد مطابقة للكلمات أو الكائنات: $normalized"
                 } else {
-                    "${results.size} نتيجة • المطابقة الحالية تعتمد على OCR + كائنات YOLO.\nText Encoder مؤجل كما هو مخطط."
+                    "${results.size} نتيجة • OCR + YOLO object labels.\nText Encoder مؤجل كما هو مخطط."
                 }
             } catch (e: Exception) {
                 showStatus("حدث خطأ أثناء البحث: ${e.message}")
@@ -212,20 +261,24 @@ class MainActivity : AppCompatActivity() {
                     showStatus("استورد نموذج MobileCLIP-S2 أولًا من بطاقة النماذج.")
                     return@launch
                 }
-                binding.progressBar.visibility = android.view.View.VISIBLE
+                val embeddings = withContext(Dispatchers.IO) { semanticSearchService.imageEmbeddingCount() }
+                if (embeddings == 0L) {
+                    showStatus("لا توجد بصمات بصرية. اضغط BUILD VISUAL INDEX أولًا.")
+                    return@launch
+                }
+                setBusy(true)
                 binding.statusText.text = "جاري تشغيل البحث البصري المحلي..."
                 val results = withContext(Dispatchers.IO) {
-                    semanticSearchService.ensureModel()
                     semanticSearchService.searchSimilarImages(queryUri, limit = 30)
                 }
                 adapter.submitList(results.map { it.image })
                 binding.counterText.text = "النتائج الدلالية: ${results.size}"
-                binding.statusText.text = "تم ترتيب ${results.size} صورة حسب التشابه البصري."
+                binding.statusText.text = "تم ترتيب ${results.size} صورة حسب التشابه البصري من embeddings المخزنة."
             } catch (e: Exception) {
                 showStatus("تعذر البحث الدلالي: ${e.message}")
                 Toast.makeText(this@MainActivity, "تعذر تشغيل MobileCLIP-S2", Toast.LENGTH_LONG).show()
             } finally {
-                binding.progressBar.visibility = android.view.View.GONE
+                setBusy(false)
             }
         }
     }
@@ -236,6 +289,15 @@ class MainActivity : AppCompatActivity() {
             adapter.submitList(images)
             binding.counterText.text = "الفهرس: ${images.size} صورة"
         }
+    }
+
+    private fun setBusy(busy: Boolean) {
+        binding.progressBar.visibility = if (busy) View.VISIBLE else View.GONE
+        binding.selectButton.isEnabled = !busy
+        binding.importModelButton.isEnabled = !busy
+        binding.buildVisualIndexButton.isEnabled = !busy
+        binding.searchButton.isEnabled = !busy
+        binding.semanticSearchButton.isEnabled = !busy
     }
 
     private fun showStatus(text: String) { binding.statusText.text = text }
