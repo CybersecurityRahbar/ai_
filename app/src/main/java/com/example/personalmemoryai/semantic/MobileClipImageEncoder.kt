@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -50,6 +51,14 @@ class MobileClipImageEncoder(
                 Interpreter.Options().apply { setNumThreads(4) }
             )
         }
+
+        val loaded = interpreter ?: return false
+        require(loaded.inputTensorCount >= 1 && loaded.outputTensorCount >= 1) {
+            "MobileCLIP-S2 model has no usable input/output tensors"
+        }
+        require(loaded.getInputTensor(0).dataType() == DataType.FLOAT32) {
+            "MobileCLIP-S2 input tensor must accept FLOAT32"
+        }
         return true
     }
 
@@ -75,7 +84,9 @@ class MobileClipImageEncoder(
         val channelsLast = inputShape[3] == 3
         val height = if (channelsLast) inputShape[1] else inputShape[2]
         val width = if (channelsLast) inputShape[2] else inputShape[3]
-        require(inputShape[0] == 1) { "Only batch size 1 is supported" }
+        require(inputShape[0] == 1 && height > 0 && width > 0) {
+            "Unexpected MobileCLIP input shape: ${inputShape.contentToString()}"
+        }
 
         val resized = Bitmap.createScaledBitmap(bitmap, width, height, true)
         val pixels = IntArray(width * height)
@@ -83,8 +94,9 @@ class MobileClipImageEncoder(
         resized.recycle()
 
         val input = FloatArray(width * height * 3)
-        // MobileCLIP-S2 uses the v1/S2 preprocessing: RGB converted to [0,1]
-        // without ImageNet/CLIP mean-std normalization.
+        // The validated project model expects FLOAT32 image input in [0, 1].
+        // The exact model preprocessing remains isolated here so a future
+        // compatible MobileCLIP export can change it without touching the DB.
         if (channelsLast) {
             var p = 0
             for (pixel in pixels) {
@@ -110,11 +122,16 @@ class MobileClipImageEncoder(
         inputBuffer.rewind()
 
         val outputTensor = tflite.getOutputTensor(0)
+        require(outputTensor.dataType() == DataType.FLOAT32) {
+            "MobileCLIP-S2 output tensor must be FLOAT32"
+        }
         val outputElements = outputTensor.shape().fold(1) { a, b -> a * b }
-        val output = Array(1) { FloatArray(outputElements) }
-        tflite.run(inputBuffer, output)
+        require(outputElements > 0) { "MobileCLIP-S2 output tensor is empty" }
 
-        val embedding = output[0]
+        // A flat array is accepted for any output tensor whose total element
+        // count matches, including the common [1, embeddingDimension] shape.
+        val embedding = FloatArray(outputElements)
+        tflite.run(inputBuffer, embedding)
         normalizeInPlace(embedding)
         return embedding
     }
