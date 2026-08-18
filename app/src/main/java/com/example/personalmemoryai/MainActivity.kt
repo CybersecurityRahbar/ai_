@@ -10,6 +10,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
+import com.example.personalmemoryai.indexing.FaceIndexCoordinator
 import com.example.personalmemoryai.indexing.ImageIndexer
 import com.example.personalmemoryai.semantic.SemanticSearchService
 import com.example.personalmemoryai.ui.ImageResultAdapter
@@ -26,6 +27,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var database: AppDatabase
     private lateinit var adapter: ImageResultAdapter
     private lateinit var semanticSearchService: SemanticSearchService
+    private lateinit var faceIndexCoordinator: FaceIndexCoordinator
     private var indexer: ImageIndexer? = null
 
     private val imagePicker = registerForActivityResult(
@@ -68,6 +70,7 @@ class MainActivity : AppCompatActivity() {
         database = AppDatabase.getInstance(applicationContext)
         indexer = ImageIndexer(applicationContext)
         semanticSearchService = SemanticSearchService(applicationContext)
+        faceIndexCoordinator = FaceIndexCoordinator(applicationContext)
 
         setupRecyclerView()
         binding.selectButton.setOnClickListener { imagePicker.launch("image/*") }
@@ -75,10 +78,12 @@ class MainActivity : AppCompatActivity() {
             modelPicker.launch(arrayOf("application/octet-stream", "application/tflite", "*/*"))
         }
         binding.buildVisualIndexButton.setOnClickListener { buildVisualIndex() }
+        binding.buildFaceIndexButton.setOnClickListener { buildFaceIndex() }
         binding.searchButton.setOnClickListener { performSearch(binding.searchEditText.text.toString()) }
         binding.semanticSearchButton.setOnClickListener { semanticImagePicker.launch("image/*") }
 
         updateModelStatus()
+        updateFaceStatus()
         loadAllImages()
     }
 
@@ -135,6 +140,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateFaceStatus() {
+        lifecycleScope.launch {
+            val faces = withContext(Dispatchers.IO) { faceIndexCoordinator.faceCount() }
+            val embeddings = withContext(Dispatchers.IO) { faceIndexCoordinator.embeddingCount() }
+            binding.faceStatusText.text = "FACE INDEX • ${faces} وجه • ${embeddings} بصمة"
+        }
+    }
+
     private fun buildVisualIndex() {
         lifecycleScope.launch {
             if (!semanticSearchService.isModelInstalled()) {
@@ -168,6 +181,48 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 showStatus("فشل بناء الفهرس البصري: ${e.message}")
                 Toast.makeText(this@MainActivity, "فشل بناء الفهرس البصري", Toast.LENGTH_LONG).show()
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun buildFaceIndex() {
+        lifecycleScope.launch {
+            val total = withContext(Dispatchers.IO) { database.imageDao().count() }
+            if (total == 0L) {
+                showStatus("الفهرس فارغ. افهرس الصور أولًا.")
+                return@launch
+            }
+
+            setBusy(true)
+            binding.progressBar.max = total.toInt().coerceAtLeast(1)
+            binding.progressBar.progress = 0
+            binding.statusText.text = "FACE INTELLIGENCE • MediaPipe + MobileFaceNet..."
+
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    faceIndexCoordinator.indexAllImages { progress ->
+                        runOnUiThread {
+                            binding.progressBar.progress = progress.processed
+                            binding.counterText.text = "FACE INDEX • ${progress.processed}/${progress.total}"
+                            binding.statusText.text = "تحليل الوجوه: ${progress.processed}/${progress.total}\n" +
+                                "مكتشف: ${progress.detectedFaces} • بصمات: ${progress.indexedFaces} • فشل: ${progress.failedImages}"
+                        }
+                    }
+                }
+
+                val clusters = withContext(Dispatchers.IO) {
+                    faceIndexCoordinator.buildPersonClusters()
+                }
+
+                updateFaceStatus()
+                binding.statusText.text = "اكتمل تحليل الوجوه.\n" +
+                    "الوجوه: ${result.detectedFaces} • البصمات: ${result.indexedFaces}\n" +
+                    "المجموعات الجديدة: ${clusters.createdClusters} • الوجوه المرتبطة: ${clusters.assignedFaces}"
+            } catch (e: Exception) {
+                showStatus("فشل فهرسة الوجوه: ${e.message}")
+                Toast.makeText(this@MainActivity, "فشل نظام الوجوه", Toast.LENGTH_LONG).show()
             } finally {
                 setBusy(false)
             }
@@ -296,6 +351,7 @@ class MainActivity : AppCompatActivity() {
         binding.selectButton.isEnabled = !busy
         binding.importModelButton.isEnabled = !busy
         binding.buildVisualIndexButton.isEnabled = !busy
+        binding.buildFaceIndexButton.isEnabled = !busy
         binding.searchButton.isEnabled = !busy
         binding.semanticSearchButton.isEnabled = !busy
     }
@@ -304,6 +360,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         semanticSearchService.close()
+        faceIndexCoordinator.close()
         indexer?.close()
         super.onDestroy()
     }
