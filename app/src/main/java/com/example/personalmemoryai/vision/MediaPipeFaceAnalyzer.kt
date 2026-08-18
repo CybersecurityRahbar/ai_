@@ -93,9 +93,10 @@ class MediaPipeFaceAnalyzer(context: Context) : AutoCloseable {
     }
 
     /**
-     * MediaPipe Tasks exposes face blendshapes as java.util.Optional.
-     * The previous implementation treated Optional as a Kotlin List,
-     * causing the compilation errors on .size and indexed get().
+     * MediaPipe Tasks exposes face blendshapes through java.util.Optional.
+     * Use Optional.orElse() instead of indexed Optional.get(...) access so
+     * this remains compatible with the MediaPipe Tasks Java API used by the
+     * project and cannot be interpreted as get(index) by Kotlin.
      */
     private fun extractBlendshapes(
         result: FaceLandmarkerResult,
@@ -105,12 +106,12 @@ class MediaPipeFaceAnalyzer(context: Context) : AutoCloseable {
         if (!optionalBlendshapes.isPresent) return emptyList()
 
         return try {
-            val allBlendshapes = optionalBlendshapes.get()
+            val allBlendshapes = optionalBlendshapes.orElse(emptyList())
             if (faceIndex < 0 || faceIndex >= allBlendshapes.size) {
                 return emptyList()
             }
 
-            allBlendshapes[faceIndex].mapNotNull { category ->
+            allBlendshapes.get(faceIndex).mapNotNull { category ->
                 val name = category.categoryName()
                 val score = category.score()
 
@@ -136,9 +137,7 @@ class MediaPipeFaceAnalyzer(context: Context) : AutoCloseable {
     private fun extractRotation(
         result: FaceLandmarkerResult,
         faceIndex: Int
-    ): Triple<Float, Float, Float>? {
-        return null
-    }
+    ): Triple<Float, Float, Float>? = null
 
     private fun calculateBoundingBox(
         points: List<FaceLandmarkResult.Point>,
