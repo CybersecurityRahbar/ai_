@@ -3,9 +3,11 @@ package com.example.personalmemoryai.semantic
 import android.content.Context
 import android.net.Uri
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.tensorflow.lite.Interpreter
 
 /**
  * Owns the optional on-device MobileCLIP-S2 FP16 model.
@@ -61,6 +63,8 @@ class MobileClipModelManager(private val context: Context) {
                     throw IllegalStateException("ملف MobileCLIP-S2 غير مكتمل أو ليس النموذج الصحيح")
                 }
 
+                validateTflite(temp)
+
                 if (modelFile.exists()) modelFile.delete()
                 if (!temp.renameTo(modelFile)) {
                     temp.copyTo(modelFile, overwrite = true)
@@ -71,6 +75,42 @@ class MobileClipModelManager(private val context: Context) {
                 if (temp.exists()) temp.delete()
             }
         }
+
+    /**
+     * Performs a lightweight structural validation before the model becomes
+     * the active persistent model. This catches corrupt files and unrelated
+     * TFLite models instead of letting them fail later during indexing.
+     */
+    private fun validateTflite(file: File) {
+        try {
+            FileInputStream(file).channel.use { channel ->
+                val mapped = channel.map(
+                    java.nio.channels.FileChannel.MapMode.READ_ONLY,
+                    0,
+                    channel.size()
+                )
+                Interpreter(mapped).use { interpreter ->
+                    require(interpreter.inputTensorCount >= 1) {
+                        "MobileCLIP-S2 لا يحتوي على مدخل صالح"
+                    }
+                    require(interpreter.outputTensorCount >= 1) {
+                        "MobileCLIP-S2 لا يحتوي على مخرج صالح"
+                    }
+
+                    val input = interpreter.getInputTensor(0)
+                    val shape = input.shape()
+                    require(shape.size == 4 && shape[0] == 1) {
+                        "بنية إدخال MobileCLIP-S2 غير متوقعة: ${shape.contentToString()}"
+                    }
+                    require(input.dataType() == org.tensorflow.lite.DataType.FLOAT32) {
+                        "نوع إدخال MobileCLIP-S2 غير مدعوم: ${input.dataType()}"
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            throw IllegalStateException("ملف MobileCLIP-S2 غير صالح أو غير متوافق مع محرك التطبيق", e)
+        }
+    }
 
     fun deleteModel() {
         if (modelFile.exists()) modelFile.delete()
