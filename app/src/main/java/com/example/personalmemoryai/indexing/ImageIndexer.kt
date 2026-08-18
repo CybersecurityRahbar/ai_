@@ -24,6 +24,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
 
     suspend fun indexImage(uri: Uri): ImageEntity? {
         return try {
+            val sourceUri = uri.toString()
             val resolver = context.contentResolver
             val projection = arrayOf(
                 MediaStore.Images.Media.DISPLAY_NAME,
@@ -55,19 +56,18 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
                 }
             }
 
-            val existing = dao.findByUri(uri.toString())
+            val existing = dao.findBySourceUri(sourceUri) ?: dao.findByUri(sourceUri)
             if (existing != null) return existing
 
             val ocr = ocrEngine.process(uri)
             val objects = runObjectDetection(uri)
-
             val managedFile = imageStore.importImage(uri, fileName)
-            val managedUri = managedFile?.let { Uri.fromFile(it).toString() } ?: uri.toString()
+            val managedUri = managedFile?.let { Uri.fromFile(it).toString() } ?: sourceUri
 
             val entity = ImageEntity(
                 uri = managedUri,
                 fileName = fileName,
-                filePath = uri.toString(),
+                filePath = sourceUri,
                 dateTaken = dateTaken,
                 dateModified = dateModified,
                 fileSize = fileSize,
