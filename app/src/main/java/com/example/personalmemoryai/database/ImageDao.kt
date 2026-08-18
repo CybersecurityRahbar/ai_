@@ -14,6 +14,9 @@ interface ImageDao {
     @Query("SELECT * FROM images ORDER BY dateTaken DESC")
     suspend fun getAll(): List<ImageEntity>
 
+    @Query("SELECT * FROM images WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): ImageEntity?
+
     @Query("""
         SELECT * FROM images
         WHERE ocrText LIKE '%' || :query || '%'
