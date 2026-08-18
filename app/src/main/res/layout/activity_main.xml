@@ -40,6 +40,7 @@
         <TextView android:id="@+id/modelStatusText" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="○ MobileCLIP-S2 غير مستورد" android:textColor="#E7F2FF" android:textSize="13sp" android:paddingTop="6dp" />
         <Button android:id="@+id/importModelButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="IMPORT LOCAL TFLITE MODEL" android:textColor="#FFFFFF" android:background="@drawable/bg_primary_button" />
         <Button android:id="@+id/buildVisualIndexButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="BUILD / UPDATE VISUAL INDEX" android:textColor="#FFFFFF" android:background="@drawable/bg_primary_button" />
+        <Button android:id="@+id/dataCenterButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="DATA CENTER • BACKUP / RESTORE / MODELS" android:textColor="#FFFFFF" android:background="@drawable/bg_primary_button" />
     </LinearLayout>
 
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:orientation="vertical" android:background="@drawable/bg_panel" android:padding="10dp">
