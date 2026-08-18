@@ -22,7 +22,7 @@ import kotlinx.coroutines.withContext
 class IntelligenceHomeActivity : AppCompatActivity() {
     private val bg = Color.rgb(8, 15, 23)
     private val panel = Color.rgb(15, 27, 39)
-    private val text = Color.rgb(235, 246, 255)
+    private val textColor = Color.rgb(235, 246, 255)
     private val muted = Color.rgb(103, 139, 164)
     private val accent = Color.rgb(31, 91, 132)
 
@@ -78,7 +78,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         setPadding(16,16,16,16)
         setBackgroundColor(Color.rgb(16,29,42))
         addView(TextView(this@IntelligenceHomeActivity).apply { text = "FACE INTELLIGENCE SYSTEM"; textSize = 11f; setTextColor(Color.rgb(143,211,255)); setTypeface(null, Typeface.BOLD) })
-        addView(TextView(this@IntelligenceHomeActivity).apply { text = "نظام الاستخبارات المحلي للتعرف على الوجوه"; textSize = 24f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0,4,0,3) })
+        addView(TextView(this@IntelligenceHomeActivity).apply { text = "نظام الاستخبارات المحلي للتعرف على الوجوه"; textSize = 24f; setTextColor(textColor); setTypeface(null, Typeface.BOLD); setPadding(0,4,0,3) })
         addView(TextView(this@IntelligenceHomeActivity).apply { text = "IDENTITY ANALYSIS • VISUAL EVIDENCE • LOCAL SEARCH"; textSize = 9f; setTextColor(muted) })
         addView(TextView(this@IntelligenceHomeActivity).apply { text = "● OFFLINE / LOCAL CORE"; textSize = 10f; setTextColor(Color.rgb(73,210,166)); setTypeface(null, Typeface.BOLD); setPadding(0,12,0,0) })
     }
@@ -88,11 +88,11 @@ class IntelligenceHomeActivity : AppCompatActivity() {
     private fun metric(label: String, value: String) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(11,10,11,10); setBackgroundColor(panel)
         addView(TextView(this@IntelligenceHomeActivity).apply { text = label; textSize = 9f; setTextColor(muted) })
-        addView(TextView(this@IntelligenceHomeActivity).apply { text = value; textSize = 22f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0,4,0,0) })
+        addView(TextView(this@IntelligenceHomeActivity).apply { text = value; textSize = 22f; setTextColor(textColor); setTypeface(null, Typeface.BOLD); setPadding(0,4,0,0) })
     }
 
     private fun action(title: String, subtitle: String, click: () -> Unit) = Button(this).apply {
-        text = "$title\n$subtitle"; textSize = 11f; gravity = Gravity.START or Gravity.CENTER_VERTICAL; setTextColor(text); setBackgroundColor(accent); setAllCaps(false); setPadding(16,10,16,10); setOnClickListener { click() }
+        text = "$title\n$subtitle"; textSize = 11f; gravity = Gravity.START or Gravity.CENTER_VERTICAL; setTextColor(textColor); setBackgroundColor(accent); setAllCaps(false); setPadding(16,10,16,10); setOnClickListener { click() }
         layoutParams = LinearLayout.LayoutParams(-1, 62).apply { setMargins(0,0,0,7) }
     }
 }
