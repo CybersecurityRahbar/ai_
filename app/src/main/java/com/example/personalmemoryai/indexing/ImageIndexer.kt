@@ -5,8 +5,13 @@ import android.net.Uri
 import android.provider.MediaStore
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
-import com.example.personalmemoryai.semantic.SemanticSearchService
 
+/**
+ * CPU/ML image indexing pipeline. Semantic MobileCLIP indexing is intentionally
+ * decoupled from this per-image path: the large model must never be loaded or
+ * initialized once for every image. Semantic embedding can be run separately
+ * after the model has been imported and is available.
+ */
 class ImageIndexer(
     private val context: Context
 ) : AutoCloseable {
@@ -15,7 +20,6 @@ class ImageIndexer(
     private val dao = database.imageDao()
     private val ocrEngine = OcrEngine(context)
     private val objectDetector = YoloObjectDetector(context)
-    private val semanticSearchService = SemanticSearchService(context)
 
     suspend fun indexImage(uri: Uri): ImageEntity? {
         return try {
@@ -40,7 +44,6 @@ class ImageIndexer(
 
             resolver.query(uri, projection, null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
-                    fun index(name: String): Int = cursor.getColumnIndex(name)
                     cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME).takeIf { it >= 0 }?.let {
                         fileName = cursor.getString(it) ?: "Unknown"
                     }
@@ -66,21 +69,7 @@ class ImageIndexer(
             }
 
             val existing = dao.findByUri(uri.toString())
-            if (existing != null) {
-                // Re-running indexing also upgrades older records with object metadata.
-                val objects = runObjectDetection(uri)
-                val objectText = serializeObjects(objects)
-                if (objectText != existing.detectedObjects) {
-                    dao.updateDetectedObjects(existing.id, objectText)
-                }
-                try {
-                    semanticSearchService.ensureModel()
-                    semanticSearchService.indexImageAndStore(existing)
-                } catch (semanticError: Throwable) {
-                    semanticError.printStackTrace()
-                }
-                return dao.getById(existing.id)
-            }
+            if (existing != null) return existing
 
             val ocr = ocrEngine.process(uri)
             val objects = runObjectDetection(uri)
@@ -101,51 +90,33 @@ class ImageIndexer(
             )
 
             val id = dao.insert(entity)
-            val saved = entity.copy(id = id)
-
-            // Semantic indexing is best-effort. OCR + object indexing remains usable
-            // when the large MobileCLIP model cannot be downloaded.
-            try {
-                semanticSearchService.ensureModel()
-                semanticSearchService.indexImageAndStore(saved)
-            } catch (semanticError: Throwable) {
-                semanticError.printStackTrace()
-            }
-
-            saved
+            entity.copy(id = id)
         } catch (t: Throwable) {
             t.printStackTrace()
             null
         }
     }
 
-    private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> {
-        return try {
-            objectDetector.detect(uri)
-        } catch (t: Throwable) {
-            t.printStackTrace()
-            emptyList()
-        }
+    private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> = try {
+        objectDetector.detect(uri)
+    } catch (t: Throwable) {
+        t.printStackTrace()
+        emptyList()
     }
 
-    private fun serializeObjects(objects: List<ObjectDetectionResult>): String {
-        return objects
-            .groupBy { it.classId }
-            .values
-            .joinToString("; ") { detections ->
-                val best = detections.maxByOrNull { it.confidence } ?: return@joinToString ""
-                val aliases = best.arabicLabel
-                if (aliases.isBlank()) {
-                    "${best.label}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
-                } else {
-                    "${best.label}|$aliases:${"%.3f".format(java.util.Locale.US, best.confidence)}"
-                }
+    private fun serializeObjects(objects: List<ObjectDetectionResult>): String =
+        objects.groupBy { it.classId }.values.joinToString("; ") { detections ->
+            val best = detections.maxByOrNull { it.confidence } ?: return@joinToString ""
+            val aliases = best.arabicLabel
+            if (aliases.isBlank()) {
+                "${best.label}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
+            } else {
+                "${best.label}|$aliases:${"%.3f".format(java.util.Locale.US, best.confidence)}"
             }
-    }
+        }
 
     override fun close() {
         ocrEngine.close()
         objectDetector.close()
-        semanticSearchService.close()
     }
 }
