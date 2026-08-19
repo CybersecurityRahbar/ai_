@@ -12,7 +12,6 @@ import com.example.personalmemoryai.vision.TFLiteFaceEmbeddingModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Runs the complete face indexing phase with observable failure accounting. */
 class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
     private val database = AppDatabase.getInstance(context)
     private val faceDao = database.faceDao()
@@ -35,10 +34,7 @@ class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
         var detected = 0
         var indexed = 0
         var failed = 0
-        val service = try { faceIndexingServiceLazy.value } catch (t: Throwable) {
-            run.failure("MODEL_INIT", t)
-            throw t
-        }
+        val service = try { faceIndexingServiceLazy.value } catch (t: Throwable) { run.failure("MODEL_INIT", t); throw t }
         for (image in images) {
             try {
                 val bitmap = decodeImage(Uri.parse(image.uri))
@@ -70,7 +66,7 @@ class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
         val run = diagnostics.begin("PERSON_CLUSTERING", mapOf("threshold" to similarityThreshold.toString()))
         try {
             val result = clusteringEngineLazy.value.buildClusters(similarityThreshold)
-            run.success("Person clustering completed", mapOf("clusters" to result.clusterCount.toString()))
+            run.success("Person clustering completed", mapOf("clusters" to result.createdClusters.toString(), "assignedFaces" to result.assignedFaces.toString()))
             result
         } catch (t: Throwable) {
             run.failure("CLUSTERING", t)
@@ -80,15 +76,7 @@ class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
 
     suspend fun faceCount(): Long = withContext(Dispatchers.IO) { faceDao.count() }
     suspend fun embeddingCount(): Long = withContext(Dispatchers.IO) { faceDao.countWithEmbeddings() }
-
     private fun decodeImage(uri: Uri): Bitmap? = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
-
-    override fun close() {
-        if (analysisServiceLazy.isInitialized()) try { analysisServiceLazy.value.close() } catch (_: Throwable) { }
-    }
-
-    companion object {
-        private const val FACE_MODEL_FILE = "models/face/mobilefacenet.tflite"
-        private const val DEFAULT_CLUSTER_THRESHOLD = 0.72f
-    }
+    override fun close() { if (analysisServiceLazy.isInitialized()) try { analysisServiceLazy.value.close() } catch (_: Throwable) { } }
+    companion object { private const val FACE_MODEL_FILE = "models/face/mobilefacenet.tflite"; private const val DEFAULT_CLUSTER_THRESHOLD = 0.72f }
 }
