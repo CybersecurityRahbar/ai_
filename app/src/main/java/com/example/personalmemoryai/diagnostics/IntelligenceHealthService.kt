@@ -6,10 +6,7 @@ import com.example.personalmemoryai.semantic.MobileClipModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Single source of truth for pipeline readiness.
- * It deliberately reports partial states instead of treating an empty index as healthy.
- */
+/** Single source of truth for intelligence pipeline readiness. */
 class IntelligenceHealthService(context: Context) {
     private val appContext = context.applicationContext
 
@@ -28,10 +25,10 @@ class IntelligenceHealthService(context: Context) {
         val errors: Int,
         val warnings: Int
     ) {
-        val visualIndexReady: Boolean get() = modelInstalled && imageEmbeddings > 0
-        val faceIndexReady: Boolean get() = faces > 0 && facesWithEmbedding > 0
-        val faceCoverage: Int get() = if (faces == 0L) 0 else ((facesWithEmbedding * 100L) / faces).toInt().coerceIn(0, 100)
-        val visualCoverage: Int get() = if (images == 0L) 0 else ((imageEmbeddings * 100L) / images).toInt().coerceIn(0, 100)
+        val visualIndexReady get() = modelInstalled && imageEmbeddings > 0
+        val faceIndexReady get() = faces > 0 && facesWithEmbedding > 0
+        val faceCoverage get() = if (faces == 0L) 0 else ((facesWithEmbedding * 100L) / faces).toInt().coerceIn(0, 100)
+        val visualCoverage get() = if (images == 0L) 0 else ((imageEmbeddings * 100L) / images).toInt().coerceIn(0, 100)
         val overall: String
             get() = when {
                 errors > 0 && images == 0L -> "CRITICAL"
@@ -57,7 +54,7 @@ class IntelligenceHealthService(context: Context) {
             faceEmbeddings = db.embeddingDao().countByOwnerType("FACE"),
             totalEmbeddings = db.embeddingDao().count(),
             modelInstalled = model.isInstalled(),
-            modelSizeBytes = model.sizeBytes(),
+            modelSizeBytes = model.installedSizeBytes(),
             diagnosticsEvents = events.size,
             errors = events.count { it.contains("\"severity\":\"ERROR\"") || it.contains("\"severity\":\"CRITICAL\"") },
             warnings = events.count { it.contains("\"severity\":\"WARNING\"") }
