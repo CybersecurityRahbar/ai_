@@ -22,12 +22,7 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
     private val faceNetManager by lazy { FaceNet512ModelManager(context.applicationContext) }
     private val faceNetModel by lazy {
         if (!faceNetManager.isInstalled()) null
-        else FileTFLiteFaceEmbeddingModel(
-            context.applicationContext,
-            faceNetManager.modelFile,
-            FileTFLiteFaceEmbeddingModel.Preprocessing.NEGATIVE_ONE_TO_ONE,
-            FaceNet512ModelManager.EMBEDDING_DIMENSION
-        )
+        else FileTFLiteFaceEmbeddingModel(context.applicationContext, faceNetManager.modelFile, FileTFLiteFaceEmbeddingModel.Preprocessing.NEGATIVE_ONE_TO_ONE, FaceNet512ModelManager.EMBEDDING_DIMENSION)
     }
 
     data class FaceMatch(
@@ -50,8 +45,7 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
         val installed = faceNetManager.isInstalled()
         val run = diagnostics.begin("FACE_SEARCH", mapOf("limit" to limit.toString(), "mobileModel" to "mobilefacenet", "facenet512Installed" to installed.toString()))
         try {
-            val bitmap = context.contentResolver.openInputStream(queryUri)?.use { BitmapFactory.decodeStream(it) }
-                ?: error("تعذر قراءة صورة البحث عن الوجه")
+            val bitmap = context.contentResolver.openInputStream(queryUri)?.use { BitmapFactory.decodeStream(it) } ?: error("تعذر قراءة صورة البحث عن الوجه")
             try {
                 run.stage("DETECT_QUERY", "Detecting query faces and generating all installed identity embeddings")
                 val models = listOf<FaceEmbeddingModel>(mobileModel) + listOfNotNull(faceNetModel)
@@ -62,9 +56,7 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
 
                 val storedFaces = database.faceDao().getMatchableFaces()
                 val allEmbeddings = database.embeddingDao().getAllForFaceSearch()
-                val embeddingsByModelAndFace = allEmbeddings
-                    .groupBy { it.modelName.lowercase() }
-                    .mapValues { (_, values) -> values.groupBy { it.ownerId }.mapValues { (_, list) -> list.maxByOrNull { it.createdAt }!! } }
+                val embeddingsByModelAndFace = allEmbeddings.groupBy { it.modelName.lowercase() }.mapValues { (_, values) -> values.groupBy { it.ownerId }.mapValues { (_, list) -> list.maxByOrNull { it.createdAt }!! } }
                 val shapeEmbeddings = loadShapeEmbeddings()
                 val imageIds = storedFaces.map { it.imageId }.distinct()
                 val images = database.imageDao().getByIds(imageIds).associateBy { it.id }
@@ -83,18 +75,17 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
                     val person = stored.personId?.let { persons[it] }
                     val shape = shapeEmbeddings[stored.id]
                     val storedPose = FacePoseEstimator.Pose(stored.rotationX ?: 0f, stored.rotationY ?: 0f, stored.rotationZ ?: 0f)
-                    val storedModelScores = linkedMapOf<String, Float>()
                     for (query in usableQueries) {
-                        val queryEmbeddings = query.embeddings
-                        for ((modelName, queryModel) in queryEmbeddings) {
+                        val modelScoresRaw = linkedMapOf<String, Float>()
+                        for ((modelName, queryModel) in query.embeddings) {
                             val storedEmbedding = embeddingsByModelAndFace[modelName.lowercase()]?.get(stored.id) ?: continue
                             if (storedEmbedding.vector.size != queryModel.vector.size) continue
-                            storedModelScores[modelName.lowercase()] = FaceSimilarity.cosineSimilarity(queryModel.vector, storedEmbedding.vector).coerceIn(-1f, 1f)
+                            modelScoresRaw[modelName.lowercase()] = FaceSimilarity.cosineSimilarity(queryModel.vector, storedEmbedding.vector).coerceIn(-1f, 1f)
                         }
-                        if (storedModelScores.isEmpty()) continue
+                        if (modelScoresRaw.isEmpty()) continue
 
-                        val mobile = storedModelScores["mobilefacenet"]?.let { ((it + 1f) / 2f).coerceIn(0f, 1f) }
-                        val faceNet = storedModelScores["facenet_512"]?.let { ((it + 1f) / 2f).coerceIn(0f, 1f) }
+                        val mobile = modelScoresRaw["mobilefacenet"]?.let { ((it + 1f) / 2f).coerceIn(0f, 1f) }
+                        val faceNet = modelScoresRaw["facenet_512"]?.let { ((it + 1f) / 2f).coerceIn(0f, 1f) }
                         val identity = when {
                             mobile != null && faceNet != null -> 0.45f * mobile + 0.55f * faceNet
                             faceNet != null -> faceNet
@@ -102,48 +93,33 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
                         }
                         val shapeSimilarity = if (shape != null && query.landmarkShape != null) FaceShapeEncoder.similarity(query.landmarkShape, shape.vector) else 0f
                         val poseSimilarity = FacePoseEstimator.similarity(query.pose, storedPose)
-                        val storedQuality = stored.qualityScore.coerceIn(0f, 1f)
-                        val queryQuality = query.quality.score.coerceIn(0f, 1f)
-                        val jointQuality = sqrt((queryQuality * storedQuality).coerceIn(0f, 1f))
+                        val jointQuality = sqrt((query.quality.score.coerceIn(0f, 1f) * stored.qualityScore.coerceIn(0f, 1f)).coerceIn(0f, 1f))
                         val modelCount = if (mobile != null && faceNet != null) 2f else 1f
-                        val modelAgreement = if (mobile != null && faceNet != null) {
-                            (1f - kotlin.math.abs(mobile - faceNet)).coerceIn(0f, 1f)
-                        } else 0.75f
-                        val signalScore = (
-                            0.72f * identity +
-                            0.15f * shapeSimilarity +
-                            0.08f * poseSimilarity +
-                            0.05f * modelAgreement
-                        ).coerceIn(0f, 1f)
+                        val modelAgreement = if (mobile != null && faceNet != null) (1f - kotlin.math.abs(mobile - faceNet)).coerceIn(0f, 1f) else 0.75f
+                        val signalScore = (0.72f * identity + 0.15f * shapeSimilarity + 0.08f * poseSimilarity + 0.05f * modelAgreement).coerceIn(0f, 1f)
                         val qualityFactor = 0.68f + 0.32f * jointQuality
                         val modelCoverage = if (modelCount == 2f) 1f else 0.93f
                         val composite = (signalScore * qualityFactor * modelCoverage).coerceIn(0f, 1f)
 
                         results += FaceMatch(
-                            image, stored, person,
-                            identity,
-                            faceNet,
-                            shapeSimilarity,
-                            poseSimilarity,
-                            jointQuality,
-                            composite,
-                            band(composite, identity, jointQuality, modelCount),
-                            storedModelScores.mapValues { ((it.value + 1f) / 2f).coerceIn(0f, 1f) }
+                            image = image,
+                            face = stored,
+                            person = person,
+                            identitySimilarity = identity,
+                            faceNet512Similarity = faceNet,
+                            shapeSimilarity = shapeSimilarity,
+                            poseSimilarity = poseSimilarity,
+                            quality = jointQuality,
+                            compositeScore = composite,
+                            confidenceBand = band(composite, identity, jointQuality, modelCount),
+                            modelEvidence = modelScoresRaw.mapValues { ((it.value + 1f) / 2f).coerceIn(0f, 1f) }
                         )
                     }
                 }
 
-                val ranked = results.groupBy { it.face.id }.values
-                    .mapNotNull { it.maxByOrNull { match -> match.compositeScore } }
-                    .sortedWith(compareByDescending<FaceMatch> { it.compositeScore }.thenByDescending { it.identitySimilarity })
-                    .take(limit)
-
-                run.success("Face search completed", mapOf(
-                    "queryFaces" to usableQueries.size.toString(),
-                    "candidates" to results.size.toString(),
-                    "results" to ranked.size.toString(),
-                    "facenet512Used" to faceNetModel?.let { "true" } .toString()
-                ))
+                val ranked = results.groupBy { it.face.id }.values.mapNotNull { it.maxByOrNull { match -> match.compositeScore } }
+                    .sortedWith(compareByDescending<FaceMatch> { it.compositeScore }.thenByDescending { it.identitySimilarity }).take(limit)
+                run.success("Face search completed", mapOf("queryFaces" to usableQueries.size.toString(), "candidates" to results.size.toString(), "results" to ranked.size.toString(), "facenet512Used" to (faceNetModel != null).toString()))
                 ranked
             } finally {
                 if (!bitmap.isRecycled) bitmap.recycle()
@@ -154,8 +130,7 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
         }
     }
 
-    private suspend fun loadShapeEmbeddings(): Map<Long, EmbeddingEntity> = database.embeddingDao().getAllForOwnerType(FaceShapeEncoder.OWNER_TYPE)
-        .groupBy { it.ownerId }.mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
+    private suspend fun loadShapeEmbeddings(): Map<Long, EmbeddingEntity> = database.embeddingDao().getAllForOwnerType(FaceShapeEncoder.OWNER_TYPE).groupBy { it.ownerId }.mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
 
     private suspend fun loadPersons(faces: List<FaceEntity>): Map<Long, PersonEntity> {
         val ids = faces.mapNotNull { it.personId }.distinct()
