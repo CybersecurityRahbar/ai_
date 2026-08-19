@@ -13,9 +13,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Multi-signal face retrieval. It combines learned face identity embeddings,
- * normalized MediaPipe landmark shape and query quality. Results are visual
- * candidates, not proof of real-world identity.
+ * Multi-signal face retrieval. It combines learned identity embeddings,
+ * normalized facial geometry, estimated head pose and image quality.
+ * Results are visual similarity evidence, not proof of real-world identity.
  */
 class FaceSearchService(private val context: Context) : AutoCloseable {
     private val database = AppDatabase.getInstance(context.applicationContext)
@@ -29,6 +29,7 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
         val person: PersonEntity?,
         val identitySimilarity: Float,
         val shapeSimilarity: Float,
+        val poseSimilarity: Float,
         val quality: Float,
         val compositeScore: Float,
         val confidenceBand: ConfidenceBand
@@ -42,9 +43,9 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
             val bitmap = context.contentResolver.openInputStream(queryUri)?.use { BitmapFactory.decodeStream(it) }
                 ?: error("تعذر قراءة صورة البحث عن الوجه")
             try {
-                run.stage("DETECT_QUERY", "Detecting query faces and extracting landmarks")
+                run.stage("DETECT_QUERY", "Detecting query faces, landmarks, pose and identity embeddings")
                 val queries = FaceAnalysisService(analyzer, embeddingModel).analyze(bitmap)
-                val usableQueries = queries.filter { it.embedding != null && it.landmarkShape != null && it.usableForMatching }
+                val usableQueries = queries.filter { it.embedding != null && it.landmarkShape != null && it.pose != null && it.usableForMatching }
                 if (usableQueries.isEmpty()) error("لم يتم العثور على وجه قابل للمطابقة في صورة البحث")
 
                 val storedFaces = database.faceDao().getMatchableFaces()
@@ -53,7 +54,15 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
                 val imageIds = storedFaces.map { it.imageId }.distinct()
                 val images = database.imageDao().getByIds(imageIds).associateBy { it.id }
                 val persons = loadPersons(storedFaces)
-                run.stage("LOAD_INDEX", "Loaded face signatures", mapOf("faces" to storedFaces.size.toString(), "identityEmbeddings" to identityEmbeddings.size.toString(), "shapeEmbeddings" to shapeEmbeddings.size.toString()))
+                run.stage(
+                    "LOAD_INDEX",
+                    "Loaded multi-signal face index",
+                    mapOf(
+                        "faces" to storedFaces.size.toString(),
+                        "identityEmbeddings" to identityEmbeddings.size.toString(),
+                        "shapeEmbeddings" to shapeEmbeddings.size.toString()
+                    )
+                )
 
                 val results = mutableListOf<FaceMatch>()
                 for (stored in storedFaces) {
@@ -61,22 +70,39 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
                     val shape = shapeEmbeddings[stored.id]
                     val image = images[stored.imageId] ?: continue
                     val person = persons[stored.personId]
+                    val storedPose = FacePoseEstimator.Pose(stored.rotationX ?: 0f, stored.rotationY ?: 0f, stored.rotationZ ?: 0f)
                     for (query in usableQueries) {
                         val queryIdentity = query.embedding ?: continue
                         if (identity.vector.size != queryIdentity.size) continue
-                        val identitySimilarity = FaceSimilarity.cosineSimilarity(queryIdentity, identity.vector).coerceIn(-1f, 1f)
-                        val identity01 = ((identitySimilarity + 1f) / 2f).coerceIn(0f, 1f)
-                        val shapeSimilarity = if (shape != null && query.landmarkShape != null) FaceShapeEncoder.similarity(query.landmarkShape, shape) else 0f
-                        val base = 0.85f * identity01 + 0.15f * shapeSimilarity
-                        val qualityFactor = 0.75f + 0.25f * query.quality.score.coerceIn(0f, 1f)
-                        val composite = (base * qualityFactor).coerceIn(0f, 1f)
+
+                        // Both vectors are normalized by the indexing pipeline; cosine is therefore
+                        // used directly rather than remapping negative values into artificial confidence.
+                        val identityCosine = FaceSimilarity.cosineSimilarity(queryIdentity, identity.vector)
+                        val identity01 = identityCosine.coerceIn(0f, 1f)
+                        val shapeSimilarity = if (shape != null && query.landmarkShape != null) {
+                            FaceShapeEncoder.similarity(query.landmarkShape, shape.vector)
+                        } else 0f
+                        val poseSimilarity = FacePoseEstimator.similarity(query.pose, storedPose)
+
+                        // Identity remains dominant; geometry and pose are independent corroborating signals.
+                        val signalScore = (
+                            0.70f * identity01 +
+                            0.20f * shapeSimilarity +
+                            0.10f * poseSimilarity
+                        ).coerceIn(0f, 1f)
+                        val storedQuality = stored.qualityScore.coerceIn(0f, 1f)
+                        val jointQuality = (query.quality.score.coerceIn(0f, 1f) * storedQuality).let { kotlin.math.sqrt(it) }
+                        val qualityFactor = 0.70f + 0.30f * jointQuality
+                        val composite = (signalScore * qualityFactor).coerceIn(0f, 1f)
+
                         results += FaceMatch(
                             image = image,
                             face = stored,
                             person = person,
                             identitySimilarity = identity01,
                             shapeSimilarity = shapeSimilarity,
-                            quality = query.quality.score.coerceIn(0f, 1f),
+                            poseSimilarity = poseSimilarity,
+                            quality = jointQuality,
                             compositeScore = composite,
                             confidenceBand = band(composite)
                         )
@@ -89,7 +115,14 @@ class FaceSearchService(private val context: Context) : AutoCloseable {
                     .mapNotNull { candidates -> candidates.maxByOrNull { it.compositeScore } }
                     .sortedByDescending { it.compositeScore }
                     .take(limit)
-                run.success("Face search completed", mapOf("queryFaces" to usableQueries.size.toString(), "candidates" to results.size.toString(), "results" to ranked.size.toString()))
+                run.success(
+                    "Face search completed",
+                    mapOf(
+                        "queryFaces" to usableQueries.size.toString(),
+                        "candidates" to results.size.toString(),
+                        "results" to ranked.size.toString()
+                    )
+                )
                 ranked
             } finally {
                 if (!bitmap.isRecycled) bitmap.recycle()
