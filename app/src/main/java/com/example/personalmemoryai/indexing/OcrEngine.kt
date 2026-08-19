@@ -1,12 +1,11 @@
 package com.example.personalmemoryai.indexing
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import kotlinx.coroutines.tasks.await
 import kotlin.math.max
 
@@ -24,13 +23,25 @@ data class OcrResult(
 class OcrEngine(private val context: Context) {
     private val latinRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private val arabicRecognizer = ArabicOcrEngine(context)
+    private val diagnostics = DiagnosticsManager.get(context)
 
     suspend fun process(uri: Uri): OcrResult {
         var latinText = ""
         var latinFailed = false
-        try { latinText = recognizeLatin(uri) } catch (e: Exception) { latinFailed = true }
+        try {
+            latinText = recognizeLatin(uri)
+            diagnostics.info("OCR_LATIN", "Latin OCR completed", mapOf("characters" to latinText.length.toString()))
+        } catch (e: Exception) {
+            latinFailed = true
+            diagnostics.warning("OCR_LATIN", "Latin OCR failed; Arabic pipeline will still run", mapOf("error" to (e.message ?: e.javaClass.simpleName)))
+        }
 
-        val arabic = try { arabicRecognizer.recognizeDetailed(uri) } catch (_: Exception) {
+        val arabic = try {
+            arabicRecognizer.recognizeDetailed(uri).also {
+                diagnostics.info("OCR_ARABIC", "Arabic OCR completed", mapOf("characters" to it.text.length.toString(), "quality" to "%.3f".format(java.util.Locale.US, it.qualityScore), "passes" to it.passCount.toString(), "successfulPasses" to it.successfulPasses.toString()))
+            }
+        } catch (e: Exception) {
+            diagnostics.failure("OCR_ARABIC", e)
             ArabicOcrResult("", 0f, 0, 0)
         }
 
@@ -46,6 +57,7 @@ class OcrEngine(private val context: Context) {
             latinChars > 0 -> if (latinFailed) 0.45f else 0.70f
             else -> 0.25f
         }.coerceIn(0f, 1f)
+        if (combined.isBlank()) diagnostics.warning("OCR_RESULT", "OCR produced no text", mapOf("uri" to uri.toString()))
         return OcrResult(combined, detectLanguage(combined), evidenceScore, latinChars, arabicChars, passes, successful)
     }
 
