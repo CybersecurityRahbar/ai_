@@ -13,9 +13,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
-import com.example.personalmemoryai.semantic.MobileClipModelManager
+import com.example.personalmemoryai.diagnostics.IntelligenceHealthService
 import com.example.personalmemoryai.ui.DataCenterActivity
 import com.example.personalmemoryai.ui.DiagnosticsActivity
 import com.example.personalmemoryai.ui.FaceSearchActivity
@@ -96,56 +95,45 @@ class IntelligenceHomeActivity : AppCompatActivity() {
 
         content.addView(title("OPERATIONS / MODEL CONTROL", cyan))
         content.addView(action("DATA CENTER", "Backup • restore • database statistics • model management", cyan) { startActivity(Intent(this, DataCenterActivity::class.java)) })
-        content.addView(action("SYSTEM DIAGNOSTICS", "Errors • warnings • stages • stack traces • execution journal", red) { startActivity(Intent(this, DiagnosticsActivity::class.java) })
+        content.addView(action("SYSTEM DIAGNOSTICS", "Errors • warnings • stages • stack traces • execution journal", red) { startActivity(Intent(this, DiagnosticsActivity::class.java) ) })
 
         lifecycleScope.launch {
-            val db = AppDatabase.getInstance(applicationContext)
-            val diagnostics = DiagnosticsManager.get(applicationContext)
-            val values = withContext(Dispatchers.IO) {
-                longArrayOf(
-                    db.imageDao().count().toLong(),
-                    db.faceDao().count(),
-                    db.personDao().count(),
-                    db.embeddingDao().count(),
-                    db.objectDao().count()
-                )
+            val healthService = IntelligenceHealthService(applicationContext)
+            val snapshot = withContext(Dispatchers.IO) { healthService.snapshot() }
+
+            images.findMetricValue()?.text = snapshot.images.toString()
+            faces.findMetricValue()?.text = snapshot.faces.toString()
+            people.findMetricValue()?.text = snapshot.people.toString()
+            objects.findMetricValue()?.text = snapshot.imagesWithObjects.toString()
+
+            val overallColor = when (snapshot.overall) {
+                "READY" -> green
+                "DEGRADED", "PARTIAL" -> amber
+                "CRITICAL" -> red
+                else -> muted
             }
-            val events = withContext(Dispatchers.IO) { diagnostics.readLatest(500) }
-            val errors = events.count { it.contains("\"severity\":\"ERROR\"") || it.contains("\"severity\":\"CRITICAL\"") }
-            val warnings = events.count { it.contains("\"severity\":\"WARNING\"") }
-
-            images.findMetricValue()?.text = values[0].toString()
-            faces.findMetricValue()?.text = values[1].toString()
-            people.findMetricValue()?.text = values[2].toString()
-            objects.findMetricValue()?.text = values[4].toString()
-
-            val clip = MobileClipModelManager(applicationContext)
-            val clipState = if (clip.isInstalled()) "ONLINE / READY" else "NOT CONFIGURED"
-            val faceState = if (values[1] > 0L) "ONLINE / DATA" else "IDLE / NO FACE DATA"
-            val objectState = if (values[4] > 0L) "ONLINE / DATA" else "IDLE / NO OBJECT DATA"
-            val healthState = when {
-                errors > 0 -> "CRITICAL / $errors ERRORS"
-                warnings > 0 -> "DEGRADED / $warnings WARNINGS"
-                else -> "NOMINAL"
-            }
-
-            health.text = "● SYSTEM HEALTH  /  LOCAL CORE  /  $healthState\n\n" +
-                "FACE ENGINE       $faceState\n" +
-                "PEOPLE CLUSTERS   ${values[2]}\n" +
-                "OBJECT ENGINE     $objectState\n" +
-                "MOBILECLIP-S2     $clipState\n" +
-                "TOTAL EMBEDDINGS  ${values[3]}\n" +
-                "INDEXED IMAGES    ${values[0]}\n" +
-                "TRACE EVENTS      ${events.size}\n" +
-                "ERRORS            $errors\n" +
-                "WARNINGS          $warnings\n\n" +
-                "Open SYSTEM DIAGNOSTICS for event-level evidence."
-
-            health.setTextColor(if (errors > 0) red else textColor)
+            health.text = buildHealthText(snapshot)
+            health.setTextColor(overallColor)
             pulse(health)
-
-            updateEngineMatrix(engineMatrix, values, clipState, errors, warnings)
+            updateEngineMatrix(engineMatrix, snapshot)
         }
+    }
+
+    private fun buildHealthText(snapshot: IntelligenceHealthService.Snapshot): String {
+        return "● SYSTEM HEALTH  /  LOCAL CORE  /  ${snapshot.overall}\n\n" +
+            "FACE ENGINE       ${snapshot.facesWithEmbedding}/${snapshot.faces} EMBEDDINGS  /  ${snapshot.faceCoverage}%\n" +
+            "MATCHABLE FACES   ${snapshot.matchableFaces}\n" +
+            "PERSON CLUSTERS   ${snapshot.people}\n" +
+            "OBJECT ENGINE     ${snapshot.imagesWithObjects}/${snapshot.images} IMAGES  /  ${snapshot.objectCoverage}%\n" +
+            "MOBILECLIP-S2     ${if (snapshot.modelInstalled) "MODEL VALIDATED" else "NOT IMPORTED"}\n" +
+            "VISUAL INDEX      ${snapshot.imageEmbeddings}/${snapshot.images}  /  ${snapshot.visualCoverage}%\n" +
+            "OCR COVERAGE      ${snapshot.imagesWithOcr}/${snapshot.images}  /  ${snapshot.ocrCoverage}%\n" +
+            "OCR QUALITY       ${"%.3f".format(Locale.US, snapshot.averageOcrQuality)}\n" +
+            "EMBEDDINGS TOTAL  ${snapshot.totalEmbeddings}\n" +
+            "TRACE EVENTS      ${snapshot.diagnosticsEvents}\n" +
+            "ERRORS            ${snapshot.errors}\n" +
+            "WARNINGS          ${snapshot.warnings}\n\n" +
+            "ENGINE STATES ARE DERIVED FROM PERSISTED HEALTH DATA."
     }
 
     private fun header(): View = LinearLayout(this).apply {
@@ -229,16 +217,17 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         })
     }
 
-    private fun updateEngineMatrix(matrix: LinearLayout, values: LongArray, clipState: String, errors: Int, warnings: Int) {
+    private fun updateEngineMatrix(matrix: LinearLayout, snapshot: IntelligenceHealthService.Snapshot) {
+        val stageByName = snapshot.stages.associateBy { it.name }
         val states = listOf(
-            if (values[1] > 0) "ONLINE / DATA" else "IDLE / NO DATA",
-            if (values[1] > 0) "ONLINE / DATA" else "IDLE / NO DATA",
-            clipState,
-            if (values[4] > 0) "ONLINE / DATA" else "IDLE / NO DATA",
-            "PIPELINE READY",
+            stageByName["FACE_EMBEDDING"]?.status?.name ?: "NOT_READY",
+            if (snapshot.faceCoverage > 0) "ONLINE / ${snapshot.faceCoverage}%" else "NOT_READY",
+            stageByName["MOBILECLIP"]?.let { "${it.status.name} / ${it.coveragePercent}%" } ?: "NOT_READY",
+            stageByName["OBJECTS"]?.let { "${it.status.name} / ${it.coveragePercent}%" } ?: "NOT_READY",
+            stageByName["OCR"]?.let { "${it.status.name} / ${it.coveragePercent}%" } ?: "NOT_READY",
             when {
-                errors > 0 -> "CRITICAL / $errors"
-                warnings > 0 -> "DEGRADED / $warnings"
+                snapshot.errors > 0 -> "CRITICAL / ${snapshot.errors}"
+                snapshot.warnings > 0 -> "DEGRADED / ${snapshot.warnings}"
                 else -> "NOMINAL"
             }
         )
