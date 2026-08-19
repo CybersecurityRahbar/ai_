@@ -16,6 +16,7 @@ import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import com.example.personalmemoryai.semantic.MobileClipModelManager
 import com.example.personalmemoryai.ui.DataCenterActivity
 import com.example.personalmemoryai.ui.DiagnosticsActivity
+import com.example.personalmemoryai.ui.FaceSearchActivity
 import com.example.personalmemoryai.ui.ImageIntelligenceActivity
 import com.example.personalmemoryai.ui.PeopleIntelligenceActivity
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +40,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         val status = TextView(this).apply { textSize = 12f; setTextColor(Color.rgb(173, 201, 219)); setPadding(dp(14), dp(14), dp(14), dp(14)); setBackgroundColor(panel) }
         content.addView(status, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(10), 0, dp(10)) })
         content.addView(section("IDENTITY / FACE INTELLIGENCE"))
+        content.addView(action("SEARCH FACE / IDENTITY CANDIDATES", "MobileFaceNet + 478 landmarks + confidence-ranked retrieval") { startActivity(Intent(this, FaceSearchActivity::class.java)) })
         content.addView(action("OPEN PEOPLE & FACE INTELLIGENCE", "Face clusters, observations and representative embeddings") { startActivity(Intent(this, PeopleIntelligenceActivity::class.java)) })
         content.addView(action("OPEN FACE ANALYSIS CONSOLE", "Run MediaPipe + MobileFaceNet indexing") { startActivity(Intent(this, MainActivity::class.java)) })
         content.addView(section("IMAGE INTELLIGENCE / EVIDENCE"))
