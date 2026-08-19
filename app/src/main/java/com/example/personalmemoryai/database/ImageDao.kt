@@ -48,6 +48,18 @@ interface ImageDao {
     @Query("SELECT COUNT(*) FROM images")
     suspend fun count(): Int
 
+    @Query("SELECT COUNT(*) FROM images WHERE LENGTH(TRIM(ocrText)) > 0")
+    suspend fun countWithOcr(): Long
+
+    @Query("SELECT COUNT(*) FROM images WHERE LENGTH(TRIM(detectedObjects)) > 0 AND detectedObjects != '[]' AND detectedObjects != '{}'")
+    suspend fun countWithDetectedObjects(): Long
+
+    @Query("SELECT AVG(ocrQualityScore) FROM images WHERE ocrPassCount > 0")
+    suspend fun averageOcrQuality(): Float?
+
+    @Query("SELECT COUNT(*) FROM images WHERE ocrPassCount > 0")
+    suspend fun countOcrAttempted(): Long
+
     @Query("DELETE FROM images")
     suspend fun deleteAll()
 
