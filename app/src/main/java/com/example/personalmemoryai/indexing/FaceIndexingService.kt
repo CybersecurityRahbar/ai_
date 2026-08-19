@@ -55,11 +55,29 @@ class FaceIndexingService(
                     )
                     val faceId = faceDao.insert(faceEntity)
                     for ((_, modelEmbedding) in face.embeddings) {
-                        embeddingDao.insert(EmbeddingEntity(OWNER_FACE, faceId, modelEmbedding.vector, modelEmbedding.vector.size, modelEmbedding.modelName, modelEmbedding.modelVersion, true, System.currentTimeMillis()))
+                        embeddingDao.insert(EmbeddingEntity(
+                            ownerType = OWNER_FACE,
+                            ownerId = faceId,
+                            vector = modelEmbedding.vector,
+                            dimension = modelEmbedding.vector.size,
+                            modelName = modelEmbedding.modelName,
+                            modelVersion = modelEmbedding.modelVersion,
+                            normalized = true,
+                            createdAt = System.currentTimeMillis()
+                        ))
                         modelCounts[modelEmbedding.modelName] = (modelCounts[modelEmbedding.modelName] ?: 0) + 1
                     }
                     if (shape != null && shape.isNotEmpty()) {
-                        embeddingDao.insert(EmbeddingEntity(FaceShapeEncoder.OWNER_TYPE, faceId, shape, shape.size, FaceShapeEncoder.MODEL_NAME, FaceShapeEncoder.MODEL_VERSION, true, System.currentTimeMillis()))
+                        embeddingDao.insert(EmbeddingEntity(
+                            ownerType = FaceShapeEncoder.OWNER_TYPE,
+                            ownerId = faceId,
+                            vector = shape,
+                            dimension = shape.size,
+                            modelName = FaceShapeEncoder.MODEL_NAME,
+                            modelVersion = FaceShapeEncoder.MODEL_VERSION,
+                            normalized = true,
+                            createdAt = System.currentTimeMillis()
+                        ))
                     }
                     if (face.embeddings.isNotEmpty() && shape != null) {
                         indexed++
