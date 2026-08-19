@@ -13,9 +13,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ImageEntity::class,
         FaceEntity::class,
         PersonEntity::class,
-        EmbeddingEntity::class
+        EmbeddingEntity::class,
+        ObjectEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 @TypeConverters(DatabaseConverters::class)
@@ -25,6 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun faceDao(): FaceDao
     abstract fun personDao(): PersonDao
     abstract fun embeddingDao(): EmbeddingDao
+    abstract fun objectDao(): ObjectDao
 
     companion object {
         private const val DATABASE_NAME = "personal_memory.db"
@@ -33,15 +35,12 @@ abstract class AppDatabase : RoomDatabase() {
         private var INSTANCE: AppDatabase? = null
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                // Existing schema is preserved.
-            }
+            override fun migrate(database: SupportSQLiteDatabase) { }
         }
 
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL(
-                    """
+                database.execSQL("""
                     CREATE TABLE IF NOT EXISTS persons (
                         id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                         displayName TEXT,
@@ -56,14 +55,11 @@ abstract class AppDatabase : RoomDatabase() {
                         isFavorite INTEGER NOT NULL DEFAULT 0,
                         isArchived INTEGER NOT NULL DEFAULT 0
                     )
-                    """.trimIndent()
-                )
+                """.trimIndent())
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_persons_displayName ON persons(displayName)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_persons_createdAt ON persons(createdAt)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_persons_updatedAt ON persons(updatedAt)")
-
-                database.execSQL(
-                    """
+                database.execSQL("""
                     CREATE TABLE IF NOT EXISTS faces (
                         id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                         imageId INTEGER NOT NULL,
@@ -87,14 +83,11 @@ abstract class AppDatabase : RoomDatabase() {
                         FOREIGN KEY(imageId) REFERENCES images(id) ON DELETE CASCADE,
                         FOREIGN KEY(personId) REFERENCES persons(id) ON DELETE SET NULL
                     )
-                    """.trimIndent()
-                )
+                """.trimIndent())
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_faces_imageId ON faces(imageId)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_faces_personId ON faces(personId)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_faces_qualityScore ON faces(qualityScore)")
-
-                database.execSQL(
-                    """
+                database.execSQL("""
                     CREATE TABLE IF NOT EXISTS embeddings (
                         id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                         ownerType TEXT NOT NULL,
@@ -106,8 +99,7 @@ abstract class AppDatabase : RoomDatabase() {
                         normalized INTEGER NOT NULL DEFAULT 1,
                         createdAt INTEGER NOT NULL
                     )
-                    """.trimIndent()
-                )
+                """.trimIndent())
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_embeddings_ownerType_ownerId ON embeddings(ownerType, ownerId)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_embeddings_modelName_modelVersion ON embeddings(modelName, modelVersion)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_embeddings_dimension ON embeddings(dimension)")
@@ -116,9 +108,35 @@ abstract class AppDatabase : RoomDatabase() {
 
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL(
-                    "ALTER TABLE images ADD COLUMN detectedObjects TEXT NOT NULL DEFAULT ''"
-                )
+                database.execSQL("ALTER TABLE images ADD COLUMN detectedObjects TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS object_observations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        imageId INTEGER NOT NULL,
+                        classId INTEGER NOT NULL,
+                        label TEXT NOT NULL,
+                        arabicLabel TEXT NOT NULL,
+                        confidence REAL NOT NULL,
+                        left REAL NOT NULL,
+                        top REAL NOT NULL,
+                        right REAL NOT NULL,
+                        bottom REAL NOT NULL,
+                        detectorName TEXT NOT NULL,
+                        detectorVersion TEXT NOT NULL,
+                        inferenceTimeMs INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(imageId) REFERENCES images(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_imageId ON object_observations(imageId)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_classId ON object_observations(classId)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_label ON object_observations(label)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_confidence ON object_observations(confidence)")
             }
         }
 
@@ -129,7 +147,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     DATABASE_NAME
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { INSTANCE = it }
             }
