@@ -9,6 +9,7 @@ import com.example.personalmemoryai.data.DataBackupManager
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.databinding.ActivityDataCenterBinding
 import com.example.personalmemoryai.semantic.MobileClipModelManager
+import com.example.personalmemoryai.vision.FaceNet512ModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -19,24 +20,23 @@ class DataCenterActivity : AppCompatActivity() {
     private lateinit var binding: ActivityDataCenterBinding
     private lateinit var backupManager: DataBackupManager
     private lateinit var modelManager: MobileClipModelManager
+    private lateinit var faceNetManager: FaceNet512ModelManager
 
     private val exportPicker = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
-    ) { uri ->
-        if (uri != null) exportBackup(uri)
-    }
+    ) { uri -> if (uri != null) exportBackup(uri) }
 
     private val importPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) importBackup(uri)
-    }
+    ) { uri -> if (uri != null) importBackup(uri) }
 
     private val modelPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) importModel(uri)
-    }
+    ) { uri -> if (uri != null) importModel(uri) }
+
+    private val faceModelPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) importFaceNetModel(uri) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,17 +45,30 @@ class DataCenterActivity : AppCompatActivity() {
 
         backupManager = DataBackupManager(applicationContext)
         modelManager = MobileClipModelManager(applicationContext)
+        faceNetManager = FaceNet512ModelManager(applicationContext)
 
         binding.backButton.setOnClickListener { finish() }
         binding.exportBackupButton.setOnClickListener {
             exportPicker.launch("PersonalMemory_Backup_${System.currentTimeMillis()}.pmai")
         }
-        binding.importBackupButton.setOnClickListener { importPicker.launch(arrayOf("application/octet-stream", "*/*")) }
-        binding.importModelButton.setOnClickListener { modelPicker.launch(arrayOf("application/octet-stream", "application/tflite", "*/*")) }
+        binding.importBackupButton.setOnClickListener {
+            importPicker.launch(arrayOf("application/octet-stream", "*/*"))
+        }
+        binding.importModelButton.setOnClickListener {
+            modelPicker.launch(arrayOf("application/octet-stream", "application/tflite", "*/*"))
+        }
         binding.removeModelButton.setOnClickListener {
             modelManager.deleteModel()
             updateStats()
             toast("تم حذف نسخة MobileCLIP المحلية")
+        }
+        binding.importFaceNetModelButton.setOnClickListener {
+            faceModelPicker.launch(arrayOf("application/octet-stream", "application/tflite", "*/*"))
+        }
+        binding.removeFaceNetModelButton.setOnClickListener {
+            faceNetManager.deleteModel()
+            updateStats()
+            toast("تم حذف نسخة FaceNet-512 المحلية")
         }
 
         updateStats()
@@ -65,22 +78,18 @@ class DataCenterActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val stats = withContext(Dispatchers.IO) {
                 val db = AppDatabase.getInstance(applicationContext)
-                Stats(
-                    db.imageDao().count(),
-                    db.faceDao().count(),
-                    db.personDao().count(),
-                    db.embeddingDao().count()
-                )
+                Stats(db.imageDao().count(), db.faceDao().count(), db.personDao().count(), db.embeddingDao().count())
             }
             binding.imagesValue.text = stats.images.toString()
             binding.facesValue.text = stats.faces.toString()
             binding.personsValue.text = stats.persons.toString()
             binding.embeddingsValue.text = stats.embeddings.toString()
             binding.databaseValue.text = formatBytes(getDatabasePath("personal_memory.db").length())
-            binding.modelValue.text = if (modelManager.isInstalled()) {
-                "READY • ${formatBytes(modelManager.installedSizeBytes())}"
+            binding.modelValue.text = if (modelManager.isInstalled()) "READY • ${formatBytes(modelManager.installedSizeBytes())}" else "NOT INSTALLED"
+            binding.faceNetModelValue.text = if (faceNetManager.isInstalled()) {
+                "READY • ${formatBytes(faceNetManager.installedSizeBytes())} • 160×160 • 512-D"
             } else {
-                "NOT INSTALLED"
+                "NOT INSTALLED • IMPORT facenet_512.tflite"
             }
         }
     }
@@ -99,9 +108,7 @@ class DataCenterActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 binding.statusText.text = "فشل التصدير: ${e.message}"
                 toast("فشل إنشاء النسخة الاحتياطية")
-            } finally {
-                setBusy(false, "SYSTEM READY")
-            }
+            } finally { setBusy(false, "SYSTEM READY") }
         }
     }
 
@@ -119,9 +126,7 @@ class DataCenterActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 binding.statusText.text = "فشل الاستعادة: ${e.message}"
                 toast("فشل استيراد النسخة الاحتياطية")
-            } finally {
-                setBusy(false, "SYSTEM READY")
-            }
+            } finally { setBusy(false, "SYSTEM READY") }
         }
     }
 
@@ -141,9 +146,27 @@ class DataCenterActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 binding.statusText.text = "فشل النموذج: ${e.message}"
                 toast("فشل استيراد النموذج")
-            } finally {
-                setBusy(false, "SYSTEM READY")
-            }
+            } finally { setBusy(false, "SYSTEM READY") }
+        }
+    }
+
+    private fun importFaceNetModel(uri: android.net.Uri) {
+        lifecycleScope.launch {
+            setBusy(true, "استيراد FaceNet-512 والتحقق من البنية...")
+            try {
+                withContext(Dispatchers.IO) {
+                    faceNetManager.importModel(uri) { copied, total ->
+                        val percent = if (total > 0) ((copied * 100L) / total).toInt().coerceIn(0, 100) else 0
+                        runOnUiThread { binding.progressBar.progress = percent }
+                    }
+                }
+                updateStats()
+                binding.statusText.text = "FaceNet-512 محفوظ محليًا بشكل دائم. سيتم استخدامه بعد تفعيل مسار المطابقة متعدد النماذج."
+                toast("تم تثبيت FaceNet-512 بنجاح")
+            } catch (e: Exception) {
+                binding.statusText.text = "فشل FaceNet-512: ${e.message}"
+                toast("فشل استيراد FaceNet-512")
+            } finally { setBusy(false, "SYSTEM READY") }
         }
     }
 
@@ -155,6 +178,8 @@ class DataCenterActivity : AppCompatActivity() {
         binding.importBackupButton.isEnabled = !busy
         binding.importModelButton.isEnabled = !busy
         binding.removeModelButton.isEnabled = !busy
+        binding.importFaceNetModelButton.isEnabled = !busy
+        binding.removeFaceNetModelButton.isEnabled = !busy
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -162,15 +187,11 @@ class DataCenterActivity : AppCompatActivity() {
         val units = arrayOf("B", "KB", "MB", "GB")
         var value = bytes.toDouble()
         var index = 0
-        while (value >= 1024 && index < units.lastIndex) {
-            value /= 1024.0
-            index++
-        }
+        while (value >= 1024 && index < units.lastIndex) { value /= 1024.0; index++ }
         return "${DecimalFormat("0.0").format(value)} ${units[index]}"
     }
 
-    private fun toast(message: String) =
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
 
     private data class Stats(val images: Int, val faces: Long, val persons: Long, val embeddings: Long)
 }
