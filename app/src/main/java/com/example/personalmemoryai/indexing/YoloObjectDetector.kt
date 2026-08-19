@@ -9,14 +9,16 @@ import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 
-/** YOLO26n LiteRT/TFLite detector with robust output tensor decoding. */
+/** YOLO LiteRT/TFLite detector with support for end-to-end and raw YOLO outputs. */
 class YoloObjectDetector(private val context: Context) : AutoCloseable {
     companion object {
         private const val MODEL_PATH = "models/object/yolo26n_w8a32.tflite"
         private const val CONFIDENCE_THRESHOLD = 0.20f
+        private const val NMS_IOU_THRESHOLD = 0.45f
         private const val MAX_RESULTS = 100
         private val COCO_LABELS = arrayOf(
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
@@ -32,9 +34,7 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
     ).also { interpreter = it }
 
     fun detect(uri: Uri): List<ObjectDetectionResult> {
-        val bitmap = context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(BitmapFactory.decodeStream(input)) { "Unable to decode image: $uri" }
-        }
+        val bitmap = context.contentResolver.openInputStream(uri).use { input -> requireNotNull(BitmapFactory.decodeStream(input)) { "Unable to decode image: $uri" } }
         return try { detect(bitmap) } finally { bitmap.recycle() }
     }
 
@@ -47,6 +47,7 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
         val inputHeight = if (channelsLast) inputShape[1] else inputShape[2]
         val inputWidth = if (channelsLast) inputShape[2] else inputShape[3]
         require(inputWidth == inputHeight) { "Only square YOLO input is supported" }
+        require(inputTensor.dataType() == DataType.FLOAT32) { "YOLO model expects FLOAT32 input, found ${inputTensor.dataType()}" }
 
         val scale = min(inputWidth.toFloat() / bitmap.width, inputHeight.toFloat() / bitmap.height)
         val resizedWidth = max(1, (bitmap.width * scale).toInt())
@@ -59,7 +60,6 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
         val padTop = (inputHeight - resizedHeight) / 2f
         canvas.drawBitmap(resized, padLeft, padTop, null)
         resized.recycle()
-        require(inputTensor.dataType() == DataType.FLOAT32) { "YOLO model expects FLOAT32 input, found ${inputTensor.dataType()}" }
 
         val pixels = IntArray(inputWidth * inputHeight)
         letterboxed.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
@@ -91,16 +91,24 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
     }
 
     private fun parseOutput(values: FloatArray, shape: IntArray, scale: Float, padLeft: Float, padTop: Float): List<ObjectDetectionResult> {
-        // Primary Ultralytics end-to-end export: [1,N,6] => x1,y1,x2,y2,score,class.
-        if (shape.size == 3 && shape[0] == 1 && shape[2] == 6) {
-            return parseRows(values, shape[1], 6, scale, padLeft, padTop)
-        }
-        // Some converters transpose this to [1,6,N].
+        if (shape.size == 3 && shape[0] == 1 && shape[2] == 6) return parseRows(values, shape[1], 6, scale, padLeft, padTop)
         if (shape.size == 3 && shape[0] == 1 && shape[1] == 6) {
             val count = shape[2]
             val rows = FloatArray(count * 6)
             for (i in 0 until count) for (c in 0..5) rows[i * 6 + c] = values[c * count + i]
             return parseRows(rows, count, 6, scale, padLeft, padTop)
+        }
+
+        // Standard YOLO detection-head export: [1, 84, N] or [1, N, 84].
+        // 84 = cx,cy,w,h + 80 COCO class scores.
+        if (shape.size == 3 && shape[0] == 1 && shape[1] == 84) {
+            val count = shape[2]
+            val rows = FloatArray(count * 84)
+            for (i in 0 until count) for (c in 0 until 84) rows[i * 84 + c] = values[c * count + i]
+            return parseRawRows(rows, count, 84, scale, padLeft, padTop)
+        }
+        if (shape.size == 3 && shape[0] == 1 && shape[2] == 84) {
+            return parseRawRows(values, shape[1], 84, scale, padLeft, padTop)
         }
         throw IllegalStateException("Unsupported YOLO output shape: ${shape.contentToString()}")
     }
@@ -117,18 +125,67 @@ class YoloObjectDetector(private val context: Context) : AutoCloseable {
             val y1 = (values[o + 1] - padTop) / scale
             val x2 = (values[o + 2] - padLeft) / scale
             val y2 = (values[o + 3] - padTop) / scale
-            if (!x1.isFinite() || !y1.isFinite() || !x2.isFinite() || !y2.isFinite()) continue
-            val label = COCO_LABELS[classId]
-            results += ObjectDetectionResult(classId, label, ObjectLabelCatalog.arabicAliases(label), confidence, x1.coerceAtLeast(0f), y1.coerceAtLeast(0f), x2.coerceAtLeast(0f), y2.coerceAtLeast(0f))
+            if (!listOf(x1, y1, x2, y2).all { it.isFinite() }) continue
+            results += makeResult(classId, confidence, x1, y1, x2, y2)
             if (results.size >= MAX_RESULTS) break
         }
-        return results.sortedByDescending { it.confidence }
+        return nms(results)
     }
 
-    override fun close() {
-        synchronized(this) {
-            interpreter?.close()
-            interpreter = null
+    private fun parseRawRows(values: FloatArray, count: Int, stride: Int, scale: Float, padLeft: Float, padTop: Float): List<ObjectDetectionResult> {
+        val candidates = ArrayList<ObjectDetectionResult>(min(count, MAX_RESULTS * 2))
+        for (i in 0 until count) {
+            val o = i * stride
+            val cx = values[o]
+            val cy = values[o + 1]
+            val w = values[o + 2]
+            val h = values[o + 3]
+            if (!listOf(cx, cy, w, h).all { it.isFinite() } || w <= 0f || h <= 0f) continue
+            var bestClass = -1
+            var bestScore = 0f
+            for (classId in COCO_LABELS.indices) {
+                val raw = values[o + 4 + classId]
+                val score = if (raw in 0f..1f) raw else sigmoid(raw)
+                if (score > bestScore) { bestScore = score; bestClass = classId }
+            }
+            if (bestClass < 0 || bestScore < CONFIDENCE_THRESHOLD) continue
+            val x1 = (cx - w / 2f - padLeft) / scale
+            val y1 = (cy - h / 2f - padTop) / scale
+            val x2 = (cx + w / 2f - padLeft) / scale
+            val y2 = (cy + h / 2f - padTop) / scale
+            if (!listOf(x1, y1, x2, y2).all { it.isFinite() }) continue
+            candidates += makeResult(bestClass, bestScore, x1, y1, x2, y2)
         }
+        return nms(candidates)
     }
+
+    private fun makeResult(classId: Int, confidence: Float, x1: Float, y1: Float, x2: Float, y2: Float) =
+        ObjectDetectionResult(classId, COCO_LABELS[classId], ObjectLabelCatalog.arabicAliases(COCO_LABELS[classId]), confidence, x1.coerceAtLeast(0f), y1.coerceAtLeast(0f), x2.coerceAtLeast(0f), y2.coerceAtLeast(0f))
+
+    private fun sigmoid(x: Float): Float = (1f / (1f + exp(-x.toDouble()).toFloat())).coerceIn(0f, 1f)
+
+    private fun nms(input: List<ObjectDetectionResult>): List<ObjectDetectionResult> {
+        val remaining = input.sortedByDescending { it.confidence }.toMutableList()
+        val kept = ArrayList<ObjectDetectionResult>()
+        while (remaining.isNotEmpty() && kept.size < MAX_RESULTS) {
+            val best = remaining.removeAt(0)
+            kept += best
+            remaining.removeAll { it.classId == best.classId && iou(best, it) >= NMS_IOU_THRESHOLD }
+        }
+        return kept
+    }
+
+    private fun iou(a: ObjectDetectionResult, b: ObjectDetectionResult): Float {
+        val left = max(a.left, b.left)
+        val top = max(a.top, b.top)
+        val right = min(a.right, b.right)
+        val bottom = min(a.bottom, b.bottom)
+        val intersection = max(0f, right - left) * max(0f, bottom - top)
+        val areaA = max(0f, a.right - a.left) * max(0f, a.bottom - a.top)
+        val areaB = max(0f, b.right - b.left) * max(0f, b.bottom - b.top)
+        val union = areaA + areaB - intersection
+        return if (union <= 0f) 0f else intersection / union
+    }
+
+    override fun close() { synchronized(this) { interpreter?.close(); interpreter = null } }
 }
