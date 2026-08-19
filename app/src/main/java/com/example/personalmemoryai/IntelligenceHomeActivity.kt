@@ -30,8 +30,6 @@ import kotlinx.coroutines.withContext
 
 class IntelligenceHomeActivity : AppCompatActivity() {
     private val bg = Color.rgb(5, 10, 13)
-    private val panel = Color.rgb(16, 29, 31)
-    private val panel2 = Color.rgb(23, 43, 39)
     private val textColor = Color.rgb(233, 255, 244)
     private val muted = Color.rgb(127, 169, 154)
     private val green = Color.rgb(57, 255, 136)
@@ -45,12 +43,14 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = Color.rgb(3, 7, 9)
         window.navigationBarColor = Color.rgb(3, 7, 9)
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_intelligence)
+            setBackgroundResource(R.drawable.bg_intelligence)
         }
         root.addView(header())
+
         val scroll = ScrollView(this)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -72,14 +72,10 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         listOf(images, faces).forEach { row1.addView(it, LinearLayout.LayoutParams(0, dp(92), 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }) }
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf(people, objects).forEach { row2.addView(it, LinearLayout.LayoutParams(0, dp(92), 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }) }
-        overview.addView(row1); overview.addView(row2)
+        overview.addView(row1)
+        overview.addView(row2)
 
-        val health = TextView(this).apply {
-            textSize = 12f
-            setTextColor(textColor)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            setBackgroundResource(R.drawable.panel_intelligence)
-        }
+        val health = healthPanel()
         content.addView(health, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(10), 0, dp(8)) })
 
         content.addView(title("IDENTITY / HUMAN ANALYSIS", green))
@@ -95,35 +91,53 @@ class IntelligenceHomeActivity : AppCompatActivity() {
 
         content.addView(title("OPERATIONS / MODEL CONTROL", cyan))
         content.addView(action("DATA CENTER", "Backup • restore • database statistics • model management", cyan) { startActivity(Intent(this, DataCenterActivity::class.java)) })
-        content.addView(action("SYSTEM DIAGNOSTICS", "Errors • warnings • stages • stack traces • execution journal", red) {
-            startActivity(Intent(this, DiagnosticsActivity::class.java))
-        })
+        content.addView(action("SYSTEM DIAGNOSTICS", "Errors • warnings • stages • stack traces • execution journal", red) { startActivity(Intent(this, DiagnosticsActivity::class.java)) })
 
         lifecycleScope.launch {
             val db = AppDatabase.getInstance(applicationContext)
             val diagnostics = DiagnosticsManager.get(applicationContext)
             val values = withContext(Dispatchers.IO) {
-                arrayOf(db.imageDao().count(), db.faceDao().count(), db.personDao().count(), db.embeddingDao().count(), db.objectDao().count())
+                longArrayOf(
+                    db.imageDao().count(),
+                    db.faceDao().count(),
+                    db.personDao().count(),
+                    db.embeddingDao().count(),
+                    db.objectDao().count()
+                )
             }
             val events = withContext(Dispatchers.IO) { diagnostics.readLatest(500) }
             val errors = events.count { it.contains("\"severity\":\"ERROR\"") || it.contains("\"severity\":\"CRITICAL\"") }
             val warnings = events.count { it.contains("\"severity\":\"WARNING\"") }
-            (images.findMetricValue())?.text = values[0].toString()
-            (faces.findMetricValue())?.text = values[1].toString()
-            (people.findMetricValue())?.text = values[2].toString()
-            (objects.findMetricValue())?.text = values[4].toString()
+
+            images.findMetricValue()?.text = values[0].toString()
+            faces.findMetricValue()?.text = values[1].toString()
+            people.findMetricValue()?.text = values[2].toString()
+            objects.findMetricValue()?.text = values[4].toString()
+
             val clip = MobileClipModelManager(applicationContext)
-            val clipState = if (clip.isInstalled()) "READY" else "NOT IMPORTED"
-            health.text = "● SYSTEM HEALTH  /  LOCAL CORE\n\n" +
-                "FACE ENGINE       ${if (values[1] > 0) "ONLINE" else "IDLE"}\n" +
+            val clipState = if (clip.isInstalled()) "ONLINE / READY" else "NOT CONFIGURED"
+            val faceState = if (values[1] > 0L) "ONLINE / DATA" else "IDLE / NO FACE DATA"
+            val objectState = if (values[4] > 0L) "ONLINE / DATA" else "IDLE / NO OBJECT DATA"
+            val healthState = when {
+                errors > 0 -> "CRITICAL / $errors ERRORS"
+                warnings > 0 -> "DEGRADED / $warnings WARNINGS"
+                else -> "NOMINAL"
+            }
+
+            health.text = "● SYSTEM HEALTH  /  LOCAL CORE  /  $healthState\n\n" +
+                "FACE ENGINE       $faceState\n" +
                 "PEOPLE CLUSTERS   ${values[2]}\n" +
-                "OBJECT ENGINE     ${if (values[4] > 0) "ONLINE" else "IDLE"}\n" +
+                "OBJECT ENGINE     $objectState\n" +
                 "MOBILECLIP-S2     $clipState\n" +
                 "TOTAL EMBEDDINGS  ${values[3]}\n" +
+                "INDEXED IMAGES    ${values[0]}\n" +
                 "TRACE EVENTS      ${events.size}\n" +
                 "ERRORS            $errors\n" +
-                "WARNINGS          $warnings"
-            if (errors > 0) pulse(health, red) else pulse(health, green)
+                "WARNINGS          $warnings\n\n" +
+                "Open SYSTEM DIAGNOSTICS for event-level evidence."
+
+            health.setTextColor(if (errors > 0) red else textColor)
+            pulse(health, if (errors > 0) red else green)
         }
     }
 
@@ -133,26 +147,45 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         setBackgroundResource(R.drawable.panel_intelligence)
         addView(TextView(this@IntelligenceHomeActivity).apply {
             text = "PMAI // LOCAL INTELLIGENCE CORE"
-            textSize = 10f; setTextColor(green); setTypeface(null, Typeface.BOLD)
+            textSize = 10f
+            setTextColor(green)
+            setTypeface(null, Typeface.BOLD)
         })
         addView(TextView(this@IntelligenceHomeActivity).apply {
             text = "INTELLIGENCE COMMAND CENTER"
-            textSize = 25f; setTextColor(textColor); setTypeface(null, Typeface.BOLD)
+            textSize = 25f
+            setTextColor(textColor)
+            setTypeface(null, Typeface.BOLD)
             setPadding(0, dp(3), 0, dp(3))
         })
         addView(TextView(this@IntelligenceHomeActivity).apply {
             text = "IDENTITY  •  VISUAL  •  OCR  •  OBJECTS  •  EVIDENCE  •  TRACE"
-            textSize = 9f; setTextColor(muted)
+            textSize = 9f
+            setTextColor(muted)
         })
         addView(TextView(this@IntelligenceHomeActivity).apply {
             text = "●  OFFLINE / LOCAL / MONITORED"
-            textSize = 10f; setTextColor(green); setTypeface(null, Typeface.BOLD)
+            textSize = 10f
+            setTextColor(green)
+            setTypeface(null, Typeface.BOLD)
             setPadding(0, dp(11), 0, 0)
         })
     }
 
+    private fun healthPanel() = TextView(this).apply {
+        text = "● SYSTEM HEALTH  /  LOCAL CORE  /  LOADING…"
+        textSize = 11f
+        setTextColor(textColor)
+        setTypeface(null, Typeface.BOLD)
+        setPadding(dp(14), dp(14), dp(14), dp(14))
+        setBackgroundResource(R.drawable.panel_intelligence)
+    }
+
     private fun title(text: String, color: Int) = TextView(this).apply {
-        this.text = "▌  $text"; textSize = 10f; setTextColor(color); setTypeface(null, Typeface.BOLD)
+        this.text = "▌  $text"
+        textSize = 10f
+        setTextColor(color)
+        setTypeface(null, Typeface.BOLD)
         setPadding(dp(3), dp(13), dp(3), dp(6))
     }
 
@@ -160,9 +193,25 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(12), dp(9), dp(12), dp(8))
         setBackgroundResource(R.drawable.panel_intelligence)
-        addView(TextView(this@IntelligenceHomeActivity).apply { text = label; textSize = 8f; setTextColor(muted) })
-        addView(TextView(this@IntelligenceHomeActivity).apply { tag = "metric_value"; text = value; textSize = 23f; setTextColor(accent); setTypeface(null, Typeface.BOLD); setPadding(0, dp(3), 0, 0) })
-        addView(TextView(this@IntelligenceHomeActivity).apply { text = "LIVE DATA"; textSize = 7f; setTextColor(muted); setPadding(0, dp(2), 0, 0) })
+        addView(TextView(this@IntelligenceHomeActivity).apply {
+            text = label
+            textSize = 8f
+            setTextColor(muted)
+        })
+        addView(TextView(this@IntelligenceHomeActivity).apply {
+            tag = "metric_value"
+            text = value
+            textSize = 23f
+            setTextColor(accent)
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, dp(3), 0, 0)
+        })
+        addView(TextView(this@IntelligenceHomeActivity).apply {
+            text = "LIVE DATA"
+            textSize = 7f
+            setTextColor(muted)
+            setPadding(0, dp(2), 0, 0)
+        })
     }
 
     private fun View.findMetricValue(): TextView? = findViewWithTag("metric_value")
@@ -171,7 +220,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         text = "●  $title\n    $subtitle"
         textSize = 10f
         gravity = Gravity.START or Gravity.CENTER_VERTICAL
-        setTextColor(textColor)
+        setTextColor(accent)
         setBackgroundResource(R.drawable.panel_intelligence)
         setAllCaps(false)
         setPadding(dp(15), dp(7), dp(15), dp(7))
@@ -179,14 +228,16 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         stateListAnimator = null
         layoutParams = LinearLayout.LayoutParams(-1, dp(70)).apply { setMargins(0, dp(3), 0, dp(3)) }
         setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-        setTextColor(accent)
     }
 
     private fun pulse(view: View, accent: Int) {
-        val animator = ValueAnimator.ofObject(ArgbEvaluator(), Color.TRANSPARENT, accent, Color.TRANSPARENT).apply {
-            duration = 1500L
+        val animator = ValueAnimator.ofFloat(0.78f, 1f, 0.78f).apply {
+            duration = 1700L
             repeatCount = ValueAnimator.INFINITE
-            addUpdateListener { value -> view.alpha = 0.88f + (value.animatedFraction * 0.12f) }
+            addUpdateListener { value ->
+                val alpha = value.animatedValue as Float
+                view.alpha = alpha
+            }
         }
         animator.start()
     }
