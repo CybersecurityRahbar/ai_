@@ -1,7 +1,6 @@
 package com.example.personalmemoryai.indexing
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import com.example.personalmemoryai.database.AppDatabase
@@ -25,6 +24,25 @@ class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
     private val clusteringEngineLazy = lazy { PersonClusteringEngine(faceDao, personDao, embeddingDao) }
 
     data class Progress(val processed: Int, val total: Int, val detectedFaces: Int, val indexedFaces: Int, val failedImages: Int)
+
+    suspend fun indexSingleImage(imageId: Long, uri: Uri): FaceIndexingService.IndexResult = withContext(Dispatchers.IO) {
+        val run = diagnostics.begin("FACE_INDEX_SINGLE", mapOf("imageId" to imageId.toString()))
+        try {
+            val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                ?: throw IllegalStateException("تعذر فك الصورة الخاصة بتحليل الوجه: $uri")
+            try {
+                faceIndexingServiceLazy.value.removeImageIndex(imageId)
+                val result = faceIndexingServiceLazy.value.indexImage(imageId, bitmap)
+                run.success("Single-image face index completed", mapOf("detected" to result.detectedFaces.toString(), "indexed" to result.indexedFaces.toString()))
+                result
+            } finally {
+                if (!bitmap.isRecycled) bitmap.recycle()
+            }
+        } catch (t: Throwable) {
+            run.failure("SINGLE_IMAGE", t)
+            throw t
+        }
+    }
 
     suspend fun indexAllImages(onProgress: (Progress) -> Unit = {}): Progress = withContext(Dispatchers.IO) {
         val run = diagnostics.begin("FACE_INDEX_ALL")
@@ -76,7 +94,7 @@ class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
 
     suspend fun faceCount(): Long = withContext(Dispatchers.IO) { faceDao.count() }
     suspend fun embeddingCount(): Long = withContext(Dispatchers.IO) { faceDao.countWithEmbeddings() }
-    private fun decodeImage(uri: Uri): Bitmap? = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+    private fun decodeImage(uri: Uri): android.graphics.Bitmap? = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
     override fun close() { if (analysisServiceLazy.isInitialized()) try { analysisServiceLazy.value.close() } catch (_: Throwable) { } }
     companion object { private const val FACE_MODEL_FILE = "models/face/mobilefacenet.tflite"; private const val DEFAULT_CLUSTER_THRESHOLD = 0.72f }
 }
