@@ -5,13 +5,15 @@ import com.example.personalmemoryai.database.FaceDao
 import com.example.personalmemoryai.database.PersonDao
 import com.example.personalmemoryai.database.PersonEntity
 import com.example.personalmemoryai.vision.FaceShapeEncoder
-import com.example.personalmemoryai.vision.FaceSimilarity
+import com.example.personalmemoryai.vision.IdentityEvidenceEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Incremental visual clustering of face observations.
- * A person is a visual cluster, not a verified real-world identity.
+ * Compatibility clustering engine used by older indexing paths.
+ * It now uses the same conservative multi-signal evidence policy as the
+ * primary PersonClusteringService, so two indexing paths cannot silently use
+ * materially different identity rules.
  */
 class PersonClusteringEngine(
     private val faceDao: FaceDao,
@@ -20,118 +22,117 @@ class PersonClusteringEngine(
 ) {
     data class ClusterResult(val createdClusters: Int, val assignedFaces: Int)
 
-    private data class Representative(
-        val personId: Long,
-        var faceId: Long,
-        var embedding: FloatArray,
-        var shape: FloatArray?
-    )
-
     suspend fun buildClusters(similarityThreshold: Float): ClusterResult = withContext(Dispatchers.Default) {
         require(similarityThreshold in 0.50f..0.95f) { "Cluster threshold must be between 0.50 and 0.95" }
 
         val candidates = faceDao.getUnassignedMatchableFaces()
         if (candidates.isEmpty()) return@withContext ClusterResult(0, 0)
 
-        val representatives = mutableListOf<Representative>()
-        for (person in personDao.getMostObserved()) {
-            val faceId = person.representativeFaceId ?: continue
-            val identity = embeddingDao.getForOwnerAndModel(
-                OWNER_FACE,
-                faceId,
-                MODEL_FACE,
-                MODEL_FACE_VERSION
-            ) ?: continue
-            if (identity.vector.isEmpty() || !identity.vector.all { it.isFinite() }) continue
-            val shape = embeddingDao.getForOwnerAndModel(
-                FaceShapeEncoder.OWNER_TYPE,
-                faceId,
-                FaceShapeEncoder.MODEL_NAME,
-                FaceShapeEncoder.MODEL_VERSION
-            )?.vector
-            representatives += Representative(person.id, faceId, identity.vector, shape)
-        }
+        val identityByFace = embeddingDao.getAllForFaceSearch()
+            .filter { it.modelName.equals("mobilefacenet", true) }
+            .groupBy { it.ownerId }
+            .mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
+        val shapeByFace = embeddingDao.getAllForOwnerType(FaceShapeEncoder.OWNER_TYPE)
+            .groupBy { it.ownerId }
+            .mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
+
+        val people = personDao.getMostObserved().mapNotNull { person ->
+            val templates = faceDao.getByPersonId(person.id).mapNotNull { face ->
+                if (!face.usableForMatching) return@mapNotNull null
+                val identity = identityByFace[face.id]
+                val shape = shapeByFace[face.id]
+                if (identity == null && shape == null) null
+                else IdentityEvidenceEngine.Template(face, identity, shape)
+            }
+            if (templates.isEmpty()) null else ClusterCandidate(person, templates)
+        }.toMutableList()
 
         var created = 0
         var assigned = 0
-        for (face in candidates) {
-            val identity = embeddingDao.getForOwnerAndModel(
-                OWNER_FACE,
-                face.id,
-                MODEL_FACE,
-                MODEL_FACE_VERSION
-            ) ?: continue
-            val shape = embeddingDao.getForOwnerAndModel(
-                FaceShapeEncoder.OWNER_TYPE,
-                face.id,
-                FaceShapeEncoder.MODEL_NAME,
-                FaceShapeEncoder.MODEL_VERSION
-            )?.vector
 
-            var best: Representative? = null
-            var bestScore = Float.NEGATIVE_INFINITY
-            for (candidate in representatives) {
-                if (candidate.embedding.size != identity.dimension) continue
-                val identityScore = FaceSimilarity.cosineSimilarity(identity.vector, candidate.embedding)
-                val shapeScore = if (shape != null && candidate.shape != null) FaceShapeEncoder.similarity(shape, candidate.shape!!) else 0f
-                val score = 0.85f * identityScore + 0.15f * shapeScore
-                if (score > bestScore) {
-                    bestScore = score
-                    best = candidate
-                }
-            }
+        for (face in candidates.sortedByDescending { it.qualityScore }) {
+            val identity = identityByFace[face.id]
+            val shape = shapeByFace[face.id]
+            if (identity == null && shape == null) continue
 
-            if (best != null && bestScore >= similarityThreshold) {
-                faceDao.assignToPerson(face.id, best.personId)
+            val best = people.mapNotNull { candidate ->
+                IdentityEvidenceEngine.compare(face, identity, shape, candidate.templates)?.let { candidate to it }
+            }.maxByOrNull { it.second.composite }
+
+            if (best != null && IdentityEvidenceEngine.shouldAssociate(best.second)) {
+                faceDao.assignToPerson(face.id, best.first.person.id)
                 assigned++
-                val representativeQuality = faceDao.getBestQualityForPerson(best.personId) ?: 0f
-                if (face.qualityScore > representativeQuality) {
-                    best.faceId = face.id
-                    best.embedding = identity.vector
-                    best.shape = shape
+                val refreshed = faceDao.getByPersonId(best.first.person.id).mapNotNull { f ->
+                    if (!f.usableForMatching) return@mapNotNull null
+                    val e = identityByFace[f.id]
+                    val s = shapeByFace[f.id]
+                    if (e == null && s == null) null else IdentityEvidenceEngine.Template(f, e, s)
                 }
+                val index = people.indexOf(best.first)
+                if (index >= 0) people[index] = best.first.copy(templates = boundedTemplates(refreshed))
             } else {
                 val personId = personDao.insert(
                     PersonEntity(
                         faceCount = 1,
-                        bestQualityScore = face.qualityScore,
-                        hasRepresentativeEmbedding = true,
+                        bestQualityScore = face.qualityScore.coerceIn(0f, 1f),
+                        hasRepresentativeEmbedding = identity != null,
                         representativeFaceId = face.id,
-                        modelVersion = identity.modelVersion
+                        modelVersion = "identity-evidence-v4"
                     )
                 )
                 faceDao.assignToPerson(face.id, personId)
-                representatives += Representative(personId, face.id, identity.vector, shape)
+                people += ClusterCandidate(
+                    personDao.getById(personId)!!,
+                    listOf(IdentityEvidenceEngine.Template(face, identity, shape))
+                )
                 created++
                 assigned++
             }
         }
 
-        // Refresh persisted cluster statistics after assignments.
         for (person in personDao.getMostObserved()) {
-            val count = faceDao.countForPerson(person.id).toInt()
-            if (count <= 0) continue
-            val bestQuality = faceDao.getBestQualityForPerson(person.id) ?: 0f
-            val representativeFaceId = person.representativeFaceId
-                ?: faceDao.getByPersonId(person.id).maxByOrNull { it.qualityScore }?.id
-            val hasEmbedding = representativeFaceId?.let {
-                embeddingDao.getForOwnerAndModel(OWNER_FACE, it, MODEL_FACE, MODEL_FACE_VERSION) != null
-            } == true
+            val faces = faceDao.getByPersonId(person.id)
+            if (faces.isEmpty()) continue
+            val bestFace = faces.maxByOrNull { it.qualityScore }
             personDao.updateStatistics(
                 personId = person.id,
-                faceCount = count,
-                bestQualityScore = bestQuality,
-                hasRepresentativeEmbedding = hasEmbedding,
-                representativeFaceId = representativeFaceId
+                faceCount = faces.size,
+                bestQualityScore = faces.maxOf { it.qualityScore }.coerceIn(0f, 1f),
+                hasRepresentativeEmbedding = bestFace?.let { identityByFace[it.id] != null } == true,
+                representativeFaceId = bestFace?.id
             )
         }
 
         ClusterResult(created, assigned)
     }
 
+    private data class ClusterCandidate(
+        val person: PersonEntity,
+        val templates: List<IdentityEvidenceEngine.Template>
+    )
+
+    private fun boundedTemplates(input: List<IdentityEvidenceEngine.Template>): List<IdentityEvidenceEngine.Template> {
+        val sorted = input.sortedByDescending { it.face.qualityScore }
+        if (sorted.size <= MAX_TEMPLATES) return sorted
+        val selected = sorted.take(4).toMutableList()
+        for (candidate in sorted.drop(4)) {
+            if (selected.size >= MAX_TEMPLATES) break
+            val diverse = selected.none { a ->
+                val ax = a.face.rotationX ?: 0f
+                val ay = a.face.rotationY ?: 0f
+                val az = a.face.rotationZ ?: 0f
+                val bx = candidate.face.rotationX ?: 0f
+                val by = candidate.face.rotationY ?: 0f
+                val bz = candidate.face.rotationZ ?: 0f
+                kotlin.math.abs(ax - bx) + kotlin.math.abs(ay - by) + kotlin.math.abs(az - bz) >= 18f
+            }
+            if (diverse) selected += candidate
+        }
+        if (selected.size < MAX_TEMPLATES) selected += sorted.filter { it !in selected }.take(MAX_TEMPLATES - selected.size)
+        return selected
+    }
+
     companion object {
-        private const val OWNER_FACE = "FACE"
-        private const val MODEL_FACE = "mobilefacenet"
-        private const val MODEL_FACE_VERSION = "tflite"
+        private const val MAX_TEMPLATES = 12
     }
 }
