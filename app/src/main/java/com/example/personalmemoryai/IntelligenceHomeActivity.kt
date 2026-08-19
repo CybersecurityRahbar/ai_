@@ -19,6 +19,7 @@ import com.example.personalmemoryai.ui.DiagnosticsActivity
 import com.example.personalmemoryai.ui.FaceSearchActivity
 import com.example.personalmemoryai.ui.ImageIntelligenceActivity
 import com.example.personalmemoryai.ui.ObjectIntelligenceActivity
+import com.example.personalmemoryai.ui.OcrEvidenceActivity
 import com.example.personalmemoryai.ui.PeopleIntelligenceActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -46,6 +47,8 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         content.addView(section("IDENTITY / FACE INTELLIGENCE"))
         content.addView(action("SEARCH FACE / IDENTITY CANDIDATES", "MobileFaceNet + FaceNet-512 + landmarks + confidence-ranked retrieval") { startActivity(Intent(this, FaceSearchActivity::class.java)) })
         content.addView(action("OPEN PEOPLE & FACE INTELLIGENCE", "Face clusters, observations and representative embeddings") { startActivity(Intent(this, PeopleIntelligenceActivity::class.java)) })
+        content.addView(section("OCR / TEXT INTELLIGENCE"))
+        content.addView(action("OPEN OCR EVIDENCE CONSOLE", "Arabic-aware search, fuzzy retrieval, OCR quality, pass telemetry and evidence") { startActivity(Intent(this, OcrEvidenceActivity::class.java)) })
         content.addView(section("OBJECT / VISUAL EVIDENCE"))
         content.addView(action("OPEN OBJECT INTELLIGENCE CONSOLE", "YOLO detection, confidence, bounding boxes, evidence search and model diagnostics") { startActivity(Intent(this, ObjectIntelligenceActivity::class.java)) })
         content.addView(action("OPEN INDEXED IMAGE INTELLIGENCE", "OCR, objects, metadata and indexed evidence") { startActivity(Intent(this, ImageIntelligenceActivity::class.java)) })
