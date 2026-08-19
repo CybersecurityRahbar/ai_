@@ -49,7 +49,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         }
         root.addView(header())
 
-        val scroll = ScrollView(this)
+        val scroll = ScrollView(this).apply { isFillViewport = true }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(10), 0, dp(28))
@@ -143,6 +143,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(15), dp(16), dp(15))
         setBackgroundResource(R.drawable.panel_intelligence)
+        elevation = dp(5).toFloat()
         addView(TextView(this@IntelligenceHomeActivity).apply {
             text = "PMAI // LOCAL INTELLIGENCE CORE"
             textSize = 10f
@@ -177,6 +178,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         setTypeface(null, Typeface.BOLD)
         setPadding(dp(14), dp(14), dp(14), dp(14))
         setBackgroundResource(R.drawable.panel_intelligence)
+        elevation = dp(3).toFloat()
     }
 
     private fun title(text: String, color: Int) = TextView(this).apply {
@@ -191,6 +193,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(12), dp(9), dp(12), dp(8))
         setBackgroundResource(R.drawable.panel_intelligence)
+        elevation = dp(2).toFloat()
         addView(TextView(this@IntelligenceHomeActivity).apply {
             text = label
             textSize = 8f
@@ -219,11 +222,12 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         textSize = 10f
         gravity = Gravity.START or Gravity.CENTER_VERTICAL
         setTextColor(accent)
-        setBackgroundResource(R.drawable.panel_intelligence)
+        setBackgroundResource(R.drawable.bg_intel_button)
         setAllCaps(false)
         setPadding(dp(15), dp(7), dp(15), dp(7))
         setOnClickListener { click() }
         stateListAnimator = null
+        elevation = dp(2).toFloat()
         layoutParams = LinearLayout.LayoutParams(-1, dp(70)).apply { setMargins(0, dp(3), 0, dp(3)) }
         setTypeface(Typeface.DEFAULT, Typeface.BOLD)
     }
