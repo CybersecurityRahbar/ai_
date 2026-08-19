@@ -6,8 +6,8 @@ import android.provider.MediaStore
 import com.example.personalmemoryai.data.ManagedImageStore
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
+import com.example.personalmemoryai.database.ObjectEntity
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
-import com.example.personalmemoryai.semantic.MobileClipImageEncoder
 import com.example.personalmemoryai.semantic.SemanticSearchService
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -17,6 +17,7 @@ import kotlinx.coroutines.coroutineScope
 class ImageIndexer(private val context: Context) : AutoCloseable {
     private val database = AppDatabase.getInstance(context)
     private val dao = database.imageDao()
+    private val objectDao = database.objectDao()
     private val ocrEngine = OcrEngine(context)
     private val objectDetector = YoloObjectDetector(context)
     private val imageStore = ManagedImageStore(context)
@@ -63,12 +64,18 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             }
             run.stage("OCR_RESULT", "OCR completed", mapOf("characters" to ocr.text.length.toString(), "language" to ocr.language))
 
-            run.stage("OBJECTS", "Running object detector")
+            run.stage("OBJECTS", "Running YOLO object detector")
+            val objectStarted = System.nanoTime()
             val objects = try { runObjectDetection(uri) } catch (t: Throwable) {
-                run.failure("OBJECTS", t)
+                run.failure("OBJECTS", t, mapOf("detector" to "YOLO26n W8A32"))
                 emptyList()
             }
-            run.stage("OBJECT_RESULT", "Object detection completed", mapOf("detections" to objects.size.toString()))
+            val objectInferenceMs = (System.nanoTime() - objectStarted) / 1_000_000L
+            run.stage("OBJECT_RESULT", "Object detection completed", mapOf(
+                "detections" to objects.size.toString(),
+                "inferenceMs" to objectInferenceMs.toString(),
+                "detector" to "YOLO26n W8A32"
+            ))
 
             run.stage("IMAGE_STORE", "Copying image into managed knowledge storage")
             val managedFile = imageStore.importImage(uri, fileName)
@@ -80,20 +87,51 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             val id = dao.insert(entity)
             val result = entity.copy(id = id)
 
-            // Run the expensive secondary intelligence stages after the row exists.
-            // They are isolated: a broken face/visual model cannot discard a valid OCR/object index.
-            coroutineScope {
-                val faceJob = async { try {
-                    run.stage("FACES", "Running MediaPipe landmarks + MobileFaceNet embedding")
-                    val faceResult = faceCoordinator.indexSingleImage(id, Uri.parse(result.uri))
-                    run.stage("FACES_RESULT", "Face analysis completed", mapOf("detected" to faceResult.detectedFaces.toString(), "embeddings" to faceResult.indexedFaces.toString()))
-                } catch (t: Throwable) { run.failure("FACES", t) } }
+            run.stage("OBJECT_PERSISTENCE", "Persisting object observations")
+            try {
+                objectDao.deleteForImage(id)
+                if (objects.isNotEmpty()) {
+                    objectDao.insertAll(objects.map { detection ->
+                        ObjectEntity(
+                            imageId = id,
+                            classId = detection.classId,
+                            label = detection.label,
+                            arabicLabel = detection.arabicLabel,
+                            confidence = detection.confidence,
+                            left = detection.left,
+                            top = detection.top,
+                            right = detection.right,
+                            bottom = detection.bottom,
+                            detectorName = "YOLO26n W8A32",
+                            detectorVersion = "1",
+                            inferenceTimeMs = objectInferenceMs,
+                            createdAt = System.currentTimeMillis()
+                        )
+                    })
+                }
+                run.stage("OBJECT_PERSISTENCE_RESULT", "Object observations persisted", mapOf("rows" to objects.size.toString()))
+            } catch (t: Throwable) {
+                run.failure("OBJECT_PERSISTENCE", t, mapOf("imageId" to id.toString()))
+            }
 
-                val visualJob = if (semanticSearchService.isModelInstalled()) async { try {
-                    run.stage("VISUAL", "Running MobileCLIP-S2 visual embedding")
-                    val embedding = semanticSearchService.indexImageAndStore(result)
-                    run.stage("VISUAL_RESULT", "Visual embedding persisted", mapOf("embeddingId" to embedding.toString()))
-                } catch (t: Throwable) { run.failure("VISUAL", t) } } else null
+            // Run expensive secondary intelligence stages after the row exists.
+            // Each stage is isolated so a broken model cannot discard valid OCR/object data.
+            coroutineScope {
+                val faceJob = async {
+                    try {
+                        run.stage("FACES", "Running MediaPipe landmarks + face embeddings")
+                        val faceResult = faceCoordinator.indexSingleImage(id, Uri.parse(result.uri))
+                        run.stage("FACES_RESULT", "Face analysis completed", mapOf("detected" to faceResult.detectedFaces.toString(), "embeddings" to faceResult.indexedFaces.toString()))
+                    } catch (t: Throwable) { run.failure("FACES", t) }
+                }
+
+                val visualJob = if (semanticSearchService.isModelInstalled()) async {
+                    try {
+                        run.stage("VISUAL", "Running MobileCLIP-S2 visual embedding")
+                        val embedding = semanticSearchService.indexImageAndStore(result)
+                        run.stage("VISUAL_RESULT", "Visual embedding persisted", mapOf("embeddingId" to embedding.toString()))
+                    } catch (t: Throwable) { run.failure("VISUAL", t) }
+                } else null
 
                 faceJob.await()
                 visualJob?.await()
@@ -103,6 +141,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
                 "imageId" to id.toString(),
                 "ocrChars" to ocr.text.length.toString(),
                 "objects" to objects.size.toString(),
+                "objectInferenceMs" to objectInferenceMs.toString(),
                 "visualModelInstalled" to semanticSearchService.isModelInstalled().toString()
             ))
             result
