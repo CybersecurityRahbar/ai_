@@ -11,16 +11,12 @@ import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult
 import kotlin.math.max
 import kotlin.math.min
 
-/** MediaPipe-based facial analysis engine. Detection/landmarks only; identity is handled separately. */
+/** MediaPipe facial detector/landmarker. Runtime failures are propagated to Diagnostics instead of being silently converted to zero faces. */
 class MediaPipeFaceAnalyzer(context: Context) : AutoCloseable {
-
     private val landmarker: FaceLandmarker
 
     init {
-        val baseOptions = BaseOptions.builder()
-            .setModelAssetPath(MODEL_FILE)
-            .build()
-
+        val baseOptions = BaseOptions.builder().setModelAssetPath(MODEL_FILE).build()
         val options = FaceLandmarker.FaceLandmarkerOptions.builder()
             .setBaseOptions(baseOptions)
             .setRunningMode(RunningMode.IMAGE)
@@ -31,161 +27,67 @@ class MediaPipeFaceAnalyzer(context: Context) : AutoCloseable {
             .setOutputFaceBlendshapes(true)
             .setOutputFacialTransformationMatrixes(true)
             .build()
-
         landmarker = FaceLandmarker.createFromOptions(context, options)
     }
 
     fun analyze(bitmap: Bitmap): List<FaceLandmarkResult> {
-        if (bitmap.width <= 0 || bitmap.height <= 0 || bitmap.isRecycled) {
-            return emptyList()
-        }
-
+        require(bitmap.width > 0 && bitmap.height > 0 && !bitmap.isRecycled) { "Invalid bitmap supplied to MediaPipe face analyzer" }
         val mpImage = BitmapImageBuilder(bitmap).build()
-        return try {
-            val result = landmarker.detect(mpImage)
-            convertResult(result, bitmap.width, bitmap.height)
-        } catch (_: Throwable) {
-            emptyList()
-        }
+        val result = landmarker.detect(mpImage)
+        return convertResult(result, bitmap.width, bitmap.height)
     }
 
-    private fun convertResult(
-        result: FaceLandmarkerResult,
-        imageWidth: Int,
-        imageHeight: Int
-    ): List<FaceLandmarkResult> {
+    private fun convertResult(result: FaceLandmarkerResult, imageWidth: Int, imageHeight: Int): List<FaceLandmarkResult> {
         val output = mutableListOf<FaceLandmarkResult>()
         val faceLandmarks = result.faceLandmarks()
-
         if (faceLandmarks.isEmpty()) return output
-
         for (faceIndex in faceLandmarks.indices) {
             val mediapipeLandmarks = faceLandmarks[faceIndex]
             if (mediapipeLandmarks.isEmpty()) continue
-
-            val points = mediapipeLandmarks.map { landmark ->
-                FaceLandmarkResult.Point(
-                    x = landmark.x(),
-                    y = landmark.y(),
-                    z = landmark.z()
-                )
-            }
-
+            val points = mediapipeLandmarks.map { landmark -> FaceLandmarkResult.Point(landmark.x(), landmark.y(), landmark.z()) }
             if (points.isEmpty()) continue
-
             val boundingBox = calculateBoundingBox(points, imageWidth, imageHeight)
             val blendshapes = extractBlendshapes(result, faceIndex)
             val rotation = extractRotation(result, faceIndex)
             val detectionConfidence = calculateOperationalConfidence(points)
-
-            output += FaceLandmarkResult(
-                boundingBox = boundingBox,
-                landmarks = points,
-                blendshapes = blendshapes,
-                rotationX = rotation?.first,
-                rotationY = rotation?.second,
-                rotationZ = rotation?.third,
-                detectionConfidence = detectionConfidence
-            )
+            output += FaceLandmarkResult(boundingBox, points, blendshapes, rotation?.first, rotation?.second, rotation?.third, detectionConfidence)
         }
-
         return output
     }
 
-    /**
-     * MediaPipe Tasks exposes face blendshapes through java.util.Optional.
-     * Use Optional.orElse() instead of indexed Optional.get(...) access so
-     * this remains compatible with the MediaPipe Tasks Java API used by the
-     * project and cannot be interpreted as get(index) by Kotlin.
-     */
-    private fun extractBlendshapes(
-        result: FaceLandmarkerResult,
-        faceIndex: Int
-    ): List<FaceLandmarkResult.Blendshape> {
+    private fun extractBlendshapes(result: FaceLandmarkerResult, faceIndex: Int): List<FaceLandmarkResult.Blendshape> {
         val optionalBlendshapes = result.faceBlendshapes()
         if (!optionalBlendshapes.isPresent) return emptyList()
-
         return try {
             val allBlendshapes = optionalBlendshapes.orElse(emptyList())
-            if (faceIndex < 0 || faceIndex >= allBlendshapes.size) {
-                return emptyList()
-            }
-
-            allBlendshapes.get(faceIndex).mapNotNull { category ->
+            if (faceIndex !in allBlendshapes.indices) return emptyList()
+            allBlendshapes[faceIndex].mapNotNull { category ->
                 val name = category.categoryName()
-                val score = category.score()
-
-                if (name.isNullOrBlank()) {
-                    null
-                } else {
-                    FaceLandmarkResult.Blendshape(
-                        name = name,
-                        score = score.coerceIn(0f, 1f)
-                    )
-                }
+                if (name.isNullOrBlank()) null else FaceLandmarkResult.Blendshape(name, category.score().coerceIn(0f, 1f))
             }
-        } catch (_: Throwable) {
-            emptyList()
-        }
+        } catch (_: Throwable) { emptyList() }
     }
 
-    /**
-     * Head-pose extraction is intentionally deferred. The transformation
-     * matrix API differs between MediaPipe Tasks artifacts; returning null
-     * is safer than fabricating Euler angles.
-     */
-    private fun extractRotation(
-        result: FaceLandmarkerResult,
-        faceIndex: Int
-    ): Triple<Float, Float, Float>? = null
+    private fun extractRotation(result: FaceLandmarkerResult, faceIndex: Int): Triple<Float, Float, Float>? = null
 
-    private fun calculateBoundingBox(
-        points: List<FaceLandmarkResult.Point>,
-        imageWidth: Int,
-        imageHeight: Int
-    ): RectF {
+    private fun calculateBoundingBox(points: List<FaceLandmarkResult.Point>, imageWidth: Int, imageHeight: Int): RectF {
         if (points.isEmpty()) return RectF()
-
-        var minX = Float.POSITIVE_INFINITY
-        var minY = Float.POSITIVE_INFINITY
-        var maxX = Float.NEGATIVE_INFINITY
-        var maxY = Float.NEGATIVE_INFINITY
-
+        var minX = Float.POSITIVE_INFINITY; var minY = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY; var maxY = Float.NEGATIVE_INFINITY
         for (point in points) {
-            minX = min(minX, point.x)
-            minY = min(minY, point.y)
-            maxX = max(maxX, point.x)
-            maxY = max(maxY, point.y)
+            minX = min(minX, point.x); minY = min(minY, point.y)
+            maxX = max(maxX, point.x); maxY = max(maxY, point.y)
         }
-
-        val left = minX.coerceIn(0f, 1f)
-        val top = minY.coerceIn(0f, 1f)
-        val right = maxX.coerceIn(0f, 1f)
-        val bottom = maxY.coerceIn(0f, 1f)
-
-        if (right <= left || bottom <= top) {
-            return RectF(left, top, left, top)
-        }
-
+        val left = minX.coerceIn(0f, 1f); val top = minY.coerceIn(0f, 1f)
+        val right = maxX.coerceIn(0f, 1f); val bottom = maxY.coerceIn(0f, 1f)
+        if (right <= left || bottom <= top) return RectF(left, top, left, top)
         return RectF(left, top, right, bottom)
     }
 
-    private fun calculateOperationalConfidence(
-        points: List<FaceLandmarkResult.Point>
-    ): Float {
-        if (points.isEmpty()) return 0f
+    private fun calculateOperationalConfidence(points: List<FaceLandmarkResult.Point>): Float =
+        if (points.isEmpty()) 0f else (points.size.toFloat() / EXPECTED_LANDMARK_COUNT).coerceIn(0f, 1f)
 
-        return (points.size.toFloat() / EXPECTED_LANDMARK_COUNT)
-            .coerceIn(0f, 1f)
-    }
-
-    override fun close() {
-        try {
-            landmarker.close()
-        } catch (_: Throwable) {
-            // Ignore cleanup exceptions.
-        }
-    }
+    override fun close() { try { landmarker.close() } catch (_: Throwable) {} }
 
     companion object {
         private const val MODEL_FILE = "face_landmarker.task"
