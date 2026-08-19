@@ -30,18 +30,18 @@ class OcrEngine(private val context: Context) {
         var latinFailed = false
         try {
             latinText = recognizeLatin(uri)
-            diagnostics.info("OCR_LATIN", "Latin OCR completed", mapOf("characters" to latinText.length.toString()))
+            diagnostics.record("OCR", "LATIN", DiagnosticsManager.Severity.INFO, "Latin OCR completed", metadata = mapOf("characters" to latinText.length.toString()))
         } catch (e: Exception) {
             latinFailed = true
-            diagnostics.warning("OCR_LATIN", "Latin OCR failed; Arabic pipeline will still run", mapOf("error" to (e.message ?: e.javaClass.simpleName)))
+            diagnostics.record("OCR", "LATIN", DiagnosticsManager.Severity.WARNING, "Latin OCR failed; Arabic pipeline continued", exception = e, metadata = mapOf("uri" to uri.toString()))
         }
 
         val arabic = try {
             arabicRecognizer.recognizeDetailed(uri).also {
-                diagnostics.info("OCR_ARABIC", "Arabic OCR completed", mapOf("characters" to it.text.length.toString(), "quality" to "%.3f".format(java.util.Locale.US, it.qualityScore), "passes" to it.passCount.toString(), "successfulPasses" to it.successfulPasses.toString()))
+                diagnostics.record("OCR", "ARABIC", DiagnosticsManager.Severity.INFO, "Arabic OCR completed", metadata = mapOf("characters" to it.text.length.toString(), "quality" to "%.3f".format(java.util.Locale.US, it.qualityScore), "passes" to it.passCount.toString(), "successfulPasses" to it.successfulPasses.toString()))
             }
         } catch (e: Exception) {
-            diagnostics.failure("OCR_ARABIC", e)
+            diagnostics.record("OCR", "ARABIC", DiagnosticsManager.Severity.ERROR, "Arabic OCR failed", exception = e, metadata = mapOf("uri" to uri.toString()))
             ArabicOcrResult("", 0f, 0, 0)
         }
 
@@ -57,7 +57,7 @@ class OcrEngine(private val context: Context) {
             latinChars > 0 -> if (latinFailed) 0.45f else 0.70f
             else -> 0.25f
         }.coerceIn(0f, 1f)
-        if (combined.isBlank()) diagnostics.warning("OCR_RESULT", "OCR produced no text", mapOf("uri" to uri.toString()))
+        if (combined.isBlank()) diagnostics.record("OCR", "RESULT", DiagnosticsManager.Severity.WARNING, "OCR produced no text", metadata = mapOf("uri" to uri.toString()))
         return OcrResult(combined, detectLanguage(combined), evidenceScore, latinChars, arabicChars, passes, successful)
     }
 
