@@ -1,6 +1,5 @@
 package com.example.personalmemoryai.ui
 
-import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
@@ -66,23 +65,13 @@ class ObjectIntelligenceActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)); setBackgroundColor(bg) }
-        root.addView(TextView(this).apply {
-            text = "OBJECT INTELLIGENCE / ANALYSIS CONSOLE"
-            textSize = 12f; setTextColor(Color.rgb(139, 211, 255)); setTypeface(null, Typeface.BOLD)
-        })
-        root.addView(TextView(this).apply {
-            text = "كشف الكائنات • الأدلة المرئية • قياس النموذج • تتبع النتائج"
-            textSize = 21f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(5), 0, dp(14))
-        })
-
+        root.addView(TextView(this).apply { text = "OBJECT INTELLIGENCE / ANALYSIS CONSOLE"; textSize = 12f; setTextColor(Color.rgb(139, 211, 255)); setTypeface(null, Typeface.BOLD) })
+        root.addView(TextView(this).apply { text = "كشف الكائنات • الأدلة المرئية • قياس النموذج • تتبع النتائج"; textSize = 21f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(5), 0, dp(14)) })
         health = TextView(this).apply { setTextColor(ok); textSize = 12f; setPadding(dp(14), dp(14), dp(14), dp(14)); setBackgroundColor(panel) }
         root.addView(health, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(10)) })
-
         val scroll = ScrollView(this)
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scroll.addView(content)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-
+        scroll.addView(content); root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         content.addView(action("RUN OBJECT MODEL TEST", "Select one image and execute YOLO inference now") { picker.launch("image/*") })
         content.addView(action("SEARCH OBJECT EVIDENCE", "Open indexed images containing a selected object") { showObjectSearch() })
         content.addView(TextView(this).apply { text = "PERSISTED OBJECT EVIDENCE"; textSize = 10f; setTextColor(Color.rgb(132, 188, 222)); setTypeface(null, Typeface.BOLD); setPadding(0, dp(16), 0, dp(7)) })
@@ -109,8 +98,8 @@ class ObjectIntelligenceActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 val label = input.text.toString().trim().lowercase()
                 if (label.isBlank()) return@launch
-                val rows = withContext(Dispatchers.IO) { AppDatabase.getInstance(applicationContext).objectDao().searchByLabel(label, 100) }
-                results.text = if (rows.isEmpty()) "No indexed evidence for: $label" else rows.joinToString("\n\n") { "IMAGE #${it.imageId}\n${it.label} / ${it.arabicLabel}\nConfidence ${(it.confidence * 100f).roundToInt()}%\nBox ${it.left.roundToInt()},${it.top.roundToInt()} → ${it.right.roundToInt()},${it.bottom.roundToInt()}" }
+                val rows = withContext(Dispatchers.IO) { AppDatabase.getInstance(applicationContext).objectDao().searchEvidence(label, 100) }
+                results.text = if (rows.isEmpty()) "No indexed evidence for: $label" else rows.joinToString("\n\n") { "${it.imageFileName}\nIMAGE #${it.imageId}\n${it.label} / ${it.arabicLabel}\nConfidence ${(it.confidence * 100f).roundToInt()}%\nBox ${it.left.roundToInt()},${it.top.roundToInt()} → ${it.right.roundToInt()},${it.bottom.roundToInt()}\nURI: ${it.imageUri}" }
             }
         }.show()
     }
