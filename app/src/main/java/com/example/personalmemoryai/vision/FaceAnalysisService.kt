@@ -58,7 +58,9 @@ class FaceAnalysisService(
                     embeddingModelName = if (validEmbedding) embeddingModel.modelName else null,
                     embeddingModelVersion = if (validEmbedding) embeddingModel.modelVersion else null,
                     embeddingError = embeddingError,
-                    usableForMatching = validEmbedding && validShape && pose != null && quality.usable
+                    // Quality is a scoring signal, not a hard gate. This prevents usable faces
+                    // from disappearing from the index merely because of blur/lighting/size.
+                    usableForMatching = validEmbedding && validShape && pose != null
                 )
             } finally {
                 if (!crop.isRecycled) crop.recycle()
