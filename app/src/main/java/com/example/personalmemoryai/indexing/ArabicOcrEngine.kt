@@ -3,6 +3,7 @@ package com.example.personalmemoryai.indexing
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
@@ -111,15 +112,24 @@ class ArabicOcrEngine(private val context: Context) {
 
     private fun prepareVariants(source: Bitmap): List<Bitmap> {
         val maxDimension = 4096
-        val scale = minOf(1f, maxDimension.toFloat() / maxOf(source.width, source.height).toFloat())
-        val width = (source.width * scale).toInt().coerceAtLeast(1)
-        val height = (source.height * scale).toInt().coerceAtLeast(1)
+        val baseScale = minOf(1f, maxDimension.toFloat() / maxOf(source.width, source.height).toFloat())
+        val width = (source.width * baseScale).toInt().coerceAtLeast(1)
+        val height = (source.height * baseScale).toInt().coerceAtLeast(1)
         val base = if (width != source.width || height != source.height) Bitmap.createScaledBitmap(source, width, height, true) else source
+        val variants = mutableListOf<Bitmap>(source)
+
+        // Upscaling helps small Arabic glyphs when the original image is below the model's useful text scale.
+        if (maxOf(width, height) < 2800) {
+            val scale = minOf(1.6f, maxDimension.toFloat() / maxOf(width, height).toFloat())
+            val up = Bitmap.createScaledBitmap(base, (width * scale).toInt(), (height * scale).toInt(), true)
+            variants += up
+        }
 
         val gray = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         Canvas(gray).drawBitmap(base, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
             colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
         })
+        variants += gray
 
         val contrast = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val contrastMatrix = ColorMatrix(floatArrayOf(
@@ -131,9 +141,21 @@ class ArabicOcrEngine(private val context: Context) {
         Canvas(contrast).drawBitmap(base, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
             colorFilter = ColorMatrixColorFilter(contrastMatrix)
         })
+        variants += contrast
+
+        // A light binary variant is useful for low-contrast scans and screenshots.
+        val threshold = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(width * height)
+        gray.getPixels(pixels, 0, width, 0, 0, width, height)
+        for (i in pixels.indices) {
+            val luminance = (Color.red(pixels[i]) * 0.299f + Color.green(pixels[i]) * 0.587f + Color.blue(pixels[i]) * 0.114f)
+            pixels[i] = if (luminance >= 160f) Color.WHITE else Color.BLACK
+        }
+        threshold.setPixels(pixels, 0, width, 0, 0, width, height)
+        variants += threshold
 
         if (base !== source && !base.isRecycled) base.recycle()
-        return listOf(source, gray, contrast)
+        return variants
     }
 
     private fun repetitionScore(parts: Set<String>): Float {
