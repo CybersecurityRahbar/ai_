@@ -6,6 +6,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -68,9 +69,15 @@ class FaceSearchActivity : AppCompatActivity() {
             setPadding(0, dp(4), 0, dp(8))
         })
         addView(TextView(this@FaceSearchActivity).apply {
-            text = "MobileFaceNet + 478 LANDMARK SHAPE + QUALITY • VISUAL CANDIDATES, NOT IDENTITY PROOF"
+            text = "MobileFaceNet + 478 LANDMARK SHAPE + HEAD POSE + QUALITY"
             textSize = 9f
             setTextColor(muted)
+        })
+        addView(TextView(this@FaceSearchActivity).apply {
+            text = "Identity is the primary signal; geometry, pose and quality provide independent corroboration."
+            textSize = 9f
+            setTextColor(muted)
+            setPadding(0, dp(4), 0, 0)
         })
         addView(Button(this@FaceSearchActivity).apply {
             text = "SELECT QUERY IMAGE"
@@ -92,10 +99,7 @@ class FaceSearchActivity : AppCompatActivity() {
                     addMessage("NO MATCH CANDIDATES", "لا توجد وجوه قابلة للمقارنة مع الفهرس الحالي.")
                     return@launch
                 }
-                results.forEachIndexed { index, result ->
-                    val title = result.person?.displayName?.takeIf { !it.isNullOrBlank() } ?: "PERSON CLUSTER #${result.person?.id ?: "UNASSIGNED"}"
-                    addCard(index + 1, title, result)
-                }
+                results.forEachIndexed { index, result -> addCard(index + 1, result) }
             } catch (t: Throwable) {
                 status.text = "SEARCH FAILED • ${t.message ?: t.javaClass.simpleName}"
                 addMessage("DIAGNOSTIC FAILURE", t.message ?: t.javaClass.simpleName)
@@ -103,24 +107,36 @@ class FaceSearchActivity : AppCompatActivity() {
         }
     }
 
-    private fun addCard(rank: Int, title: String, result: FaceSearchService.FaceMatch) {
+    private fun addCard(rank: Int, result: FaceSearchService.FaceMatch) {
+        val title = result.person?.displayName?.takeIf { !it.isNullOrBlank() } ?: "PERSON CLUSTER #${result.person?.id ?: "UNASSIGNED"}"
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+            setPadding(dp(12), dp(12), dp(12), dp(12))
             setBackgroundColor(panel)
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(9) }
         }
+        val preview = ImageView(this).apply {
+            setImageURI(android.net.Uri.parse(result.image.uri))
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            contentDescription = result.image.fileName
+            layoutParams = LinearLayout.LayoutParams(-1, dp(150))
+        }
+        card.addView(preview)
         card.addView(TextView(this).apply {
             text = String.format(Locale.US, "#%02d  %s", rank, title)
-            textSize = 15f; setTextColor(text); setTypeface(null, Typeface.BOLD)
+            textSize = 15f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(8), 0, 0)
         })
         card.addView(TextView(this).apply {
             text = String.format(Locale.US, "OVERALL  %.1f%%   •   IDENTITY  %.1f%%   •   SHAPE  %.1f%%", result.compositeScore * 100f, result.identitySimilarity * 100f, result.shapeSimilarity * 100f)
-            textSize = 11f; setTextColor(Color.rgb(143, 211, 255)); setPadding(0, dp(6), 0, dp(3))
+            textSize = 11f; setTextColor(Color.rgb(143, 211, 255)); setPadding(0, dp(6), 0, dp(2))
         })
         card.addView(TextView(this).apply {
-            text = "CONFIDENCE: ${result.confidenceBand.name}  •  FACE #${result.face.id}  •  IMAGE #${result.image.id}\n${result.image.fileName}\n${result.image.filePath ?: result.image.uri}"
-            textSize = 10f; setTextColor(muted); setPadding(0, dp(2), 0, 0)
+            text = String.format(Locale.US, "POSE  %.1f%%   •   QUALITY  %.1f%%   •   BAND  %s", result.poseSimilarity * 100f, result.quality * 100f, result.confidenceBand.name)
+            textSize = 10f; setTextColor(muted); setPadding(0, dp(2), 0, dp(6))
+        })
+        card.addView(TextView(this).apply {
+            text = "FACE #${result.face.id}  •  IMAGE #${result.image.id}\n${result.image.fileName}\n${result.image.filePath ?: result.image.uri}"
+            textSize = 10f; setTextColor(muted)
         })
         card.setOnClickListener { ImageViewerActivity.start(this, result.image.uri) }
         resultHost.addView(card)
