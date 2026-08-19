@@ -3,8 +3,8 @@ package com.example.personalmemoryai.diagnostics
 import android.content.Context
 
 /**
- * Small adapter used by every ML engine to publish what actually happened at runtime.
- * It deliberately does not infer readiness from the mere existence of a model file.
+ * Runtime telemetry adapter for every ML engine.
+ * Readiness must be proven by successful load + inference, not by file existence.
  */
 class ModelHealthReporter(context: Context) {
     private val diagnostics = DiagnosticsManager.get(context.applicationContext)
@@ -14,6 +14,22 @@ class ModelHealthReporter(context: Context) {
             "MODEL_HEALTH", "LOAD_SUCCESS", DiagnosticsManager.Severity.INFO,
             "$model loaded successfully",
             metadata = details + mapOf("component" to model, "input" to input, "output" to output)
+        )
+    }
+
+    fun loadFailure(model: String, throwable: Throwable, details: Map<String, String> = emptyMap()) {
+        diagnostics.record(
+            "MODEL_HEALTH", "LOAD_FAILURE", DiagnosticsManager.Severity.ERROR,
+            "$model failed to load", throwable = throwable,
+            metadata = details + mapOf("component" to model)
+        )
+    }
+
+    fun tensorContractFailure(model: String, reason: String, details: Map<String, String> = emptyMap()) {
+        diagnostics.record(
+            "MODEL_HEALTH", "TENSOR_CONTRACT_FAILURE", DiagnosticsManager.Severity.ERROR,
+            "$model tensor contract invalid: $reason",
+            metadata = details + mapOf("component" to model, "reason" to reason)
         )
     }
 
@@ -32,9 +48,16 @@ class ModelHealthReporter(context: Context) {
     fun inferenceFailure(model: String, throwable: Throwable, details: Map<String, String> = emptyMap()) {
         diagnostics.record(
             "MODEL_HEALTH", "INFERENCE_FAILURE", DiagnosticsManager.Severity.ERROR,
-            "$model inference failed",
-            throwable = throwable,
+            "$model inference failed", throwable = throwable,
             metadata = details + mapOf("component" to model)
+        )
+    }
+
+    fun outputInvalid(model: String, reason: String, details: Map<String, String> = emptyMap()) {
+        diagnostics.record(
+            "MODEL_HEALTH", "OUTPUT_INVALID", DiagnosticsManager.Severity.ERROR,
+            "$model produced invalid output: $reason",
+            metadata = details + mapOf("component" to model, "reason" to reason)
         )
     }
 
