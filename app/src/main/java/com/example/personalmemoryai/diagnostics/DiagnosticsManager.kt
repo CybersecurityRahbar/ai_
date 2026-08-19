@@ -89,13 +89,30 @@ class DiagnosticsManager private constructor(private val context: Context) {
     enum class Severity { DEBUG, INFO, WARNING, ERROR, CRITICAL }
 
     class Run internal constructor(private val manager: DiagnosticsManager, private val operation: String, val id: String) {
+        private val startedAt = System.currentTimeMillis()
+        private val terminal = AtomicBoolean(false)
+
         fun stage(stage: String, message: String, metadata: Map<String, String> = emptyMap()) =
             manager.record(operation, stage, Severity.INFO, message, metadata = metadata + ("runId" to id))
-        fun success(message: String = "Operation completed", metadata: Map<String, String> = emptyMap()) =
-            manager.record(operation, "SUCCESS", Severity.INFO, message, metadata = metadata + ("runId" to id))
+
+        fun success(message: String = "Operation completed", metadata: Map<String, String> = emptyMap()) {
+            if (!terminal.compareAndSet(false, true)) return
+            manager.record(
+                operation, "SUCCESS", Severity.INFO, message,
+                metadata = metadata + ("runId" to id) + ("durationMs" to (System.currentTimeMillis() - startedAt).toString())
+            )
+        }
+
         fun warning(message: String, metadata: Map<String, String> = emptyMap()) =
             manager.record(operation, "WARNING", Severity.WARNING, message, metadata = metadata + ("runId" to id))
-        fun failure(stage: String, throwable: Throwable, metadata: Map<String, String> = emptyMap()) =
-            manager.record(operation, stage, Severity.ERROR, throwable.message ?: "Operation failed", throwable, metadata + ("runId" to id))
+
+        fun failure(stage: String, throwable: Throwable, metadata: Map<String, String> = emptyMap()) {
+            if (!terminal.compareAndSet(false, true)) return
+            manager.record(
+                operation, stage, Severity.ERROR,
+                throwable.message ?: "Operation failed", throwable,
+                metadata + ("runId" to id) + ("durationMs" to (System.currentTimeMillis() - startedAt).toString())
+            )
+        }
     }
 }
