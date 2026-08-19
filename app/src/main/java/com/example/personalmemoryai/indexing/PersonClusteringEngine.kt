@@ -9,12 +9,7 @@ import com.example.personalmemoryai.vision.IdentityEvidenceEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Compatibility clustering engine used by older indexing paths.
- * It now uses the same conservative multi-signal evidence policy as the
- * primary PersonClusteringService, so two indexing paths cannot silently use
- * materially different identity rules.
- */
+/** Multi-model person clustering with conservative visual evidence. */
 class PersonClusteringEngine(
     private val faceDao: FaceDao,
     private val personDao: PersonDao,
@@ -24,67 +19,57 @@ class PersonClusteringEngine(
 
     suspend fun buildClusters(similarityThreshold: Float): ClusterResult = withContext(Dispatchers.Default) {
         require(similarityThreshold in 0.50f..0.95f) { "Cluster threshold must be between 0.50 and 0.95" }
-
         val candidates = faceDao.getUnassignedMatchableFaces()
         if (candidates.isEmpty()) return@withContext ClusterResult(0, 0)
 
-        val identityByFace = embeddingDao.getAllForFaceSearch()
-            .filter { it.modelName.equals("mobilefacenet", true) }
-            .groupBy { it.ownerId }
-            .mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
-        val shapeByFace = embeddingDao.getAllForOwnerType(FaceShapeEncoder.OWNER_TYPE)
-            .groupBy { it.ownerId }
-            .mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
+        val allIdentity = embeddingDao.getAllForFaceSearch()
+        val mobileByFace = allIdentity.filter { it.modelName.equals("mobilefacenet", true) }.groupBy { it.ownerId }.mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
+        val faceNetByFace = allIdentity.filter { it.modelName.equals("facenet_512", true) }.groupBy { it.ownerId }.mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
+        val shapeByFace = embeddingDao.getAllForOwnerType(FaceShapeEncoder.OWNER_TYPE).groupBy { it.ownerId }.mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
+
+        fun template(faceId: Long): IdentityEvidenceEngine.Template? {
+            val face = faceDao.getById(faceId) ?: return null
+            if (!face.usableForMatching) return null
+            val identity = mobileByFace[faceId]
+            val secondary = faceNetByFace[faceId]
+            val shape = shapeByFace[faceId]
+            if (identity == null && secondary == null && shape == null) return null
+            return IdentityEvidenceEngine.Template(face, identity, shape, secondary)
+        }
 
         val people = personDao.getMostObserved().mapNotNull { person ->
-            val templates = faceDao.getByPersonId(person.id).mapNotNull { face ->
-                if (!face.usableForMatching) return@mapNotNull null
-                val identity = identityByFace[face.id]
-                val shape = shapeByFace[face.id]
-                if (identity == null && shape == null) null
-                else IdentityEvidenceEngine.Template(face, identity, shape)
-            }
+            val templates = faceDao.getByPersonId(person.id).mapNotNull { template(it.id) }
             if (templates.isEmpty()) null else ClusterCandidate(person, templates)
         }.toMutableList()
 
         var created = 0
         var assigned = 0
-
         for (face in candidates.sortedByDescending { it.qualityScore }) {
-            val identity = identityByFace[face.id]
+            val identity = mobileByFace[face.id]
+            val secondary = faceNetByFace[face.id]
             val shape = shapeByFace[face.id]
-            if (identity == null && shape == null) continue
+            if (identity == null && secondary == null && shape == null) continue
 
             val best = people.mapNotNull { candidate ->
-                IdentityEvidenceEngine.compare(face, identity, shape, candidate.templates)?.let { candidate to it }
+                IdentityEvidenceEngine.compare(face, identity, shape, candidate.templates, secondary)?.let { candidate to it }
             }.maxByOrNull { it.second.composite }
 
             if (best != null && IdentityEvidenceEngine.shouldAssociate(best.second)) {
                 faceDao.assignToPerson(face.id, best.first.person.id)
                 assigned++
-                val refreshed = faceDao.getByPersonId(best.first.person.id).mapNotNull { f ->
-                    if (!f.usableForMatching) return@mapNotNull null
-                    val e = identityByFace[f.id]
-                    val s = shapeByFace[f.id]
-                    if (e == null && s == null) null else IdentityEvidenceEngine.Template(f, e, s)
-                }
+                val refreshed = faceDao.getByPersonId(best.first.person.id).mapNotNull { template(it.id) }
                 val index = people.indexOf(best.first)
                 if (index >= 0) people[index] = best.first.copy(templates = boundedTemplates(refreshed))
             } else {
-                val personId = personDao.insert(
-                    PersonEntity(
-                        faceCount = 1,
-                        bestQualityScore = face.qualityScore.coerceIn(0f, 1f),
-                        hasRepresentativeEmbedding = identity != null,
-                        representativeFaceId = face.id,
-                        modelVersion = "identity-evidence-v4"
-                    )
-                )
+                val personId = personDao.insert(PersonEntity(
+                    faceCount = 1,
+                    bestQualityScore = face.qualityScore.coerceIn(0f, 1f),
+                    hasRepresentativeEmbedding = identity != null || secondary != null,
+                    representativeFaceId = face.id,
+                    modelVersion = "identity-evidence-v5"
+                ))
                 faceDao.assignToPerson(face.id, personId)
-                people += ClusterCandidate(
-                    personDao.getById(personId)!!,
-                    listOf(IdentityEvidenceEngine.Template(face, identity, shape))
-                )
+                people += ClusterCandidate(personDao.getById(personId)!!, listOfNotNull(template(face.id)))
                 created++
                 assigned++
             }
@@ -98,19 +83,14 @@ class PersonClusteringEngine(
                 personId = person.id,
                 faceCount = faces.size,
                 bestQualityScore = faces.maxOf { it.qualityScore }.coerceIn(0f, 1f),
-                hasRepresentativeEmbedding = bestFace?.let { identityByFace[it.id] != null } == true,
+                hasRepresentativeEmbedding = bestFace?.let { mobileByFace[it.id] != null || faceNetByFace[it.id] != null } == true,
                 representativeFaceId = bestFace?.id
             )
         }
-
         ClusterResult(created, assigned)
     }
 
-    private data class ClusterCandidate(
-        val person: PersonEntity,
-        val templates: List<IdentityEvidenceEngine.Template>
-    )
-
+    private data class ClusterCandidate(val person: PersonEntity, val templates: List<IdentityEvidenceEngine.Template>)
     private fun boundedTemplates(input: List<IdentityEvidenceEngine.Template>): List<IdentityEvidenceEngine.Template> {
         val sorted = input.sortedByDescending { it.face.qualityScore }
         if (sorted.size <= MAX_TEMPLATES) return sorted
@@ -118,12 +98,8 @@ class PersonClusteringEngine(
         for (candidate in sorted.drop(4)) {
             if (selected.size >= MAX_TEMPLATES) break
             val diverse = selected.none { a ->
-                val ax = a.face.rotationX ?: 0f
-                val ay = a.face.rotationY ?: 0f
-                val az = a.face.rotationZ ?: 0f
-                val bx = candidate.face.rotationX ?: 0f
-                val by = candidate.face.rotationY ?: 0f
-                val bz = candidate.face.rotationZ ?: 0f
+                val ax = a.face.rotationX ?: 0f; val ay = a.face.rotationY ?: 0f; val az = a.face.rotationZ ?: 0f
+                val bx = candidate.face.rotationX ?: 0f; val by = candidate.face.rotationY ?: 0f; val bz = candidate.face.rotationZ ?: 0f
                 kotlin.math.abs(ax - bx) + kotlin.math.abs(ay - by) + kotlin.math.abs(az - bz) >= 18f
             }
             if (diverse) selected += candidate
@@ -131,8 +107,5 @@ class PersonClusteringEngine(
         if (selected.size < MAX_TEMPLATES) selected += sorted.filter { it !in selected }.take(MAX_TEMPLATES - selected.size)
         return selected
     }
-
-    companion object {
-        private const val MAX_TEMPLATES = 12
-    }
+    companion object { private const val MAX_TEMPLATES = 12 }
 }
