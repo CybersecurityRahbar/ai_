@@ -16,7 +16,6 @@
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal">
-
             <Button
                 android:id="@+id/backButton"
                 android:layout_width="wrap_content"
@@ -24,7 +23,6 @@
                 android:text="‹"
                 android:textColor="#E7F2FF"
                 android:background="@drawable/bg_panel" />
-
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -47,23 +45,8 @@
             </LinearLayout>
         </LinearLayout>
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="KNOWLEDGE BASE"
-            android:textColor="#8DB7D6"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="7dp"
-            android:background="@drawable/bg_panel"
-            android:orientation="vertical"
-            android:padding="14dp">
-
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="KNOWLEDGE BASE" android:textColor="#8DB7D6" android:textSize="11sp" android:textStyle="bold" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:background="@drawable/bg_panel" android:orientation="vertical" android:padding="14dp">
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="IMAGES" android:textColor="#6F91AD" android:textSize="9sp" />
             <TextView android:id="@+id/imagesValue" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0" android:textColor="#E7F2FF" android:textSize="21sp" android:textStyle="bold" />
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="FACES / PERSONS / EMBEDDINGS" android:textColor="#6F91AD" android:textSize="9sp" android:layout_marginTop="10dp" />
@@ -73,27 +56,11 @@
             <TextView android:id="@+id/databaseValue" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0 B" android:textColor="#83A6BF" android:textSize="11sp" android:layout_marginTop="8dp" />
         </LinearLayout>
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="PORTABLE KNOWLEDGE BACKUP"
-            android:textColor="#8DB7D6"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="PORTABLE KNOWLEDGE BACKUP" android:textColor="#8DB7D6" android:textSize="11sp" android:textStyle="bold" />
         <Button android:id="@+id/exportBackupButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="EXPORT .PMAI BACKUP" android:textColor="#FFFFFF" android:background="@drawable/bg_primary_button" />
         <Button android:id="@+id/importBackupButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="IMPORT / RESTORE .PMAI" android:textColor="#FFFFFF" android:background="@drawable/bg_primary_button" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="MODEL MANAGEMENT"
-            android:textColor="#8DB7D6"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="MODEL MANAGEMENT" android:textColor="#8DB7D6" android:textSize="11sp" android:textStyle="bold" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:background="@drawable/bg_panel" android:orientation="vertical" android:padding="14dp">
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="MOBILECLIP-S2 FP16" android:textColor="#E7F2FF" android:textSize="13sp" android:textStyle="bold" />
             <TextView android:id="@+id/modelValue" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="NOT INSTALLED" android:textColor="#83A6BF" android:textSize="11sp" android:layout_marginTop="4dp" />
@@ -101,8 +68,14 @@
             <Button android:id="@+id/removeModelButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="REMOVE LOCAL MODEL" android:textColor="#FFFFFF" android:background="@drawable/bg_primary_button" />
         </LinearLayout>
 
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:background="@drawable/bg_panel" android:orientation="vertical" android:padding="14dp">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="FACENET-512 • FACE IDENTITY MODEL" android:textColor="#E7F2FF" android:textSize="13sp" android:textStyle="bold" />
+            <TextView android:id="@+id/faceNetModelValue" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="NOT INSTALLED • IMPORT facenet_512.tflite" android:textColor="#83A6BF" android:textSize="11sp" android:layout_marginTop="4dp" />
+            <Button android:id="@+id/importFaceNetModelButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="IMPORT FACENET_512.TFLITE" android:textColor="#FFFFFF" android:background="@drawable/bg_primary_button" />
+            <Button android:id="@+id/removeFaceNetModelButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="REMOVE FACENET-512" android:textColor="#FFFFFF" android:background="@drawable/bg_primary_button" />
+        </LinearLayout>
+
         <ProgressBar android:id="@+id/progressBar" android:layout_width="match_parent" android:layout_height="7dp" android:layout_marginTop="16dp" style="?android:attr/progressBarStyleHorizontal" android:visibility="gone" />
         <TextView android:id="@+id/statusText" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="SYSTEM READY" android:textColor="#83A6BF" android:textSize="11sp" android:paddingTop="10dp" android:paddingBottom="18dp" />
-
     </LinearLayout>
 </ScrollView>
