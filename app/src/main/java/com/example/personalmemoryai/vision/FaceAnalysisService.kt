@@ -12,8 +12,10 @@ class FaceAnalysisService(
         val detection: FaceLandmarkResult,
         val quality: FaceQualityAnalyzer.QualityResult,
         val embedding: FloatArray?,
+        val landmarkShape: FloatArray?,
         val embeddingModelName: String?,
         val embeddingModelVersion: String?,
+        val embeddingError: String? = null,
         val usableForMatching: Boolean
     )
 
@@ -25,21 +27,31 @@ class FaceAnalysisService(
         for (detection in detections) {
             val crop = FaceCropper.crop(bitmap, detection.boundingBox)
             if (crop == null) {
-                results += emptyResult(detection, null)
+                results += emptyResult(detection, null, "FACE_CROP_FAILED")
                 continue
             }
             try {
                 val quality = qualityAnalyzer.analyze(crop)
-                val embeddingResult = try { embeddingModel.generateEmbedding(crop) } catch (_: Throwable) { FloatArray(0) }
+                val shape = FaceShapeEncoder.encode(detection)
+                var embeddingError: String? = null
+                val embeddingResult = try {
+                    embeddingModel.generateEmbedding(crop)
+                } catch (t: Throwable) {
+                    embeddingError = t.message ?: t.javaClass.simpleName
+                    FloatArray(0)
+                }
                 val normalized = if (embeddingResult.isNotEmpty()) FaceSimilarity.normalize(embeddingResult) else FloatArray(0)
-                val valid = normalized.isNotEmpty() && normalized.all { it.isFinite() }
+                val validEmbedding = normalized.isNotEmpty() && normalized.all { it.isFinite() }
+                val validShape = shape.isNotEmpty() && shape.all { it.isFinite() }
                 results += AnalyzedFace(
                     detection = detection,
                     quality = quality,
-                    embedding = if (valid) normalized else null,
-                    embeddingModelName = if (valid) embeddingModel.modelName else null,
-                    embeddingModelVersion = if (valid) embeddingModel.modelVersion else null,
-                    usableForMatching = valid
+                    embedding = if (validEmbedding) normalized else null,
+                    landmarkShape = if (validShape) shape else null,
+                    embeddingModelName = if (validEmbedding) embeddingModel.modelName else null,
+                    embeddingModelVersion = if (validEmbedding) embeddingModel.modelVersion else null,
+                    embeddingError = embeddingError,
+                    usableForMatching = validEmbedding && validShape
                 )
             } finally {
                 if (!crop.isRecycled) crop.recycle()
@@ -48,12 +60,18 @@ class FaceAnalysisService(
         return results
     }
 
-    private fun emptyResult(detection: FaceLandmarkResult, quality: FaceQualityAnalyzer.QualityResult?) = AnalyzedFace(
+    private fun emptyResult(
+        detection: FaceLandmarkResult,
+        quality: FaceQualityAnalyzer.QualityResult?,
+        error: String?
+    ) = AnalyzedFace(
         detection = detection,
         quality = quality ?: FaceQualityAnalyzer.QualityResult(0f, 0f, 0f, 0f, false),
         embedding = null,
+        landmarkShape = FaceShapeEncoder.encode(detection).takeIf { it.isNotEmpty() },
         embeddingModelName = null,
         embeddingModelVersion = null,
+        embeddingError = error,
         usableForMatching = false
     )
 
