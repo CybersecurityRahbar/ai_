@@ -15,6 +15,16 @@ interface ObjectDao {
     @Query("SELECT * FROM object_observations WHERE imageId = :imageId ORDER BY confidence DESC")
     suspend fun findForImage(imageId: Long): List<ObjectEntity>
 
+    @Query("""
+        SELECT o.*, i.fileName AS imageFileName, i.uri AS imageUri
+        FROM object_observations o
+        INNER JOIN images i ON i.id = o.imageId
+        WHERE o.label = :label
+        ORDER BY o.confidence DESC
+        LIMIT :limit
+    """)
+    suspend fun searchEvidence(label: String, limit: Int = 500): List<ObjectEvidenceRow>
+
     @Query("SELECT * FROM object_observations WHERE label = :label ORDER BY confidence DESC LIMIT :limit")
     suspend fun searchByLabel(label: String, limit: Int = 500): List<ObjectEntity>
 
@@ -31,4 +41,23 @@ interface ObjectDao {
 data class ObjectLabelCount(
     val label: String,
     val total: Int
+)
+
+data class ObjectEvidenceRow(
+    val id: Long,
+    val imageId: Long,
+    val classId: Int,
+    val label: String,
+    val arabicLabel: String,
+    val confidence: Float,
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+    val detectorName: String,
+    val detectorVersion: String,
+    val inferenceTimeMs: Long,
+    val createdAt: Long,
+    val imageFileName: String,
+    val imageUri: String
 )
