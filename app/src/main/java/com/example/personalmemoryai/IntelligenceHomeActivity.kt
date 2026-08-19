@@ -1,6 +1,5 @@
 package com.example.personalmemoryai
 
-import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.content.Intent
 import android.graphics.Color
@@ -29,7 +28,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class IntelligenceHomeActivity : AppCompatActivity() {
-    private val bg = Color.rgb(5, 10, 13)
     private val textColor = Color.rgb(233, 255, 244)
     private val muted = Color.rgb(127, 169, 154)
     private val green = Color.rgb(57, 255, 136)
@@ -98,7 +96,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
             val diagnostics = DiagnosticsManager.get(applicationContext)
             val values = withContext(Dispatchers.IO) {
                 longArrayOf(
-                    db.imageDao().count(),
+                    db.imageDao().count().toLong(),
                     db.faceDao().count(),
                     db.personDao().count(),
                     db.embeddingDao().count(),
@@ -137,7 +135,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
                 "Open SYSTEM DIAGNOSTICS for event-level evidence."
 
             health.setTextColor(if (errors > 0) red else textColor)
-            pulse(health, if (errors > 0) red else green)
+            pulse(health)
         }
     }
 
@@ -230,15 +228,12 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         setTypeface(Typeface.DEFAULT, Typeface.BOLD)
     }
 
-    private fun pulse(view: View, accent: Int) {
-        val animator = ValueAnimator.ofFloat(0.78f, 1f, 0.78f).apply {
+    private fun pulse(view: View) {
+        ValueAnimator.ofFloat(0.82f, 1f, 0.82f).apply {
             duration = 1700L
             repeatCount = ValueAnimator.INFINITE
-            addUpdateListener { value ->
-                val alpha = value.animatedValue as Float
-                view.alpha = alpha
-            }
+            addUpdateListener { value -> view.alpha = value.animatedValue as Float }
+            start()
         }
-        animator.start()
     }
 }
