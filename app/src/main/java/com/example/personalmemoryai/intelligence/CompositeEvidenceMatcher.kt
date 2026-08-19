@@ -6,21 +6,22 @@ import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import com.example.personalmemoryai.indexing.OcrEngine
+import com.example.personalmemoryai.indexing.ObjectDetectionResult
+import com.example.personalmemoryai.indexing.YoloObjectDetector
 import com.example.personalmemoryai.semantic.SemanticSearchService
-import kotlin.math.sqrt
 
 /**
  * Stage-5 evidence fusion engine.
  *
- * This deliberately does not claim real-world identity. It combines independent
- * visual/textual evidence and reports each component separately so a high score
- * cannot hide a weak or unavailable signal.
+ * It combines independent evidence and reports every component separately.
+ * Missing evidence is never converted into a fake zero-confidence identity claim.
  */
 class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val database = AppDatabase.getInstance(appContext)
     private val semantic = SemanticSearchService(appContext)
     private val ocr = OcrEngine(appContext)
+    private val objectDetector = YoloObjectDetector(appContext)
     private val diagnostics = DiagnosticsManager.get(appContext)
 
     suspend fun search(queryUri: Uri, limit: Int = 30): List<CompositeMatch> {
@@ -28,6 +29,15 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
         try {
             run.stage("QUERY_OCR", "Extracting query text evidence")
             val queryOcr = ocr.process(queryUri)
+
+            run.stage("QUERY_OBJECTS", "Extracting query object evidence")
+            val queryObjects = try {
+                objectDetector.detect(queryUri)
+            } catch (t: Throwable) {
+                run.failure("QUERY_OBJECTS", t)
+                emptyList()
+            }
+
             run.stage("QUERY_VISUAL", "Generating query visual candidates")
             val visualCandidates = semantic.searchSimilarImages(queryUri, limit.coerceAtLeast(30))
             if (visualCandidates.isEmpty()) {
@@ -36,22 +46,21 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
             }
 
             val queryTokens = textTokens(queryOcr.text)
+            val queryObjectLabels = queryObjects.map { it.label.lowercase() }.toSet()
             val candidateIds = visualCandidates.map { it.image.id }
             val images = database.imageDao().getByIds(candidateIds).associateBy { it.id }
+
             val matches = visualCandidates.mapNotNull { visual ->
                 val image = images[visual.image.id] ?: return@mapNotNull null
                 val text = textSimilarity(queryTokens, textTokens(image.ocrText))
-                val objects = objectSimilarity(visual.image.detectedObjects, image.detectedObjects)
+                val objects = objectSimilarity(queryObjectLabels, parseObjectLabels(image.detectedObjects))
                 val quality = imageEvidenceQuality(image)
                 val visualScore = normalizeCosine(visual.score)
 
-                // Face/body/pose/scene are explicit slots. They are not fabricated when
-                // the corresponding extractor has no evidence; the fusion denominator
-                // only uses signals that are actually available.
                 val components = linkedMapOf(
                     "visual" to EvidenceComponent(visualScore, true, "MobileCLIP-S2"),
                     "ocr" to EvidenceComponent(text, queryTokens.isNotEmpty() && image.ocrText.isNotBlank(), "OCR token overlap"),
-                    "objects" to EvidenceComponent(objects, image.detectedObjects.isNotBlank(), "Detected-object overlap"),
+                    "objects" to EvidenceComponent(objects, queryObjectLabels.isNotEmpty() && image.detectedObjects.isNotBlank(), "Object-label overlap"),
                     "quality" to EvidenceComponent(quality, true, "Indexed evidence quality"),
                     "face" to EvidenceComponent(0f, false, "Face matcher not supplied to fusion"),
                     "body" to EvidenceComponent(0f, false, "Body descriptor not supplied to fusion"),
@@ -59,12 +68,13 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
                     "scene" to EvidenceComponent(0f, false, "Scene descriptor not supplied to fusion")
                 )
                 val active = components.values.filter { it.available }
-                val score = if (active.isEmpty()) 0f else active.map { it.score }.average().toFloat()
+                val score = if (active.isEmpty()) 0f else active.sumOf { it.score.toDouble() }.toFloat() / active.size
                 CompositeMatch(image, score, band(score), visualScore, text, objects, quality, components)
             }.sortedByDescending { it.compositeScore }.take(limit)
 
             run.stage("FUSION", "Evidence components fused", mapOf(
                 "candidates" to matches.size.toString(),
+                "queryObjects" to queryObjectLabels.size.toString(),
                 "topScore" to (matches.firstOrNull()?.compositeScore ?: 0f).toString(),
                 "faceEvidence" to "unavailable-until-face-fusion-input"
             ))
@@ -93,11 +103,16 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
         return if (union == 0f) 0f else intersection / union
     }
 
-    private fun objectSimilarity(a: String, b: String): Float {
-        val left = a.split(';').mapNotNull { it.substringBefore(':').substringBefore('|').trim().lowercase().takeIf(String::isNotBlank) }.toSet()
-        val right = b.split(';').mapNotNull { it.substringBefore(':').substringBefore('|').trim().lowercase().takeIf(String::isNotBlank) }.toSet()
-        if (left.isEmpty() || right.isEmpty()) return 0f
-        return left.intersect(right).size.toFloat() / left.union(right).size.toFloat()
+    private fun parseObjectLabels(serialized: String): Set<String> = serialized
+        .split(';')
+        .mapNotNull { token ->
+            token.substringBefore(':').substringBefore('|').trim().lowercase().takeIf { it.isNotBlank() }
+        }
+        .toSet()
+
+    private fun objectSimilarity(a: Set<String>, b: Set<String>): Float {
+        if (a.isEmpty() || b.isEmpty()) return 0f
+        return a.intersect(b).size.toFloat() / a.union(b).size.toFloat()
     }
 
     private fun imageEvidenceQuality(image: ImageEntity): Float {
@@ -133,5 +148,6 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
     override fun close() {
         semantic.close()
         ocr.close()
+        objectDetector.close()
     }
 }
