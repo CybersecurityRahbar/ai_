@@ -73,9 +73,7 @@ class PersonClusteringEngine(
             for (candidate in representatives) {
                 if (candidate.embedding.size != identity.dimension) continue
                 val identityScore = FaceSimilarity.cosineSimilarity(identity.vector, candidate.embedding)
-                val shapeScore = if (shape != null && candidate.shape != null) {
-                    FaceShapeEncoder.similarity(shape, candidate.shape!!)
-                } else 0f
+                val shapeScore = if (shape != null && candidate.shape != null) FaceShapeEncoder.similarity(shape, candidate.shape!!) else 0f
                 val score = 0.85f * identityScore + 0.15f * shapeScore
                 if (score > bestScore) {
                     bestScore = score
@@ -86,20 +84,11 @@ class PersonClusteringEngine(
             if (best != null && bestScore >= similarityThreshold) {
                 faceDao.assignToPerson(face.id, best.personId)
                 assigned++
-                if (face.qualityScore > 0f) {
-                    val representativeQuality = faceDao.getBestQualityForPerson(best.personId) ?: 0f
-                    if (face.qualityScore > representativeQuality) {
-                        best.faceId = face.id
-                        best.embedding = identity.vector
-                        best.shape = shape
-                        personDao.updateStatistics(
-                            personId = best.personId,
-                            faceCount = faceDao.countForPerson(best.personId).toInt(),
-                            bestQualityScore = face.qualityScore,
-                            hasRepresentativeEmbedding = true,
-                            representativeFaceId = face.id
-                        )
-                    }
+                val representativeQuality = faceDao.getBestQualityForPerson(best.personId) ?: 0f
+                if (face.qualityScore > representativeQuality) {
+                    best.faceId = face.id
+                    best.embedding = identity.vector
+                    best.shape = shape
                 }
             } else {
                 val personId = personDao.insert(
@@ -123,7 +112,8 @@ class PersonClusteringEngine(
             val count = faceDao.countForPerson(person.id).toInt()
             if (count <= 0) continue
             val bestQuality = faceDao.getBestQualityForPerson(person.id) ?: 0f
-            val representativeFaceId = person.representativeFaceId ?: faceDao.getByPersonId(person.id).maxByOrNull { it.qualityScore }?.id
+            val representativeFaceId = person.representativeFaceId
+                ?: faceDao.getByPersonId(person.id).maxByOrNull { it.qualityScore }?.id
             val hasEmbedding = representativeFaceId?.let {
                 embeddingDao.getForOwnerAndModel(OWNER_FACE, it, MODEL_FACE, MODEL_FACE_VERSION) != null
             } == true
@@ -141,7 +131,7 @@ class PersonClusteringEngine(
 
     companion object {
         private const val OWNER_FACE = "FACE"
-        private const val MODEL_FACE = "MobileFaceNet"
-        private const val MODEL_FACE_VERSION = "1.0"
+        private const val MODEL_FACE = "mobilefacenet"
+        private const val MODEL_FACE_VERSION = "tflite"
     }
 }
