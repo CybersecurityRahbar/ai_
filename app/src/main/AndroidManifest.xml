@@ -12,6 +12,7 @@
         <activity android:name=".ui.DiagnosticsActivity" android:exported="false" />
         <activity android:name=".ui.DataCenterActivity" android:exported="false" />
         <activity android:name=".ui.ImageViewerActivity" android:exported="false" />
+        <activity android:name=".ui.FaceSearchActivity" android:exported="false" />
         <activity android:name=".ui.PeopleIntelligenceActivity" android:exported="false" />
         <activity android:name=".ui.PersonProfileActivity" android:exported="false" />
         <activity android:name=".ui.ImageIntelligenceActivity" android:exported="false" />
