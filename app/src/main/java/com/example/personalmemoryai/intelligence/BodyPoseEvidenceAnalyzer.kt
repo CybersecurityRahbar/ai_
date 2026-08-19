@@ -8,6 +8,7 @@ import com.google.mlkit.vision.pose.PoseLandmark
 import com.google.mlkit.vision.pose.defaults.PoseDetection
 import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
 import kotlinx.coroutines.tasks.await
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -15,7 +16,7 @@ import kotlin.math.sqrt
  * Uses ML Kit's bundled pose model and produces a normalized 33-landmark
  * descriptor plus body proportions and visibility. It is evidence, not identity proof.
  */
-class BodyPoseEvidenceAnalyzer(context: Context) : AutoCloseable {
+class BodyPoseEvidenceAnalyzer(private val context: Context) : AutoCloseable {
     data class Result(
         val descriptor: FloatArray,
         val landmarkCount: Int,
@@ -62,7 +63,6 @@ class BodyPoseEvidenceAnalyzer(context: Context) : AutoCloseable {
             }
         }
 
-        // Normalize the pose around the hip center and shoulder/hip scale.
         val leftHip = byType[PoseLandmark.LEFT_HIP]
         val rightHip = byType[PoseLandmark.RIGHT_HIP]
         val leftShoulder = byType[PoseLandmark.LEFT_SHOULDER]
