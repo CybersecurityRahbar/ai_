@@ -4,19 +4,19 @@ import android.content.Context
 import android.net.Uri
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
-import com.example.personalmemoryai.database.EmbeddingEntity
-import com.example.personalmemoryai.database.FaceEntity
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import com.example.personalmemoryai.indexing.OcrEngine
 import com.example.personalmemoryai.indexing.YoloObjectDetector
 import com.example.personalmemoryai.semantic.SemanticSearchService
-import kotlin.math.sqrt
+import com.example.personalmemoryai.vision.FaceSearchService
 
 /**
  * Stage-5 evidence fusion engine.
  *
- * It combines independent evidence without pretending unavailable signals exist.
- * Scores are similarity estimates, not proof of real-world identity.
+ * It combines independently measured face, body, pose, clothing/color, scene,
+ * semantic-visual, OCR and object evidence. Missing evidence is excluded rather
+ * than silently converted into a zero score. Scores are similarity estimates,
+ * not proof of real-world identity.
  */
 class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
@@ -24,6 +24,9 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
     private val semantic = SemanticSearchService(appContext)
     private val ocr = OcrEngine(appContext)
     private val objectDetector = YoloObjectDetector(appContext)
+    private val faceSearch = FaceSearchService(appContext)
+    private val bodyPose = BodyPoseEvidenceAnalyzer(appContext)
+    private val appearance = VisualAppearanceAnalyzer(appContext)
     private val diagnostics = DiagnosticsManager.get(appContext)
 
     suspend fun search(queryUri: Uri, limit: Int = 30): List<CompositeMatch> {
@@ -33,11 +36,23 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
             val queryOcr = ocr.process(queryUri)
 
             run.stage("QUERY_OBJECTS", "Extracting query object evidence")
-            val queryObjects = try {
-                objectDetector.detect(queryUri)
-            } catch (t: Throwable) {
-                run.failure("QUERY_OBJECTS", t)
-                emptyList()
+            val queryObjects = try { objectDetector.detect(queryUri) } catch (t: Throwable) {
+                run.failure("QUERY_OBJECTS", t); emptyList()
+            }
+
+            run.stage("QUERY_FACE", "Running multi-model face retrieval")
+            val faceMatches = try { faceSearch.search(queryUri, limit.coerceAtLeast(50)) } catch (t: Throwable) {
+                run.warning("Face evidence unavailable: ${t.message ?: t.javaClass.simpleName}"); emptyList()
+            }
+            val faceByImage = faceMatches.groupBy { it.image.id }.mapValues { (_, values) -> values.maxOf { it.compositeScore } }
+
+            run.stage("QUERY_BODY_POSE", "Extracting real 33-landmark body pose evidence")
+            val queryPose = try { bodyPose.analyze(queryUri) } catch (t: Throwable) {
+                run.warning("Body/pose evidence unavailable: ${t.message ?: t.javaClass.simpleName}"); null
+            }
+            run.stage("QUERY_APPEARANCE", "Extracting clothing/color and scene-layout evidence")
+            val queryAppearance = try { appearance.analyze(queryUri) } catch (t: Throwable) {
+                run.warning("Appearance evidence unavailable: ${t.message ?: t.javaClass.simpleName}"); null
             }
 
             run.stage("QUERY_VISUAL", "Generating query visual candidates")
@@ -51,6 +66,18 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
             val queryObjectLabels = queryObjects.map { it.label.lowercase() }.toSet()
             val candidateIds = visualCandidates.map { it.image.id }
             val images = database.imageDao().getByIds(candidateIds).associateBy { it.id }
+            val bodyByImage = mutableMapOf<Long, BodyPoseEvidenceAnalyzer.Result>()
+            val appearanceByImage = mutableMapOf<Long, VisualAppearanceAnalyzer.Descriptor>()
+
+            for (visual in visualCandidates) {
+                val image = images[visual.image.id] ?: continue
+                try { bodyPose.analyze(Uri.parse(image.uri))?.let { bodyByImage[image.id] = it } } catch (t: Throwable) {
+                    run.warning("Body/pose failed for image ${image.id}: ${t.message ?: t.javaClass.simpleName}")
+                }
+                try { appearance.analyze(Uri.parse(image.uri))?.let { appearanceByImage[image.id] = it } } catch (t: Throwable) {
+                    run.warning("Appearance analysis failed for image ${image.id}: ${t.message ?: t.javaClass.simpleName}")
+                }
+            }
 
             val matches = visualCandidates.mapNotNull { visual ->
                 val image = images[visual.image.id] ?: return@mapNotNull null
@@ -58,16 +85,21 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
                 val objects = objectSimilarity(queryObjectLabels, parseObjectLabels(image.detectedObjects))
                 val quality = imageEvidenceQuality(image)
                 val visualScore = normalizeCosine(visual.score)
-                val faceEvidence = faceEvidenceForImage(image.id)
+                val faceScore = faceByImage[image.id]
+                val bodyScore = if (queryPose != null) bodyByImage[image.id]?.let { bodyPose.similarity(queryPose, it) } else null
+                val sceneScore = if (queryAppearance != null) appearanceByImage[image.id]?.let { appearance.sceneSimilarity(queryAppearance, it) } else null
+                val clothingScore = if (queryAppearance != null) appearanceByImage[image.id]?.let { appearance.colorSimilarity(queryAppearance, it) } else null
+
                 val evidence = linkedMapOf<String, EvidenceComponent>()
-                evidence["visual"] = EvidenceComponent(visualScore, true, "MobileCLIP-S2", 0.35f)
-                evidence["ocr"] = EvidenceComponent(text, queryTokens.isNotEmpty() && image.ocrText.isNotBlank(), "OCR token overlap", 0.10f)
-                evidence["objects"] = EvidenceComponent(objects, queryObjectLabels.isNotEmpty() && image.detectedObjects.isNotBlank(), "Object-label overlap", 0.10f)
+                evidence["visual"] = EvidenceComponent(visualScore, true, "MobileCLIP-S2 semantic/global visual similarity", 0.20f)
+                evidence["face"] = EvidenceComponent(faceScore ?: 0f, faceScore != null, "FaceSearchService: MobileFaceNet + FaceNet-512 + landmarks + face pose", 0.25f)
+                evidence["body"] = EvidenceComponent(bodyScore ?: 0f, bodyScore != null, "ML Kit 33-landmark normalized body descriptor", 0.15f)
+                evidence["pose"] = EvidenceComponent(bodyScore ?: 0f, bodyScore != null, "ML Kit pose geometry", 0.10f)
+                evidence["clothing"] = EvidenceComponent(clothingScore ?: 0f, clothingScore != null, "HSV color/spatial appearance descriptor", 0.08f)
+                evidence["scene"] = EvidenceComponent(sceneScore ?: 0f, sceneScore != null, "Spatial color + edge + aspect scene descriptor", 0.07f)
+                evidence["ocr"] = EvidenceComponent(text, queryTokens.isNotEmpty() && image.ocrText.isNotBlank(), "OCR token overlap", 0.05f)
+                evidence["objects"] = EvidenceComponent(objects, queryObjectLabels.isNotEmpty() && image.detectedObjects.isNotBlank(), "Object-label overlap", 0.05f)
                 evidence["quality"] = EvidenceComponent(quality, true, "Indexed evidence quality", 0.05f)
-                evidence["face"] = faceEvidence
-                evidence["body"] = EvidenceComponent(0f, false, "Body descriptor unavailable", 0.15f)
-                evidence["pose"] = EvidenceComponent(0f, false, "Pose descriptor unavailable", 0.10f)
-                evidence["scene"] = EvidenceComponent(0f, false, "Scene descriptor unavailable", 0.05f)
 
                 val active = evidence.values.filter { it.available && it.reliability > 0f }
                 val weightedTotal = active.sumOf { (it.score * it.weight * it.reliability).toDouble() }.toFloat()
@@ -90,9 +122,12 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
                 )
             }.sortedWith(compareByDescending<CompositeMatch> { it.confidence }.thenByDescending { it.compositeScore }).take(limit)
 
-            run.stage("FUSION", "Evidence components fused", mapOf(
+            run.stage("FUSION", "Face/body/pose/clothing/scene/visual/text/object evidence fused", mapOf(
                 "candidates" to matches.size.toString(),
                 "queryObjects" to queryObjectLabels.size.toString(),
+                "faceEvidence" to faceByImage.size.toString(),
+                "bodyEvidence" to bodyByImage.size.toString(),
+                "appearanceEvidence" to appearanceByImage.size.toString(),
                 "topScore" to (matches.firstOrNull()?.compositeScore ?: 0f).toString(),
                 "topConfidence" to (matches.firstOrNull()?.confidence ?: 0f).toString(),
                 "coverage" to (matches.firstOrNull()?.evidenceCoverage ?: 0f).toString()
@@ -103,17 +138,6 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
             run.failure("COMPOSITE_PIPELINE", t)
             throw t
         }
-    }
-
-    private suspend fun faceEvidenceForImage(imageId: Long): EvidenceComponent {
-        val faces = database.faceDao().getByImageId(imageId)
-        val usable = faces.filter { it.usableForMatching && it.hasEmbedding }
-        if (usable.isEmpty()) return EvidenceComponent(0f, false, "No persisted usable face embedding", 0.20f)
-        // Candidate-side face evidence is intentionally marked available only as a
-        // reliability signal here; a query-face vector must be supplied by FaceSearchService
-        // for an actual face-to-face similarity score.
-        val bestQuality = usable.maxOf { it.qualityScore }.coerceIn(0f, 1f)
-        return EvidenceComponent(bestQuality, true, "Persisted face quality; query-face similarity not supplied", 0.20f, bestQuality * 0.25f)
     }
 
     private fun normalizeCosine(score: Float): Float = ((score + 1f) / 2f).coerceIn(0f, 1f)
@@ -144,10 +168,8 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
         return (ocrQuality * 0.45f + dimensions * 0.35f + objectEvidence * 0.20f).coerceIn(0f, 1f)
     }
 
-    private fun confidence(score: Float, coverage: Float, quality: Float): Float {
-        // Confidence is intentionally penalized when major evidence families are absent.
-        return (score * 0.70f + coverage * 0.20f + quality * 0.10f).coerceIn(0f, 1f)
-    }
+    private fun confidence(score: Float, coverage: Float, quality: Float): Float =
+        (score * 0.70f + coverage * 0.20f + quality * 0.10f).coerceIn(0f, 1f)
 
     private fun band(score: Float): MatchBand = when {
         score >= 0.90f -> MatchBand.VERY_HIGH
@@ -184,5 +206,7 @@ class CompositeEvidenceMatcher(context: Context) : AutoCloseable {
         semantic.close()
         ocr.close()
         objectDetector.close()
+        faceSearch.close()
+        bodyPose.close()
     }
 }
