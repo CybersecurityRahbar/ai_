@@ -26,6 +26,9 @@ import com.example.personalmemoryai.ui.PeopleIntelligenceActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class IntelligenceHomeActivity : AppCompatActivity() {
     private val textColor = Color.rgb(233, 255, 244)
@@ -76,6 +79,10 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         val health = healthPanel()
         content.addView(health, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(10), 0, dp(8)) })
 
+        val engineMatrix = engineMatrix()
+        content.addView(title("LIVE ENGINE MATRIX", cyan))
+        content.addView(engineMatrix, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(8)) })
+
         content.addView(title("IDENTITY / HUMAN ANALYSIS", green))
         content.addView(action("FACE MATCH CONSOLE", "MobileFaceNet • FaceNet-512 • 478-point shape • ranked confidence", green) { startActivity(Intent(this, FaceSearchActivity::class.java)) })
         content.addView(action("PEOPLE & FACE INTELLIGENCE", "Clusters • observations • representatives • identity evidence", green) { startActivity(Intent(this, PeopleIntelligenceActivity::class.java)) })
@@ -89,7 +96,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
 
         content.addView(title("OPERATIONS / MODEL CONTROL", cyan))
         content.addView(action("DATA CENTER", "Backup • restore • database statistics • model management", cyan) { startActivity(Intent(this, DataCenterActivity::class.java)) })
-        content.addView(action("SYSTEM DIAGNOSTICS", "Errors • warnings • stages • stack traces • execution journal", red) { startActivity(Intent(this, DiagnosticsActivity::class.java)) })
+        content.addView(action("SYSTEM DIAGNOSTICS", "Errors • warnings • stages • stack traces • execution journal", red) { startActivity(Intent(this, DiagnosticsActivity::class.java) })
 
         lifecycleScope.launch {
             val db = AppDatabase.getInstance(applicationContext)
@@ -136,6 +143,8 @@ class IntelligenceHomeActivity : AppCompatActivity() {
 
             health.setTextColor(if (errors > 0) red else textColor)
             pulse(health)
+
+            updateEngineMatrix(engineMatrix, values, clipState, errors, warnings)
         }
     }
 
@@ -169,6 +178,12 @@ class IntelligenceHomeActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
             setPadding(0, dp(11), 0, 0)
         })
+        addView(TextView(this@IntelligenceHomeActivity).apply {
+            text = SimpleDateFormat("yyyy-MM-dd  /  HH:mm:ss", Locale.US).format(Date())
+            textSize = 8f
+            setTextColor(muted)
+            setPadding(0, dp(4), 0, 0)
+        })
     }
 
     private fun healthPanel() = TextView(this).apply {
@@ -179,6 +194,57 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         setPadding(dp(14), dp(14), dp(14), dp(14))
         setBackgroundResource(R.drawable.panel_intelligence)
         elevation = dp(3).toFloat()
+    }
+
+    private fun engineMatrix() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+        setBackgroundResource(R.drawable.panel_intelligence)
+        elevation = dp(3).toFloat()
+        addView(engineRow("FACE IDENTITY", "CHECKING…", green))
+        addView(engineRow("FACIAL SHAPE", "CHECKING…", green))
+        addView(engineRow("MOBILECLIP-S2", "CHECKING…", cyan))
+        addView(engineRow("OBJECT ANALYSIS", "CHECKING…", amber))
+        addView(engineRow("ARABIC OCR", "CHECKING…", violet))
+        addView(engineRow("DIAGNOSTICS", "CHECKING…", red))
+    }
+
+    private fun engineRow(name: String, state: String, accent: Int) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(5), dp(7), dp(5), dp(7))
+        addView(TextView(this@IntelligenceHomeActivity).apply {
+            text = "◆  $name"
+            textSize = 9f
+            setTextColor(textColor)
+            setTypeface(null, Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(TextView(this@IntelligenceHomeActivity).apply {
+            tag = "engine_state"
+            text = state
+            textSize = 8f
+            setTextColor(accent)
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.END
+        })
+    }
+
+    private fun updateEngineMatrix(matrix: LinearLayout, values: LongArray, clipState: String, errors: Int, warnings: Int) {
+        val states = listOf(
+            if (values[1] > 0) "ONLINE / DATA" else "IDLE / NO DATA",
+            if (values[1] > 0) "ONLINE / DATA" else "IDLE / NO DATA",
+            clipState,
+            if (values[4] > 0) "ONLINE / DATA" else "IDLE / NO DATA",
+            "PIPELINE READY",
+            when {
+                errors > 0 -> "CRITICAL / $errors"
+                warnings > 0 -> "DEGRADED / $warnings"
+                else -> "NOMINAL"
+            }
+        )
+        matrix.childrenSequence().toList().forEachIndexed { index, row ->
+            row.findViewWithTag<TextView>("engine_state")?.text = states[index]
+        }
     }
 
     private fun title(text: String, color: Int) = TextView(this).apply {
