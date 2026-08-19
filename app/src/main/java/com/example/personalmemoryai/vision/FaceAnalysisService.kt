@@ -2,11 +2,7 @@ package com.example.personalmemoryai.vision
 
 import android.graphics.Bitmap
 
-/**
- * Runs face detection/landmarks, quality analysis and identity embedding.
- * Quality is metadata only: it must never silently prevent an otherwise
- * detected face from receiving an identity embedding.
- */
+/** Runs detection, landmarks, quality analysis and identity embedding without allowing one bad face to abort the image. */
 class FaceAnalysisService(
     private val faceAnalyzer: MediaPipeFaceAnalyzer,
     private val embeddingModel: FaceEmbeddingModel,
@@ -32,17 +28,11 @@ class FaceAnalysisService(
                 results += emptyResult(detection, null)
                 continue
             }
-
             try {
                 val quality = qualityAnalyzer.analyze(crop)
-
-                // Do not use quality.usable as an embedding gate. A face that is
-                // dim, compressed, partially occluded or low contrast is still
-                // useful for investigation and must be represented in the index.
-                val embeddingResult = embeddingModel.generateEmbedding(crop)
-                val normalized = FaceSimilarity.normalize(embeddingResult)
+                val embeddingResult = try { embeddingModel.generateEmbedding(crop) } catch (_: Throwable) { FloatArray(0) }
+                val normalized = if (embeddingResult.isNotEmpty()) FaceSimilarity.normalize(embeddingResult) else FloatArray(0)
                 val valid = normalized.isNotEmpty() && normalized.all { it.isFinite() }
-
                 results += AnalyzedFace(
                     detection = detection,
                     quality = quality,
@@ -51,10 +41,6 @@ class FaceAnalysisService(
                     embeddingModelVersion = if (valid) embeddingModel.modelVersion else null,
                     usableForMatching = valid
                 )
-
-                if (!valid) {
-                    throw IllegalStateException("Face embedding model returned an empty or non-finite vector")
-                }
             } finally {
                 if (!crop.isRecycled) crop.recycle()
             }
@@ -62,10 +48,7 @@ class FaceAnalysisService(
         return results
     }
 
-    private fun emptyResult(
-        detection: FaceLandmarkResult,
-        quality: FaceQualityAnalyzer.QualityResult?
-    ) = AnalyzedFace(
+    private fun emptyResult(detection: FaceLandmarkResult, quality: FaceQualityAnalyzer.QualityResult?) = AnalyzedFace(
         detection = detection,
         quality = quality ?: FaceQualityAnalyzer.QualityResult(0f, 0f, 0f, 0f, false),
         embedding = null,
