@@ -13,7 +13,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import com.example.personalmemoryai.diagnostics.IntelligenceHealthService
 import com.example.personalmemoryai.ui.DataCenterActivity
 import com.example.personalmemoryai.ui.DiagnosticsActivity
@@ -95,7 +94,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
 
         content.addView(title("OPERATIONS / MODEL CONTROL", cyan))
         content.addView(action("DATA CENTER", "Backup • restore • database statistics • model management", cyan) { startActivity(Intent(this, DataCenterActivity::class.java)) })
-        content.addView(action("SYSTEM DIAGNOSTICS", "Errors • warnings • stages • stack traces • execution journal", red) { startActivity(Intent(this, DiagnosticsActivity::class.java) ) })
+        content.addView(action("SYSTEM DIAGNOSTICS", "Errors • warnings • stages • stack traces • execution journal", red) { startActivity(Intent(this, DiagnosticsActivity::class.java)) })
 
         lifecycleScope.launch {
             val healthService = IntelligenceHealthService(applicationContext)
@@ -120,12 +119,16 @@ class IntelligenceHomeActivity : AppCompatActivity() {
     }
 
     private fun buildHealthText(snapshot: IntelligenceHealthService.Snapshot): String {
+        val runtime = snapshot.engines.joinToString("\n") { engine ->
+            val latency = if (engine.lastLatencyMs > 0) " / ${engine.lastLatencyMs}ms" else ""
+            "${engine.name.padEnd(19)} ${engine.status.name.padEnd(10)} ${engine.lastEvent}$latency"
+        }
         return "● SYSTEM HEALTH  /  LOCAL CORE  /  ${snapshot.overall}\n\n" +
             "FACE ENGINE       ${snapshot.facesWithEmbedding}/${snapshot.faces} EMBEDDINGS  /  ${snapshot.faceCoverage}%\n" +
             "MATCHABLE FACES   ${snapshot.matchableFaces}\n" +
             "PERSON CLUSTERS   ${snapshot.people}\n" +
             "OBJECT ENGINE     ${snapshot.imagesWithObjects}/${snapshot.images} IMAGES  /  ${snapshot.objectCoverage}%\n" +
-            "MOBILECLIP-S2     ${if (snapshot.modelInstalled) "MODEL VALIDATED" else "NOT IMPORTED"}\n" +
+            "MOBILECLIP-S2     ${if (snapshot.modelInstalled) "IMPORTED / VALIDATION SEPARATE" else "NOT IMPORTED"}\n" +
             "VISUAL INDEX      ${snapshot.imageEmbeddings}/${snapshot.images}  /  ${snapshot.visualCoverage}%\n" +
             "OCR COVERAGE      ${snapshot.imagesWithOcr}/${snapshot.images}  /  ${snapshot.ocrCoverage}%\n" +
             "OCR QUALITY       ${"%.3f".format(Locale.US, snapshot.averageOcrQuality)}\n" +
@@ -133,6 +136,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
             "TRACE EVENTS      ${snapshot.diagnosticsEvents}\n" +
             "ERRORS            ${snapshot.errors}\n" +
             "WARNINGS          ${snapshot.warnings}\n\n" +
+            "RUNTIME TELEMETRY\n" + runtime + "\n\n" +
             "ENGINE STATES ARE DERIVED FROM PERSISTED HEALTH DATA."
     }
 
@@ -218,13 +222,19 @@ class IntelligenceHomeActivity : AppCompatActivity() {
     }
 
     private fun updateEngineMatrix(matrix: LinearLayout, snapshot: IntelligenceHealthService.Snapshot) {
-        val stageByName = snapshot.stages.associateBy { it.name }
+        val byName = snapshot.engines.associateBy { it.name.lowercase(Locale.US) }
+        val mobileClip = byName["mobileclip-s2"]
+        val mobileFace = byName["mobilefacenet"]
+        val faceNet = byName["facenet-512"]
+        val shape = byName["facial landmarks"]
+        val objects = byName["object detection"]
+        val ocr = byName["arabic ocr"]
         val states = listOf(
-            stageByName["FACE_EMBEDDING"]?.status?.name ?: "NOT_READY",
-            if (snapshot.faceCoverage > 0) "ONLINE / ${snapshot.faceCoverage}%" else "NOT_READY",
-            stageByName["MOBILECLIP"]?.let { "${it.status.name} / ${it.coveragePercent}%" } ?: "NOT_READY",
-            stageByName["OBJECTS"]?.let { "${it.status.name} / ${it.coveragePercent}%" } ?: "NOT_READY",
-            stageByName["OCR"]?.let { "${it.status.name} / ${it.coveragePercent}%" } ?: "NOT_READY",
+            mobileFace?.let { "${it.status.name} / ${snapshot.faceCoverage}%" } ?: "${snapshot.faceCoverage}% COVERAGE",
+            shape?.status?.name ?: "${if (snapshot.faceCoverage > 0) "PERSISTED" else "NOT_READY"}",
+            mobileClip?.let { "${it.status.name} / ${snapshot.visualCoverage}%" } ?: if (snapshot.modelInstalled) "IMPORTED / NO TRACE" else "NOT_IMPORTED",
+            objects?.status?.name ?: "${snapshot.objectCoverage}% COVERAGE",
+            ocr?.let { "${it.status.name} / ${snapshot.ocrCoverage}%" } ?: "${snapshot.ocrCoverage}% COVERAGE",
             when {
                 snapshot.errors > 0 -> "CRITICAL / ${snapshot.errors}"
                 snapshot.warnings > 0 -> "DEGRADED / ${snapshot.warnings}"
@@ -234,6 +244,8 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         matrix.childrenSequence().toList().forEachIndexed { index, row ->
             row.findViewWithTag<TextView>("engine_state")?.text = states[index]
         }
+        // Keep the FaceNet telemetry alive in the snapshot even if its stage is not yet exposed separately.
+        faceNet?.lastEvent
     }
 
     private fun title(text: String, color: Int) = TextView(this).apply {
