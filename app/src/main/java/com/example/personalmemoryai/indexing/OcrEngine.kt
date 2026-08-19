@@ -29,7 +29,7 @@ class OcrEngine(private val context: Context) {
     }
 
     private fun recognizeArabic(uri: Uri): String {
-        val bitmap = decodeSampledBitmap(uri, 2400) ?: return ""
+        val bitmap = decodeSampledBitmap(uri, 4096) ?: return ""
         return try { arabicRecognizer.recognize(bitmap) } finally { if (!bitmap.isRecycled) bitmap.recycle() }
     }
 
@@ -42,6 +42,7 @@ class OcrEngine(private val context: Context) {
         val options = BitmapFactory.Options().apply {
             inSampleSize = sample
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            inScaled = false
         }
         return context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
     }
