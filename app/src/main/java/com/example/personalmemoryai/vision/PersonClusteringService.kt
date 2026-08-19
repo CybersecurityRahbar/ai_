@@ -2,7 +2,6 @@ package com.example.personalmemoryai.vision
 
 import android.content.Context
 import com.example.personalmemoryai.database.AppDatabase
-import com.example.personalmemoryai.database.EmbeddingEntity
 import com.example.personalmemoryai.database.FaceEntity
 import com.example.personalmemoryai.database.PersonEntity
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
@@ -51,15 +50,9 @@ class PersonClusteringService(context: Context) {
                 .groupBy { it.ownerId }
                 .mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
 
-            val allFacesById = mutableMapOf<Long, FaceEntity>()
-            database.personDao().getMostObserved().forEach { person ->
-                database.faceDao().getByPersonId(person.id).forEach { allFacesById[it.id] = it }
-            }
-            faces.forEach { allFacesById[it.id] = it }
-
             val candidates = database.personDao().getMostObserved().mapNotNull { person ->
                 val templates = database.faceDao().getByPersonId(person.id).mapNotNull { face ->
-                    if (face.usableForMatching.not()) return@mapNotNull null
+                    if (!face.usableForMatching) return@mapNotNull null
                     val identity = allIdentity[face.id]
                     val shape = allShape[face.id]
                     if (identity == null && shape == null) null
@@ -101,6 +94,7 @@ class PersonClusteringService(context: Context) {
                     refreshStatistics(best.first.person.id)
                     absorbed++
                     assigned++
+
                     val updatedFaces = database.faceDao().getByPersonId(best.first.person.id)
                     val updatedTemplates = updatedFaces.mapNotNull { f ->
                         if (!f.usableForMatching) return@mapNotNull null
@@ -154,16 +148,17 @@ class PersonClusteringService(context: Context) {
         }
     }
 
-    /**
-     * Keeps a bounded, quality-aware template bank. The bank deliberately
-     * favors different head poses so one pose cannot dominate a cluster.
-     */
+    /** Keeps a bounded, quality-aware bank with useful head-pose diversity. */
     private fun selectDiverseTemplates(templates: List<IdentityEvidenceEngine.Template>): List<IdentityEvidenceEngine.Template> {
         if (templates.size <= MAX_TEMPLATES) return templates.sortedByDescending { it.face.qualityScore }
         val sorted = templates.sortedByDescending { it.face.qualityScore }
         val selected = mutableListOf<IdentityEvidenceEngine.Template>()
         for (candidate in sorted) {
             if (selected.size >= MAX_TEMPLATES) break
+            if (selected.size < 4) {
+                selected += candidate
+                continue
+            }
             val sufficientlyDifferentPose = selected.none { a ->
                 val ax = a.face.rotationX ?: 0f
                 val ay = a.face.rotationY ?: 0f
@@ -173,9 +168,15 @@ class PersonClusteringService(context: Context) {
                 val bz = candidate.face.rotationZ ?: 0f
                 kotlin.math.abs(ax - bx) + kotlin.math.abs(ay - by) + kotlin.math.abs(az - bz) >= 18f
             }
-            if (selected.isEmpty() || !sufficientlyDifferentPose || selected.size < 4) selected += candidate
+            if (sufficientlyDifferentPose) selected += candidate
         }
-        return selected.take(MAX_TEMPLATES)
+        if (selected.size < MAX_TEMPLATES) {
+            for (candidate in sorted) {
+                if (selected.size >= MAX_TEMPLATES) break
+                if (candidate !in selected) selected += candidate
+            }
+        }
+        return selected
     }
 
     private suspend fun refreshStatistics(personId: Long) {
