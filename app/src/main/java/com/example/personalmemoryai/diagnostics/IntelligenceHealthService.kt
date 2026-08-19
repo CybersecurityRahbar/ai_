@@ -6,9 +6,20 @@ import com.example.personalmemoryai.semantic.MobileClipModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Single source of truth for intelligence pipeline readiness. */
+/** Single source of truth for intelligence pipeline readiness and coverage. */
 class IntelligenceHealthService(context: Context) {
     private val appContext = context.applicationContext
+
+    enum class Status { ONLINE, DEGRADED, OFFLINE, NOT_READY }
+
+    data class PipelineStage(
+        val name: String,
+        val status: Status,
+        val processed: Long,
+        val successful: Long,
+        val coveragePercent: Int,
+        val detail: String
+    )
 
     data class Snapshot(
         val images: Long,
@@ -21,14 +32,21 @@ class IntelligenceHealthService(context: Context) {
         val totalEmbeddings: Long,
         val modelInstalled: Boolean,
         val modelSizeBytes: Long,
+        val ocrAttempted: Long,
+        val imagesWithOcr: Long,
+        val averageOcrQuality: Float,
+        val imagesWithObjects: Long,
         val diagnosticsEvents: Int,
         val errors: Int,
-        val warnings: Int
+        val warnings: Int,
+        val stages: List<PipelineStage>
     ) {
         val visualIndexReady get() = modelInstalled && imageEmbeddings > 0
         val faceIndexReady get() = faces > 0 && facesWithEmbedding > 0
         val faceCoverage get() = if (faces == 0L) 0 else ((facesWithEmbedding * 100L) / faces).toInt().coerceIn(0, 100)
         val visualCoverage get() = if (images == 0L) 0 else ((imageEmbeddings * 100L) / images).toInt().coerceIn(0, 100)
+        val ocrCoverage get() = if (images == 0L) 0 else ((imagesWithOcr * 100L) / images).toInt().coerceIn(0, 100)
+        val objectCoverage get() = if (images == 0L) 0 else ((imagesWithObjects * 100L) / images).toInt().coerceIn(0, 100)
         val overall: String
             get() = when {
                 errors > 0 && images == 0L -> "CRITICAL"
@@ -44,20 +62,39 @@ class IntelligenceHealthService(context: Context) {
         val diagnostics = DiagnosticsManager.get(appContext)
         val events = diagnostics.readLatest(5000)
         val model = MobileClipModelManager(appContext)
-        Snapshot(
-            images = db.imageDao().count(),
-            faces = db.faceDao().count(),
-            facesWithEmbedding = db.faceDao().countWithEmbeddings(),
-            matchableFaces = db.faceDao().countMatchable(),
-            people = db.personDao().count(),
-            imageEmbeddings = db.embeddingDao().countByOwnerType("IMAGE"),
-            faceEmbeddings = db.embeddingDao().countByOwnerType("FACE"),
-            totalEmbeddings = db.embeddingDao().count(),
-            modelInstalled = model.isInstalled(),
-            modelSizeBytes = model.installedSizeBytes(),
-            diagnosticsEvents = events.size,
-            errors = events.count { it.contains("\"severity\":\"ERROR\"") || it.contains("\"severity\":\"CRITICAL\"") },
-            warnings = events.count { it.contains("\"severity\":\"WARNING\"") }
+        val images = db.imageDao().count().toLong()
+        val faces = db.faceDao().count()
+        val facesWithEmbedding = db.faceDao().countWithEmbeddings()
+        val imageEmbeddings = db.embeddingDao().countByOwnerType("IMAGE")
+        val faceEmbeddings = db.embeddingDao().countByOwnerType("FACE")
+        val ocrAttempted = db.imageDao().countOcrAttempted()
+        val imagesWithOcr = db.imageDao().countWithOcr()
+        val objects = db.imageDao().countWithDetectedObjects()
+        val avgOcr = db.imageDao().averageOcrQuality() ?: 0f
+        val errors = events.count { it.contains("\"severity\":\"ERROR\"") || it.contains("\"severity\":\"CRITICAL\"") }
+        val warnings = events.count { it.contains("\"severity\":\"WARNING\"") }
+        val modelReady = model.isInstalled()
+        val visualSuccess = imageEmbeddings
+        val faceSuccess = facesWithEmbedding
+        val stages = listOf(
+            PipelineStage("IMAGE_DECODE", if (images > 0) Status.ONLINE else Status.NOT_READY, images, images, 100, "$images images persisted"),
+            PipelineStage("OCR", stageStatus(imagesWithOcr, images, errors), ocrAttempted, imagesWithOcr, coverage(imagesWithOcr, images), "avg quality=${"%.1f".format(avgOcr)}"),
+            PipelineStage("FACE_EMBEDDING", stageStatus(faceSuccess, faces, errors), faces, faceSuccess, coverage(faceSuccess, faces), "$faceSuccess/$faces faces have embeddings"),
+            PipelineStage("MOBILECLIP", if (!modelReady) Status.NOT_READY else stageStatus(visualSuccess, images, errors), images, visualSuccess, coverage(visualSuccess, images), if (modelReady) "model validated locally" else "model not installed"),
+            PipelineStage("OBJECTS", stageStatus(objects, images, errors), images, objects, coverage(objects, images), "$objects images contain persisted object data"),
+            PipelineStage("PERSISTENCE", if (images > 0) Status.ONLINE else Status.NOT_READY, images, images, 100, "Room database reachable")
         )
+        Snapshot(images, faces, facesWithEmbedding, db.faceDao().countMatchable(), db.personDao().count(), imageEmbeddings, faceEmbeddings,
+            db.embeddingDao().count(), modelReady, model.installedSizeBytes(), ocrAttempted, imagesWithOcr, avgOcr, objects,
+            events.size, errors, warnings, stages)
+    }
+
+    private fun coverage(successful: Long, processed: Long): Int = if (processed <= 0) 0 else ((successful * 100L) / processed).toInt().coerceIn(0, 100)
+
+    private fun stageStatus(successful: Long, processed: Long, errors: Int): Status = when {
+        processed == 0L -> Status.NOT_READY
+        successful == processed && errors == 0 -> Status.ONLINE
+        successful > 0L -> Status.DEGRADED
+        else -> Status.OFFLINE
     }
 }
