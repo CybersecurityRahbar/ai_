@@ -17,51 +17,45 @@ interface PersonDao {
     suspend fun insertAll(persons: List<PersonEntity>)
 
     @Query("""
-        SELECT *
-        FROM persons
+        SELECT * FROM persons
         WHERE id = :personId
         LIMIT 1
     """)
     suspend fun getById(personId: Long): PersonEntity?
 
+    @Query("SELECT * FROM persons WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<Long>): List<PersonEntity>
+
     @Query("""
-        SELECT *
-        FROM persons
+        SELECT * FROM persons
         WHERE id = :personId
         LIMIT 1
     """)
     fun observeById(personId: Long): Flow<PersonEntity?>
 
     @Query("""
-        SELECT *
-        FROM persons
+        SELECT * FROM persons
         WHERE isArchived = 0
         ORDER BY updatedAt DESC
     """)
     fun observeAll(): Flow<List<PersonEntity>>
 
     @Query("""
-        SELECT *
-        FROM persons
+        SELECT * FROM persons
         WHERE isArchived = 0
         ORDER BY faceCount DESC, bestQualityScore DESC
     """)
     suspend fun getMostObserved(): List<PersonEntity>
 
     @Query("""
-        SELECT *
-        FROM persons
+        SELECT * FROM persons
         WHERE displayName LIKE '%' || :query || '%'
         AND isArchived = 0
         ORDER BY updatedAt DESC
     """)
     suspend fun searchByName(query: String): List<PersonEntity>
 
-    @Query("""
-        SELECT COUNT(*)
-        FROM persons
-        WHERE isArchived = 0
-    """)
+    @Query("SELECT COUNT(*) FROM persons WHERE isArchived = 0")
     suspend fun count(): Long
 
     @Query("""
@@ -70,11 +64,7 @@ interface PersonDao {
             updatedAt = :updatedAt
         WHERE id = :personId
     """)
-    suspend fun rename(
-        personId: Long,
-        name: String?,
-        updatedAt: Long = System.currentTimeMillis()
-    )
+    suspend fun rename(personId: Long, name: String?, updatedAt: Long = System.currentTimeMillis())
 
     @Query("""
         UPDATE persons
@@ -82,11 +72,7 @@ interface PersonDao {
             updatedAt = :updatedAt
         WHERE id = :personId
     """)
-    suspend fun updateDescription(
-        personId: Long,
-        description: String?,
-        updatedAt: Long = System.currentTimeMillis()
-    )
+    suspend fun updateDescription(personId: Long, description: String?, updatedAt: Long = System.currentTimeMillis())
 
     @Query("""
         UPDATE persons
@@ -112,11 +98,7 @@ interface PersonDao {
             updatedAt = :updatedAt
         WHERE id = :personId
     """)
-    suspend fun setFavorite(
-        personId: Long,
-        favorite: Boolean,
-        updatedAt: Long = System.currentTimeMillis()
-    )
+    suspend fun setFavorite(personId: Long, favorite: Boolean, updatedAt: Long = System.currentTimeMillis())
 
     @Query("""
         UPDATE persons
@@ -124,18 +106,11 @@ interface PersonDao {
             updatedAt = :updatedAt
         WHERE id = :personId
     """)
-    suspend fun setArchived(
-        personId: Long,
-        archived: Boolean,
-        updatedAt: Long = System.currentTimeMillis()
-    )
+    suspend fun setArchived(personId: Long, archived: Boolean, updatedAt: Long = System.currentTimeMillis())
 
     @Delete
     suspend fun delete(person: PersonEntity)
 
-    @Query("""
-        DELETE FROM persons
-        WHERE id = :personId
-    """)
+    @Query("DELETE FROM persons WHERE id = :personId")
     suspend fun deleteById(personId: Long)
 }
