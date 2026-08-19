@@ -2,13 +2,16 @@ package com.example.personalmemoryai.vision
 
 import android.graphics.Bitmap
 
+/**
+ * Runs face detection/landmarks, quality analysis and identity embedding.
+ * Quality is metadata only: it must never silently prevent an otherwise
+ * detected face from receiving an identity embedding.
+ */
 class FaceAnalysisService(
     private val faceAnalyzer: MediaPipeFaceAnalyzer,
     private val embeddingModel: FaceEmbeddingModel,
-    private val qualityAnalyzer: FaceQualityAnalyzer =
-        FaceQualityAnalyzer()
+    private val qualityAnalyzer: FaceQualityAnalyzer = FaceQualityAnalyzer()
 ) {
-
     data class AnalyzedFace(
         val detection: FaceLandmarkResult,
         val quality: FaceQualityAnalyzer.QualityResult,
@@ -18,133 +21,58 @@ class FaceAnalysisService(
         val usableForMatching: Boolean
     )
 
-    suspend fun analyze(
-        bitmap: Bitmap
-    ): List<AnalyzedFace> {
+    suspend fun analyze(bitmap: Bitmap): List<AnalyzedFace> {
+        val detections = faceAnalyzer.analyze(bitmap)
+        if (detections.isEmpty()) return emptyList()
 
-        val detections =
-            faceAnalyzer.analyze(bitmap)
-
-        if (detections.isEmpty()) {
-            return emptyList()
-        }
-
-        val results =
-            ArrayList<AnalyzedFace>(
-                detections.size
-            )
-
+        val results = ArrayList<AnalyzedFace>(detections.size)
         for (detection in detections) {
-
-            val crop =
-                FaceCropper.crop(
-                    source = bitmap,
-                    normalizedBox =
-                        detection.boundingBox
-                )
-
+            val crop = FaceCropper.crop(bitmap, detection.boundingBox)
             if (crop == null) {
-
-                results +=
-                    AnalyzedFace(
-                        detection = detection,
-                        quality =
-                            FaceQualityAnalyzer.QualityResult(
-                                score = 0f,
-                                sharpness = 0f,
-                                brightness = 0f,
-                                contrast = 0f,
-                                usable = false
-                            ),
-                        embedding = null,
-                        embeddingModelName = null,
-                        embeddingModelVersion = null,
-                        usableForMatching = false
-                    )
-
+                results += emptyResult(detection, null)
                 continue
             }
 
-            val quality =
-                qualityAnalyzer.analyze(
-                    crop
-                )
+            try {
+                val quality = qualityAnalyzer.analyze(crop)
 
-            if (!quality.usable) {
+                // Do not use quality.usable as an embedding gate. A face that is
+                // dim, compressed, partially occluded or low contrast is still
+                // useful for investigation and must be represented in the index.
+                val embeddingResult = embeddingModel.generateEmbedding(crop)
+                val normalized = FaceSimilarity.normalize(embeddingResult)
+                val valid = normalized.isNotEmpty() && normalized.all { it.isFinite() }
 
-                results +=
-                    AnalyzedFace(
-                        detection = detection,
-                        quality = quality,
-                        embedding = null,
-                        embeddingModelName = null,
-                        embeddingModelVersion = null,
-                        usableForMatching = false
-                    )
-
-                crop.recycleIfNeeded()
-
-                continue
-            }
-
-            val embeddingResult =
-                try {
-
-                    embeddingModel
-                        .generateEmbedding(crop)
-
-                } catch (_: Throwable) {
-
-                    null
-                }
-
-            val normalizedEmbedding =
-                embeddingResult
-                    ?.let {
-                        FaceSimilarity.normalize(it)
-                    }
-
-            val validEmbedding =
-                normalizedEmbedding != null &&
-                    normalizedEmbedding.isNotEmpty()
-
-            results +=
-                AnalyzedFace(
+                results += AnalyzedFace(
                     detection = detection,
                     quality = quality,
-                    embedding =
-                        if (validEmbedding) {
-                            normalizedEmbedding
-                        } else {
-                            null
-                        },
-                    embeddingModelName =
-                        if (validEmbedding) {
-                            embeddingModel.modelName
-                        } else {
-                            null
-                        },
-                    embeddingModelVersion =
-                        if (validEmbedding) {
-                            embeddingModel.modelVersion
-                        } else {
-                            null
-                        },
-                    usableForMatching =
-                        validEmbedding
+                    embedding = if (valid) normalized else null,
+                    embeddingModelName = if (valid) embeddingModel.modelName else null,
+                    embeddingModelVersion = if (valid) embeddingModel.modelVersion else null,
+                    usableForMatching = valid
                 )
 
-            crop.recycleIfNeeded()
+                if (!valid) {
+                    throw IllegalStateException("Face embedding model returned an empty or non-finite vector")
+                }
+            } finally {
+                if (!crop.isRecycled) crop.recycle()
+            }
         }
-
         return results
     }
 
-    private fun Bitmap.recycleIfNeeded() {
-        if (!isRecycled) {
-            recycle()
-        }
-    }
+    private fun emptyResult(
+        detection: FaceLandmarkResult,
+        quality: FaceQualityAnalyzer.QualityResult?
+    ) = AnalyzedFace(
+        detection = detection,
+        quality = quality ?: FaceQualityAnalyzer.QualityResult(0f, 0f, 0f, 0f, false),
+        embedding = null,
+        embeddingModelName = null,
+        embeddingModelVersion = null,
+        usableForMatching = false
+    )
 
     fun close() {
         faceAnalyzer.close()
