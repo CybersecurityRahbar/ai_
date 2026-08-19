@@ -20,9 +20,11 @@ interface EmbeddingDao {
     @Query("SELECT * FROM embeddings WHERE ownerType = 'FACE' ORDER BY id ASC")
     suspend fun getAllForFaceSearch(): List<EmbeddingEntity>
 
-    /** All image embeddings used by image-to-image semantic retrieval. */
     @Query("SELECT * FROM embeddings WHERE ownerType = 'IMAGE' ORDER BY id ASC")
     suspend fun getAllForImageSearch(): List<EmbeddingEntity>
+
+    @Query("SELECT * FROM embeddings WHERE ownerType = :ownerType ORDER BY id ASC")
+    suspend fun getAllForOwnerType(ownerType: String): List<EmbeddingEntity>
 
     @Query("SELECT * FROM embeddings WHERE ownerType = :ownerType AND ownerId = :ownerId ORDER BY id ASC")
     suspend fun getForOwner(ownerType: String, ownerId: Long): List<EmbeddingEntity>
