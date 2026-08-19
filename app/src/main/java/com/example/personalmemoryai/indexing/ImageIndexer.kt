@@ -7,8 +7,13 @@ import com.example.personalmemoryai.data.ManagedImageStore
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
+import com.example.personalmemoryai.semantic.MobileClipImageEncoder
+import com.example.personalmemoryai.semantic.SemanticSearchService
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
-/** CPU/ML image indexing pipeline with explicit per-stage diagnostics. */
+/** Complete per-image intelligence pipeline: metadata, OCR, objects, faces and optional visual embedding. */
 class ImageIndexer(private val context: Context) : AutoCloseable {
     private val database = AppDatabase.getInstance(context)
     private val dao = database.imageDao()
@@ -16,6 +21,8 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
     private val objectDetector = YoloObjectDetector(context)
     private val imageStore = ManagedImageStore(context)
     private val diagnostics = DiagnosticsManager.get(context)
+    private val faceCoordinator = FaceIndexCoordinator(context)
+    private val semanticSearchService = SemanticSearchService(context)
 
     suspend fun indexImage(uri: Uri): ImageEntity? {
         val run = diagnostics.begin("IMAGE_INDEX", mapOf("uri" to uri.toString()))
@@ -72,7 +79,32 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             run.stage("DATABASE", "Persisting indexed image")
             val id = dao.insert(entity)
             val result = entity.copy(id = id)
-            run.success("Image indexed", mapOf("imageId" to id.toString(), "ocrChars" to ocr.text.length.toString(), "objects" to objects.size.toString()))
+
+            // Run the expensive secondary intelligence stages after the row exists.
+            // They are isolated: a broken face/visual model cannot discard a valid OCR/object index.
+            coroutineScope {
+                val faceJob = async { try {
+                    run.stage("FACES", "Running MediaPipe landmarks + MobileFaceNet embedding")
+                    val faceResult = faceCoordinator.indexSingleImage(id, Uri.parse(result.uri))
+                    run.stage("FACES_RESULT", "Face analysis completed", mapOf("detected" to faceResult.detectedFaces.toString(), "embeddings" to faceResult.indexedFaces.toString()))
+                } catch (t: Throwable) { run.failure("FACES", t) } }
+
+                val visualJob = if (semanticSearchService.isModelInstalled()) async { try {
+                    run.stage("VISUAL", "Running MobileCLIP-S2 visual embedding")
+                    val embedding = semanticSearchService.indexImageAndStore(result)
+                    run.stage("VISUAL_RESULT", "Visual embedding persisted", mapOf("embeddingId" to embedding.toString()))
+                } catch (t: Throwable) { run.failure("VISUAL", t) } } else null
+
+                faceJob.await()
+                visualJob?.await()
+            }
+
+            run.success("Complete image intelligence indexed", mapOf(
+                "imageId" to id.toString(),
+                "ocrChars" to ocr.text.length.toString(),
+                "objects" to objects.size.toString(),
+                "visualModelInstalled" to semanticSearchService.isModelInstalled().toString()
+            ))
             result
         } catch (t: Throwable) {
             run.failure("PIPELINE", t)
@@ -88,5 +120,10 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
         else "${best.label}|${best.arabicLabel}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
     }
 
-    override fun close() { ocrEngine.close(); objectDetector.close() }
+    override fun close() {
+        ocrEngine.close()
+        objectDetector.close()
+        faceCoordinator.close()
+        semanticSearchService.close()
+    }
 }
