@@ -23,15 +23,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             run.stage("METADATA", "Reading image metadata")
             val sourceUri = uri.toString()
             val resolver = context.contentResolver
-            val projection = arrayOf(
-                MediaStore.Images.Media.DISPLAY_NAME,
-                MediaStore.Images.Media.SIZE,
-                MediaStore.Images.Media.WIDTH,
-                MediaStore.Images.Media.HEIGHT,
-                MediaStore.Images.Media.MIME_TYPE,
-                MediaStore.Images.Media.DATE_TAKEN,
-                MediaStore.Images.Media.DATE_MODIFIED
-            )
+            val projection = arrayOf(MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.SIZE, MediaStore.Images.Media.WIDTH, MediaStore.Images.Media.HEIGHT, MediaStore.Images.Media.MIME_TYPE, MediaStore.Images.Media.DATE_TAKEN, MediaStore.Images.Media.DATE_MODIFIED)
             var fileName = "Unknown"
             var fileSize = 0L
             var width = 0
@@ -60,7 +52,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             run.stage("OCR", "Running OCR pipeline")
             val ocr = try { ocrEngine.process(uri) } catch (t: Throwable) {
                 run.failure("OCR", t)
-                OcrEngine.OcrResult("", "none")
+                OcrResult("", "none")
             }
             run.stage("OCR_RESULT", "OCR completed", mapOf("characters" to ocr.text.length.toString(), "language" to ocr.language))
 
@@ -76,21 +68,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             val managedUri = managedFile?.let { Uri.fromFile(it).toString() } ?: sourceUri
             if (managedFile == null) run.warning("Managed image copy unavailable; source URI retained")
 
-            val entity = ImageEntity(
-                uri = managedUri,
-                fileName = fileName,
-                filePath = sourceUri,
-                dateTaken = dateTaken,
-                dateModified = dateModified,
-                fileSize = fileSize,
-                width = width,
-                height = height,
-                mimeType = mimeType,
-                ocrText = ocr.text,
-                ocrLanguage = ocr.language,
-                detectedObjects = serializeObjects(objects),
-                indexedAt = System.currentTimeMillis()
-            )
+            val entity = ImageEntity(uri = managedUri, fileName = fileName, filePath = sourceUri, dateTaken = dateTaken, dateModified = dateModified, fileSize = fileSize, width = width, height = height, mimeType = mimeType, ocrText = ocr.text, ocrLanguage = ocr.language, detectedObjects = serializeObjects(objects), indexedAt = System.currentTimeMillis())
             run.stage("DATABASE", "Persisting indexed image")
             val id = dao.insert(entity)
             val result = entity.copy(id = id)
@@ -104,18 +82,11 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
 
     private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> = objectDetector.detect(uri)
 
-    private fun serializeObjects(objects: List<ObjectDetectionResult>): String =
-        objects.groupBy { it.classId }.values.joinToString("; ") { detections ->
-            val best = detections.maxByOrNull { it.confidence } ?: return@joinToString ""
-            if (best.arabicLabel.isBlank()) {
-                "${best.label}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
-            } else {
-                "${best.label}|${best.arabicLabel}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
-            }
-        }
-
-    override fun close() {
-        ocrEngine.close()
-        objectDetector.close()
+    private fun serializeObjects(objects: List<ObjectDetectionResult>): String = objects.groupBy { it.classId }.values.joinToString("; ") { detections ->
+        val best = detections.maxByOrNull { it.confidence } ?: return@joinToString ""
+        if (best.arabicLabel.isBlank()) "${best.label}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
+        else "${best.label}|${best.arabicLabel}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
     }
+
+    override fun close() { ocrEngine.close(); objectDetector.close() }
 }
