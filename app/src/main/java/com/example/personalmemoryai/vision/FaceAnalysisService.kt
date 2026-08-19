@@ -2,10 +2,15 @@ package com.example.personalmemoryai.vision
 
 import android.graphics.Bitmap
 
-/** Runs detection, landmarks, pose, quality analysis and identity embedding without allowing one bad face to abort the image. */
+/**
+ * Runs face detection/landmarks/pose/quality and one or more identity models.
+ * Every model is isolated: one failed model never prevents another model from
+ * producing an embedding for the same face.
+ */
 class FaceAnalysisService(
     private val faceAnalyzer: MediaPipeFaceAnalyzer,
     private val embeddingModel: FaceEmbeddingModel,
+    private val additionalModels: List<FaceEmbeddingModel> = emptyList(),
     private val qualityAnalyzer: FaceQualityAnalyzer = FaceQualityAnalyzer()
 ) {
     data class AnalyzedFace(
@@ -16,9 +21,20 @@ class FaceAnalysisService(
         val pose: FacePoseEstimator.Pose?,
         val embeddingModelName: String?,
         val embeddingModelVersion: String?,
+        val embeddings: Map<String, ModelEmbedding>,
+        val embeddingErrors: Map<String, String>,
         val embeddingError: String? = null,
         val usableForMatching: Boolean
     )
+
+    data class ModelEmbedding(
+        val modelName: String,
+        val modelVersion: String,
+        val vector: FloatArray
+    )
+
+    private val models: List<FaceEmbeddingModel>
+        get() = listOf(embeddingModel) + additionalModels.filterNot { it === embeddingModel }
 
     suspend fun analyze(bitmap: Bitmap): List<AnalyzedFace> {
         val detections = faceAnalyzer.analyze(bitmap)
@@ -27,40 +43,53 @@ class FaceAnalysisService(
         for (detection in detections) {
             val crop = FaceCropper.crop(bitmap, detection.boundingBox)
             if (crop == null) {
-                results += emptyResult(detection, null, "FACE_CROP_FAILED")
+                results += emptyResult(detection, "FACE_CROP_FAILED")
                 continue
             }
             try {
                 val quality = qualityAnalyzer.analyze(crop)
                 val shape = FaceShapeEncoder.encode(detection)
                 val pose = FacePoseEstimator.estimate(detection)
-                var embeddingError: String? = null
-                val embeddingResult = try {
-                    embeddingModel.generateEmbedding(crop)
-                } catch (t: Throwable) {
-                    embeddingError = t.message ?: t.javaClass.simpleName
-                    FloatArray(0)
+                val validEmbeddings = linkedMapOf<String, ModelEmbedding>()
+                val errors = linkedMapOf<String, String>()
+
+                for (model in models) {
+                    try {
+                        val raw = model.generateEmbedding(crop)
+                        val normalized = if (raw.isNotEmpty()) FaceSimilarity.normalize(raw) else FloatArray(0)
+                        if (normalized.isNotEmpty() && normalized.all { it.isFinite() }) {
+                            validEmbeddings[model.modelName.lowercase()] = ModelEmbedding(
+                                model.modelName,
+                                model.modelVersion,
+                                normalized
+                            )
+                        } else {
+                            errors[model.modelName] = "EMPTY_OR_NON_FINITE_EMBEDDING"
+                        }
+                    } catch (t: Throwable) {
+                        errors[model.modelName] = t.message ?: t.javaClass.simpleName
+                    }
                 }
-                val normalized = if (embeddingResult.isNotEmpty()) FaceSimilarity.normalize(embeddingResult) else FloatArray(0)
-                val validEmbedding = normalized.isNotEmpty() && normalized.all { it.isFinite() }
-                val validShape = shape.isNotEmpty() && shape.all { it.isFinite() }
+
+                val primary = validEmbeddings[embeddingModel.modelName.lowercase()]
                 val enrichedDetection = detection.copy(
                     rotationX = pose?.pitch,
                     rotationY = pose?.yaw,
                     rotationZ = pose?.roll
                 )
+                val validShape = shape.isNotEmpty() && shape.all { it.isFinite() }
                 results += AnalyzedFace(
                     detection = enrichedDetection,
                     quality = quality,
-                    embedding = if (validEmbedding) normalized else null,
+                    embedding = primary?.vector,
                     landmarkShape = if (validShape) shape else null,
                     pose = pose,
-                    embeddingModelName = if (validEmbedding) embeddingModel.modelName else null,
-                    embeddingModelVersion = if (validEmbedding) embeddingModel.modelVersion else null,
-                    embeddingError = embeddingError,
-                    // Quality is a scoring signal, not a hard gate. This prevents usable faces
-                    // from disappearing from the index merely because of blur/lighting/size.
-                    usableForMatching = validEmbedding && validShape && pose != null
+                    embeddingModelName = primary?.modelName,
+                    embeddingModelVersion = primary?.modelVersion,
+                    embeddings = validEmbeddings,
+                    embeddingErrors = errors,
+                    embeddingError = errors[embeddingModel.modelName],
+                    usableForMatching = validEmbeddings.isNotEmpty() && validShape && pose != null
                 )
             } finally {
                 if (!crop.isRecycled) crop.recycle()
@@ -69,24 +98,24 @@ class FaceAnalysisService(
         return results
     }
 
-    private fun emptyResult(
-        detection: FaceLandmarkResult,
-        quality: FaceQualityAnalyzer.QualityResult?,
-        error: String?
-    ) = AnalyzedFace(
+    private fun emptyResult(detection: FaceLandmarkResult, error: String) = AnalyzedFace(
         detection = detection,
-        quality = quality ?: FaceQualityAnalyzer.QualityResult(0f, 0f, 0f, 0f, false),
+        quality = FaceQualityAnalyzer.QualityResult(0f, 0f, 0f, 0f, false),
         embedding = null,
         landmarkShape = FaceShapeEncoder.encode(detection).takeIf { it.isNotEmpty() },
         pose = FacePoseEstimator.estimate(detection),
         embeddingModelName = null,
         embeddingModelVersion = null,
+        embeddings = emptyMap(),
+        embeddingErrors = mapOf("pipeline" to error),
         embeddingError = error,
         usableForMatching = false
     )
 
     fun close() {
-        faceAnalyzer.close()
-        embeddingModel.close()
+        try { faceAnalyzer.close() } catch (_: Throwable) { }
+        models.distinctBy { it.modelName.lowercase() }.forEach {
+            try { it.close() } catch (_: Throwable) { }
+        }
     }
 }
