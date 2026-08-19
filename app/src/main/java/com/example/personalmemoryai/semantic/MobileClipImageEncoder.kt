@@ -11,13 +11,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.sqrt
 
-/**
- * MobileCLIP-S2 image encoder.
- *
- * This class deliberately exposes image embeddings only. Text encoding is
- * kept behind a separate interface so a compatible Text Encoder can be added
- * later without changing the image index format.
- */
+/** MobileCLIP-S2 image encoder with shape-safe tensor IO. */
 class MobileClipImageEncoder(
     private val context: Context,
     private val modelManager: MobileClipModelManager
@@ -38,20 +32,11 @@ class MobileClipImageEncoder(
     fun load(): Boolean {
         if (interpreter != null) return true
         if (!modelManager.isInstalled()) return false
-
         val file = modelManager.modelFile
         FileInputStream(file).channel.use { channel ->
-            val mapped = channel.map(
-                java.nio.channels.FileChannel.MapMode.READ_ONLY,
-                0,
-                channel.size()
-            )
-            interpreter = Interpreter(
-                mapped,
-                Interpreter.Options().apply { setNumThreads(4) }
-            )
+            val mapped = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, channel.size())
+            interpreter = Interpreter(mapped, Interpreter.Options().apply { setNumThreads(4) })
         }
-
         val loaded = interpreter ?: return false
         require(loaded.inputTensorCount >= 1 && loaded.outputTensorCount >= 1) {
             "MobileCLIP-S2 model has no usable input/output tensors"
@@ -59,28 +44,24 @@ class MobileClipImageEncoder(
         require(loaded.getInputTensor(0).dataType() == DataType.FLOAT32) {
             "MobileCLIP-S2 input tensor must accept FLOAT32"
         }
+        require(loaded.getOutputTensor(0).dataType() == DataType.FLOAT32) {
+            "MobileCLIP-S2 output tensor must be FLOAT32"
+        }
         return true
     }
 
     fun encode(uri: Uri): FloatArray {
         check(load()) { "MobileCLIP-S2 model is not installed" }
-
         val bitmap = context.contentResolver.openInputStream(uri).use { input ->
             requireNotNull(BitmapFactory.decodeStream(input)) { "Unable to decode image: $uri" }
         }
-
-        return try {
-            encode(bitmap)
-        } finally {
-            bitmap.recycle()
-        }
+        return try { encode(bitmap) } finally { bitmap.recycle() }
     }
 
     fun encode(bitmap: Bitmap): FloatArray {
         val tflite = interpreter ?: error("MobileCLIP-S2 interpreter is not loaded")
         val inputShape = tflite.getInputTensor(0).shape()
         require(inputShape.size == 4) { "Unexpected MobileCLIP input shape: ${inputShape.contentToString()}" }
-
         val channelsLast = inputShape[3] == 3
         val height = if (channelsLast) inputShape[1] else inputShape[2]
         val width = if (channelsLast) inputShape[2] else inputShape[3]
@@ -93,46 +74,39 @@ class MobileClipImageEncoder(
         resized.getPixels(pixels, 0, width, 0, 0, width, height)
         resized.recycle()
 
-        val input = FloatArray(width * height * 3)
-        // The validated project model expects FLOAT32 image input in [0, 1].
-        // The exact model preprocessing remains isolated here so a future
-        // compatible MobileCLIP export can change it without touching the DB.
+        val input = ByteBuffer.allocateDirect(width * height * 3 * 4).order(ByteOrder.nativeOrder())
         if (channelsLast) {
-            var p = 0
             for (pixel in pixels) {
-                input[p++] = ((pixel shr 16) and 0xFF) / 255f
-                input[p++] = ((pixel shr 8) and 0xFF) / 255f
-                input[p++] = (pixel and 0xFF) / 255f
+                input.putFloat(((pixel shr 16) and 0xFF) / 255f)
+                input.putFloat(((pixel shr 8) and 0xFF) / 255f)
+                input.putFloat((pixel and 0xFF) / 255f)
             }
         } else {
-            var p = 0
-            for (c in 0..2) {
+            for (channel in 0..2) {
                 for (pixel in pixels) {
-                    input[p++] = when (c) {
+                    input.putFloat(when (channel) {
                         0 -> ((pixel shr 16) and 0xFF) / 255f
                         1 -> ((pixel shr 8) and 0xFF) / 255f
                         else -> (pixel and 0xFF) / 255f
-                    }
+                    })
                 }
             }
         }
-
-        val inputBuffer = ByteBuffer.allocateDirect(input.size * 4).order(ByteOrder.nativeOrder())
-        input.forEach(inputBuffer::putFloat)
-        inputBuffer.rewind()
+        input.rewind()
 
         val outputTensor = tflite.getOutputTensor(0)
-        require(outputTensor.dataType() == DataType.FLOAT32) {
-            "MobileCLIP-S2 output tensor must be FLOAT32"
-        }
         val outputElements = outputTensor.shape().fold(1) { a, b -> a * b }
         require(outputElements > 0) { "MobileCLIP-S2 output tensor is empty" }
 
-        // A flat array is accepted for any output tensor whose total element
-        // count matches, including the common [1, embeddingDimension] shape.
+        // Use a flat ByteBuffer for output. This is shape-independent and avoids
+        // TFLite rejecting FloatArray for models exported as [1,D], [1,1,D], etc.
+        val output = ByteBuffer.allocateDirect(outputElements * 4).order(ByteOrder.nativeOrder())
+        tflite.run(input, output)
+        output.rewind()
         val embedding = FloatArray(outputElements)
-        tflite.run(inputBuffer, embedding)
+        for (i in embedding.indices) embedding[i] = output.float
         normalizeInPlace(embedding)
+        require(embedding.any { it.isFinite() && it != 0f }) { "MobileCLIP-S2 produced an empty embedding" }
         return embedding
     }
 
@@ -140,9 +114,7 @@ class MobileClipImageEncoder(
         var sum = 0.0
         for (value in vector) sum += value.toDouble() * value.toDouble()
         val norm = sqrt(sum).toFloat()
-        if (norm > 0f) {
-            for (i in vector.indices) vector[i] /= norm
-        }
+        if (norm > 0f) for (i in vector.indices) vector[i] /= norm
     }
 
     override fun close() {
