@@ -6,24 +6,21 @@ import android.provider.MediaStore
 import com.example.personalmemoryai.data.ManagedImageStore
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
+import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 
-/**
- * CPU/ML image indexing pipeline. Semantic MobileCLIP indexing is intentionally
- * decoupled from this per-image path: the large model must never be loaded or
- * initialized once for every image. Indexed images are copied into private
- * managed storage so the knowledge base is portable and does not depend on
- * temporary Storage Access Framework permissions.
- */
+/** CPU/ML image indexing pipeline with explicit per-stage diagnostics. */
 class ImageIndexer(private val context: Context) : AutoCloseable {
-
     private val database = AppDatabase.getInstance(context)
     private val dao = database.imageDao()
     private val ocrEngine = OcrEngine(context)
     private val objectDetector = YoloObjectDetector(context)
     private val imageStore = ManagedImageStore(context)
+    private val diagnostics = DiagnosticsManager.get(context)
 
     suspend fun indexImage(uri: Uri): ImageEntity? {
+        val run = diagnostics.begin("IMAGE_INDEX", mapOf("uri" to uri.toString()))
         return try {
+            run.stage("METADATA", "Reading image metadata")
             val sourceUri = uri.toString()
             val resolver = context.contentResolver
             val projection = arrayOf(
@@ -35,7 +32,6 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
                 MediaStore.Images.Media.DATE_TAKEN,
                 MediaStore.Images.Media.DATE_MODIFIED
             )
-
             var fileName = "Unknown"
             var fileSize = 0L
             var width = 0
@@ -43,7 +39,6 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             var mimeType: String? = null
             var dateTaken: Long? = null
             var dateModified: Long? = null
-
             resolver.query(uri, projection, null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
                     cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME).takeIf { it >= 0 }?.let { fileName = cursor.getString(it) ?: "Unknown" }
@@ -54,15 +49,32 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
                     cursor.getColumnIndex(MediaStore.Images.Media.DATE_TAKEN).takeIf { it >= 0 }?.let { dateTaken = cursor.getLong(it) }
                     cursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED).takeIf { it >= 0 }?.let { dateModified = cursor.getLong(it) * 1000 }
                 }
-            }
+            } ?: run.warning("MediaStore metadata query returned no cursor")
 
             val existing = dao.findBySourceUri(sourceUri) ?: dao.findByUri(sourceUri)
-            if (existing != null) return existing
+            if (existing != null) {
+                run.warning("Image already indexed", mapOf("imageId" to existing.id.toString()))
+                return existing
+            }
 
-            val ocr = ocrEngine.process(uri)
-            val objects = runObjectDetection(uri)
+            run.stage("OCR", "Running OCR pipeline")
+            val ocr = try { ocrEngine.process(uri) } catch (t: Throwable) {
+                run.failure("OCR", t)
+                OcrEngine.OcrResult("", "none")
+            }
+            run.stage("OCR_RESULT", "OCR completed", mapOf("characters" to ocr.text.length.toString(), "language" to ocr.language))
+
+            run.stage("OBJECTS", "Running object detector")
+            val objects = try { runObjectDetection(uri) } catch (t: Throwable) {
+                run.failure("OBJECTS", t)
+                emptyList()
+            }
+            run.stage("OBJECT_RESULT", "Object detection completed", mapOf("detections" to objects.size.toString()))
+
+            run.stage("IMAGE_STORE", "Copying image into managed knowledge storage")
             val managedFile = imageStore.importImage(uri, fileName)
             val managedUri = managedFile?.let { Uri.fromFile(it).toString() } ?: sourceUri
+            if (managedFile == null) run.warning("Managed image copy unavailable; source URI retained")
 
             val entity = ImageEntity(
                 uri = managedUri,
@@ -79,30 +91,26 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
                 detectedObjects = serializeObjects(objects),
                 indexedAt = System.currentTimeMillis()
             )
-
+            run.stage("DATABASE", "Persisting indexed image")
             val id = dao.insert(entity)
-            entity.copy(id = id)
+            val result = entity.copy(id = id)
+            run.success("Image indexed", mapOf("imageId" to id.toString(), "ocrChars" to ocr.text.length.toString(), "objects" to objects.size.toString()))
+            result
         } catch (t: Throwable) {
-            t.printStackTrace()
+            run.failure("PIPELINE", t)
             null
         }
     }
 
-    private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> = try {
-        objectDetector.detect(uri)
-    } catch (t: Throwable) {
-        t.printStackTrace()
-        emptyList()
-    }
+    private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> = objectDetector.detect(uri)
 
     private fun serializeObjects(objects: List<ObjectDetectionResult>): String =
         objects.groupBy { it.classId }.values.joinToString("; ") { detections ->
             val best = detections.maxByOrNull { it.confidence } ?: return@joinToString ""
-            val aliases = best.arabicLabel
-            if (aliases.isBlank()) {
+            if (best.arabicLabel.isBlank()) {
                 "${best.label}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
             } else {
-                "${best.label}|$aliases:${"%.3f".format(java.util.Locale.US, best.confidence)}"
+                "${best.label}|${best.arabicLabel}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
             }
         }
 
