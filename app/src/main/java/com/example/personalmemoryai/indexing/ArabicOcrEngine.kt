@@ -3,13 +3,20 @@ package com.example.personalmemoryai.indexing
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
+import android.net.Uri
 import com.googlecode.tesseract.android.TessBaseAPI
 import java.io.File
 import java.io.FileOutputStream
+
+internal data class ArabicOcrResult(
+    val text: String,
+    val qualityScore: Float,
+    val passCount: Int,
+    val successfulPasses: Int
+)
 
 class ArabicOcrEngine(private val context: Context) {
     private var tess: TessBaseAPI? = null
@@ -39,14 +46,35 @@ class ArabicOcrEngine(private val context: Context) {
         }
     }
 
-    /** Multi-pass Arabic OCR: color + grayscale + contrast, with several layout modes. */
-    fun recognize(bitmap: Bitmap): String {
-        if (bitmap.isRecycled) return ""
+    fun recognize(bitmap: Bitmap): String = recognizeDetailed(bitmap).text
+
+    fun recognizeDetailed(uri: Uri): ArabicOcrResult {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return ArabicOcrResult("", 0f, 0, 0)
+        var sample = 1
+        val maxDimension = 4096
+        while (maxOf(bounds.outWidth / sample, bounds.outHeight / sample) > maxDimension) sample *= 2
+        val options = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inScaled = false
+        }
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, options) }
+            ?: return ArabicOcrResult("", 0f, 0, 0)
+        return try { recognizeDetailed(bitmap) } finally { if (!bitmap.isRecycled) bitmap.recycle() }
+    }
+
+    fun recognizeDetailed(bitmap: Bitmap): ArabicOcrResult {
+        if (bitmap.isRecycled) return ArabicOcrResult("", 0f, 0, 0)
         return try {
             if (tess == null) tess = createEngine()
-            val engine = tess ?: return ""
+            val engine = tess ?: return ArabicOcrResult("", 0f, 0, 0)
             val variants = prepareVariants(bitmap)
             val results = linkedSetOf<String>()
+            var successful = 0
+            var bestConfidence = 0
+            var passes = 0
             for (working in variants) {
                 for (mode in intArrayOf(
                     TessBaseAPI.PageSegMode.PSM_AUTO,
@@ -54,22 +82,30 @@ class ArabicOcrEngine(private val context: Context) {
                     TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
                     TessBaseAPI.PageSegMode.PSM_SINGLE_LINE
                 )) {
+                    passes++
                     try {
                         engine.pageSegMode = mode
                         engine.setImage(working)
                         val text = engine.utF8Text?.trim().orEmpty()
-                        if (text.isNotBlank()) results += text
+                        val confidence = engine.meanConfidence().coerceIn(0, 100)
+                        if (text.isNotBlank()) {
+                            results += text
+                            successful++
+                            if (confidence > bestConfidence) bestConfidence = confidence
+                        }
                         engine.clear()
                     } catch (_: Throwable) {}
                 }
                 if (working !== bitmap && !working.isRecycled) working.recycle()
             }
-            mergeText(results)
+            val merged = mergeText(results)
+            val quality = if (merged.isBlank()) 0f else ((bestConfidence / 100f) * 0.75f + repetitionScore(results) * 0.25f).coerceIn(0f, 1f)
+            ArabicOcrResult(merged, quality, passes, successful)
         } catch (t: Throwable) {
             t.printStackTrace()
             try { tess?.clear(); tess?.recycle() } catch (_: Throwable) {}
             tess = null
-            ""
+            ArabicOcrResult("", 0f, 0, 0)
         }
     }
 
@@ -98,6 +134,15 @@ class ArabicOcrEngine(private val context: Context) {
 
         if (base !== source && !base.isRecycled) base.recycle()
         return listOf(source, gray, contrast)
+    }
+
+    private fun repetitionScore(parts: Set<String>): Float {
+        if (parts.size <= 1) return if (parts.firstOrNull().isNullOrBlank()) 0f else 0.5f
+        val normalized = parts.map { it.replace(Regex("\\s+"), " ").trim() }
+        val longest = normalized.maxOfOrNull { it.length } ?: return 0f
+        if (longest == 0) return 0f
+        val near = normalized.count { it.length >= longest * 0.35 }
+        return (near.toFloat() / parts.size).coerceIn(0f, 1f)
     }
 
     private fun mergeText(parts: Set<String>): String {
