@@ -12,7 +12,7 @@ import com.example.personalmemoryai.semantic.SemanticSearchService
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
-/** Complete per-image intelligence pipeline: metadata, OCR, objects, faces and optional visual embedding. */
+/** Complete per-image intelligence pipeline with explicit stage health and failure accounting. */
 class ImageIndexer(private val context: Context) : AutoCloseable {
     private val database = AppDatabase.getInstance(context)
     private val dao = database.imageDao()
@@ -45,11 +45,15 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             } ?: run.warning("MediaStore metadata query returned no cursor")
 
             val existing = dao.findBySourceUri(sourceUri) ?: dao.findByUri(sourceUri)
-            if (existing != null) { run.warning("Image already indexed", mapOf("imageId" to existing.id.toString())); return existing }
+            if (existing != null) {
+                run.warning("Image already indexed", mapOf("imageId" to existing.id.toString()))
+                return existing
+            }
 
             run.stage("OCR", "Running multi-pass OCR pipeline")
             val ocr = try { ocrEngine.process(uri) } catch (t: Throwable) {
-                run.failure("OCR", t); OcrResult("", "none", 0f, 0, 0, 0, 0)
+                run.failure("OCR", t)
+                OcrResult("", "none", 0f, 0, 0, 0, 0)
             }
             run.stage("OCR_RESULT", "OCR evidence evaluated", mapOf(
                 "characters" to ocr.text.length.toString(), "language" to ocr.language,
@@ -61,11 +65,14 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
 
             run.stage("OBJECTS", "Running YOLO object detector")
             val objectStarted = System.nanoTime()
+            var objectFailed = false
             val objects = try { runObjectDetection(uri) } catch (t: Throwable) {
-                run.failure("OBJECTS", t, mapOf("detector" to "YOLO26n W8A32")); emptyList()
+                objectFailed = true
+                run.failure("OBJECTS", t, mapOf("detector" to "YOLO26n W8A32", "sourceUri" to sourceUri))
+                emptyList()
             }
             val objectInferenceMs = (System.nanoTime() - objectStarted) / 1_000_000L
-            run.stage("OBJECT_RESULT", "Object detection completed", mapOf("detections" to objects.size.toString(), "inferenceMs" to objectInferenceMs.toString(), "detector" to "YOLO26n W8A32"))
+            run.stage("OBJECT_RESULT", "Object detection completed", mapOf("detections" to objects.size.toString(), "inferenceMs" to objectInferenceMs.toString(), "detector" to "YOLO26n W8A32", "failed" to objectFailed.toString()))
 
             run.stage("IMAGE_STORE", "Copying image into managed knowledge storage")
             val managedFile = imageStore.importImage(uri, fileName)
@@ -92,31 +99,57 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
                 run.stage("OBJECT_PERSISTENCE_RESULT", "Object observations persisted", mapOf("rows" to objects.size.toString()))
             } catch (t: Throwable) { run.failure("OBJECT_PERSISTENCE", t, mapOf("imageId" to id.toString())) }
 
+            var faceFailed = false
+            var visualFailed = false
+            var visualSkipped = false
             coroutineScope {
                 val faceJob = async {
                     try {
-                        run.stage("FACES", "Running MediaPipe landmarks + face embeddings")
+                        run.stage("FACES", "Running MediaPipe landmarks + face embeddings", mapOf("imageId" to id.toString()))
                         val faceResult = faceCoordinator.indexSingleImage(id, Uri.parse(result.uri))
-                        run.stage("FACES_RESULT", "Face analysis completed", mapOf("detected" to faceResult.detectedFaces.toString(), "embeddings" to faceResult.indexedFaces.toString()))
-                    } catch (t: Throwable) { run.failure("FACES", t) }
+                        run.stage("FACES_RESULT", "Face analysis completed", mapOf("imageId" to id.toString(), "detected" to faceResult.detectedFaces.toString(), "embeddings" to faceResult.indexedFaces.toString()))
+                    } catch (t: Throwable) {
+                        faceFailed = true
+                        run.failure("FACES", t, mapOf("imageId" to id.toString(), "sourceUri" to sourceUri))
+                    }
                 }
                 val visualJob = if (semanticSearchService.isModelInstalled()) async {
                     try {
-                        run.stage("VISUAL", "Running MobileCLIP-S2 visual embedding")
+                        run.stage("VISUAL", "Running MobileCLIP-S2 visual embedding", mapOf("imageId" to id.toString()))
                         val embedding = semanticSearchService.indexImageAndStore(result)
-                        run.stage("VISUAL_RESULT", "Visual embedding persisted", mapOf("embeddingId" to embedding.toString()))
-                    } catch (t: Throwable) { run.failure("VISUAL", t) }
-                } else null
+                        run.stage("VISUAL_RESULT", "Visual embedding persisted", mapOf("imageId" to id.toString(), "embeddingId" to embedding.toString()))
+                    } catch (t: Throwable) {
+                        visualFailed = true
+                        run.failure("VISUAL", t, mapOf("imageId" to id.toString(), "sourceUri" to sourceUri))
+                    }
+                } else {
+                    visualSkipped = true
+                    run.warning("VISUAL_SKIPPED", "MobileCLIP-S2 is not installed or not validated", mapOf("imageId" to id.toString()))
+                    null
+                }
                 faceJob.await(); visualJob?.await()
             }
 
-            run.success("Complete image intelligence indexed", mapOf(
-                "imageId" to id.toString(), "ocrChars" to ocr.text.length.toString(), "ocrQuality" to "%.3f".format(java.util.Locale.US, ocr.qualityScore),
-                "ocrArabicChars" to ocr.arabicCharacters.toString(), "objects" to objects.size.toString(), "objectInferenceMs" to objectInferenceMs.toString(),
-                "visualModelInstalled" to semanticSearchService.isModelInstalled().toString()
+            val degraded = objectFailed || faceFailed || visualFailed || visualSkipped
+            run.stage("PIPELINE_HEALTH", "Per-image intelligence health evaluated", mapOf(
+                "imageId" to id.toString(), "ocr" to if (ocr.text.isNotBlank()) "SUCCESS" else "NO_TEXT",
+                "objects" to if (objectFailed) "FAILED" else "SUCCESS",
+                "faces" to if (faceFailed) "FAILED" else "SUCCESS",
+                "visual" to when { visualFailed -> "FAILED"; visualSkipped -> "NOT_READY"; else -> "SUCCESS" },
+                "overall" to if (degraded) "DEGRADED" else "SUCCESS"
             ))
+
+            if (degraded) {
+                run.warning("Image indexed with degraded intelligence coverage", mapOf("imageId" to id.toString(), "objectFailed" to objectFailed.toString(), "faceFailed" to faceFailed.toString(), "visualFailed" to visualFailed.toString(), "visualSkipped" to visualSkipped.toString()))
+            } else {
+                run.success("Complete image intelligence indexed", mapOf(
+                    "imageId" to id.toString(), "ocrChars" to ocr.text.length.toString(), "ocrQuality" to "%.3f".format(java.util.Locale.US, ocr.qualityScore),
+                    "ocrArabicChars" to ocr.arabicCharacters.toString(), "objects" to objects.size.toString(), "objectInferenceMs" to objectInferenceMs.toString(),
+                    "visualModelInstalled" to semanticSearchService.isModelInstalled().toString()
+                ))
+            }
             result
-        } catch (t: Throwable) { run.failure("PIPELINE", t); null }
+        } catch (t: Throwable) { run.failure("PIPELINE", t, mapOf("uri" to uri.toString())); null }
     }
 
     private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> = objectDetector.detect(uri)
