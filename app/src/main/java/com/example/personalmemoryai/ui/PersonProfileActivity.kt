@@ -88,7 +88,7 @@ class PersonProfileActivity : AppCompatActivity() {
     private fun header(person: com.example.personalmemoryai.database.PersonEntity) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(15), dp(16), dp(15)); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel); elevation = dp(5).toFloat()
         addView(TextView(this@PersonProfileActivity).apply { text = "◈ SUBJECT PROFILE / IDENTITY EVIDENCE"; textSize = 10f; setTextColor(cyan); setTypeface(null, Typeface.BOLD) })
-        addView(TextView(this@PersonProfileActivity).apply { text = person.displayName?.takeIf { it.isNotBlank() } ?: "UNKNOWN SUBJECT"; textSize = 27f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(4), 0, dp(2)) })
+        addView(TextView(this@PersonProfileActivity).apply { text = person.displayName?.takeIf { it.isNotBlank() } ?: "UNKNOWN SUBJECT"; textSize = 27f; setTextColor(this@PersonProfileActivity.text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(4), 0, dp(2)) })
         addView(TextView(this@PersonProfileActivity).apply { text = "SUBJECT ${String.format(Locale.US, "%06d", person.id)}  •  ${if (person.isFavorite) "PRIORITY SUBJECT" else "UNCLASSIFIED CLUSTER"}"; textSize = 9f; setTextColor(if (person.isFavorite) neon else muted) })
         addView(TextView(this@PersonProfileActivity).apply { text = "MODEL  ${person.modelVersion}  •  REPRESENTATIVE  ${if (person.hasRepresentativeEmbedding) "READY" else "MISSING"}"; textSize = 9f; setTextColor(muted); setPadding(0, dp(6), 0, 0) })
     }
@@ -107,7 +107,7 @@ class PersonProfileActivity : AppCompatActivity() {
         return box
     }
 
-    private fun message(title: String, body: String, critical: Boolean) = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(14), dp(14), dp(14)); setBackgroundResource(if (critical) com.example.personalmemoryai.R.drawable.bg_critical_alert else com.example.personalmemoryai.R.drawable.bg_neon_panel); addView(TextView(this@PersonProfileActivity).apply { text = title; textSize = 13f; setTextColor(if (critical) Color.rgb(255,48,79) else text); setTypeface(null, Typeface.BOLD) }); addView(TextView(this@PersonProfileActivity).apply { text = body; textSize = 10f; setTextColor(muted); setPadding(0, dp(5), 0, 0) }) }
+    private fun message(title: String, body: String, critical: Boolean) = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(14), dp(14), dp(14)); setBackgroundResource(if (critical) com.example.personalmemoryai.R.drawable.bg_critical_alert else com.example.personalmemoryai.R.drawable.bg_neon_panel); addView(TextView(this@PersonProfileActivity).apply { text = title; textSize = 13f; setTextColor(if (critical) Color.rgb(255,48,79) else this@PersonProfileActivity.text); setTypeface(null, Typeface.BOLD) }); addView(TextView(this@PersonProfileActivity).apply { text = body; textSize = 10f; setTextColor(muted); setPadding(0, dp(5), 0, 0) }) }
     private fun margin() = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(9)) }
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 }
