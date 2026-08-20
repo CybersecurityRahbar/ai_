@@ -17,6 +17,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
     private val database = AppDatabase.getInstance(context)
     private val dao = database.imageDao()
     private val objectDao = database.objectDao()
+    private val embeddingDao = database.embeddingDao()
     private val ocrEngine = OcrEngine(context)
     private val objectDetector = YoloObjectDetector(context)
     private val imageStore = ManagedImageStore(context)
@@ -46,8 +47,8 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
 
             val existing = dao.findBySourceUri(sourceUri) ?: dao.findByUri(sourceUri)
             if (existing != null) {
-                run.warning("Image already indexed", mapOf("imageId" to existing.id.toString()))
-                return existing
+                run.warning("Image already indexed; rebuilding derived evidence instead of silently skipping", mapOf("imageId" to existing.id.toString()))
+                return reindexExistingImage(existing, uri, run)
             }
 
             run.stage("OCR", "Running multi-pass OCR pipeline")
@@ -151,6 +152,86 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             result
         } catch (t: Throwable) { run.failure("PIPELINE", t, mapOf("uri" to uri.toString())); null }
     }
+
+    /** Rebuilds all derived evidence for an already-known source without creating a duplicate image row. */
+    private suspend fun reindexExistingImage(existing: ImageEntity, sourceUri: Uri, run: DiagnosticsManager.Run): ImageEntity {
+        val imageId = existing.id
+        val ocr = try {
+            run.stage("REINDEX_OCR", "Refreshing OCR evidence")
+            ocrEngine.process(sourceUri)
+        } catch (t: Throwable) {
+            run.failure("REINDEX_OCR", t, mapOf("imageId" to imageId.toString()))
+            null
+        }
+
+        val objectResult = try {
+            run.stage("REINDEX_OBJECTS", "Refreshing object evidence")
+            val started = System.nanoTime()
+            val detected = runObjectDetection(sourceUri)
+            val inferenceMs = (System.nanoTime() - started) / 1_000_000L
+            objectDao.deleteForImage(imageId)
+            if (detected.isNotEmpty()) objectDao.insertAll(detected.map { detection ->
+                ObjectEntity(imageId = imageId, classId = detection.classId, label = detection.label, arabicLabel = detection.arabicLabel, confidence = detection.confidence, left = detection.left, top = detection.top, right = detection.right, bottom = detection.bottom, detectorName = "YOLO26n W8A32", detectorVersion = "1", inferenceTimeMs = inferenceMs, createdAt = System.currentTimeMillis())
+            })
+            Pair(detected, inferenceMs)
+        } catch (t: Throwable) {
+            run.failure("REINDEX_OBJECTS", t, mapOf("imageId" to imageId.toString()))
+            null
+        }
+
+        if (ocr != null || objectResult != null) {
+            dao.updateAnalysis(
+                imageId = imageId,
+                ocrText = ocr?.text ?: existing.ocrText,
+                ocrLanguage = ocr?.language ?: existing.ocrLanguage,
+                ocrQualityScore = ocr?.qualityScore ?: existing.ocrQualityScore,
+                ocrPassCount = ocr?.passCount ?: existing.ocrPassCount,
+                ocrSuccessfulPasses = ocr?.successfulPasses ?: existing.ocrSuccessfulPasses,
+                ocrLatinCharacters = ocr?.latinCharacters ?: existing.ocrLatinCharacters,
+                ocrArabicCharacters = ocr?.arabicCharacters ?: existing.ocrArabicCharacters,
+                detectedObjects = objectResult?.first?.let(::serializeObjects) ?: existing.detectedObjects,
+                indexedAt = System.currentTimeMillis()
+            )
+        }
+
+        val sourceForAi = if (canOpen(existing.uri)) Uri.parse(existing.uri) else sourceUri
+        var faceResult: FaceIndexingService.IndexResult? = null
+        try {
+            run.stage("REINDEX_FACES", "Refreshing face landmarks and identity embeddings", mapOf("imageId" to imageId.toString()))
+            faceResult = faceCoordinator.indexSingleImage(imageId, sourceForAi)
+            run.stage("REINDEX_FACES_RESULT", "Face evidence refreshed", mapOf("faces" to faceResult.detectedFaces.toString(), "indexed" to faceResult.indexedFaces.toString()))
+        } catch (t: Throwable) {
+            run.failure("REINDEX_FACES", t, mapOf("imageId" to imageId.toString()))
+        }
+
+        embeddingDao.deleteForOwner("IMAGE", imageId)
+        var visualPersisted = false
+        if (semanticSearchService.isModelInstalled()) {
+            try {
+                run.stage("REINDEX_VISUAL", "Refreshing MobileCLIP image embedding", mapOf("imageId" to imageId.toString()))
+                semanticSearchService.indexImageAndStore(existing)
+                visualPersisted = true
+            } catch (t: Throwable) {
+                run.failure("REINDEX_VISUAL", t, mapOf("imageId" to imageId.toString()))
+            }
+        } else {
+            run.warning("REINDEX_VISUAL_SKIPPED", "MobileCLIP-S2 is not installed")
+        }
+
+        val refreshed = dao.getById(imageId) ?: existing
+        run.success("Existing image rebuilt without duplication", mapOf(
+            "imageId" to imageId.toString(),
+            "ocrRefreshed" to (ocr != null).toString(),
+            "objectsRefreshed" to (objectResult != null).toString(),
+            "facesIndexed" to (faceResult?.indexedFaces ?: 0).toString(),
+            "visualPersisted" to visualPersisted.toString()
+        ))
+        return refreshed
+    }
+
+    private fun canOpen(uri: String): Boolean = try {
+        context.contentResolver.openInputStream(Uri.parse(uri))?.use { true } ?: false
+    } catch (_: Throwable) { false }
 
     private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> = objectDetector.detect(uri)
 
