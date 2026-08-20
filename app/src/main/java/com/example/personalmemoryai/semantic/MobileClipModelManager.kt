@@ -7,6 +7,7 @@ import com.example.personalmemoryai.diagnostics.ModelHealthReporter
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.DataType
@@ -19,12 +20,32 @@ class MobileClipModelManager(private val context: Context) {
         const val MODEL_VERSION = "mobileclip-s2-fp16-v1"
         private const val MIN_MODEL_BYTES = 50L * 1024L * 1024L
     }
+
     private val modelDir: File get() = File(context.filesDir, "models/semantic")
     val modelFile: File get() = File(modelDir, MODEL_FILE_NAME)
     private val diagnostics = DiagnosticsManager.get(context)
     private val health = ModelHealthReporter(context)
+    @Volatile private var cachedModelVersion: String? = null
+
     fun isInstalled(): Boolean = modelFile.isFile && modelFile.length() >= MIN_MODEL_BYTES
     fun installedSizeBytes(): Long = if (modelFile.isFile) modelFile.length() else 0L
+
+    /** Stable content-addressed version so replacing the model cannot mix embeddings. */
+    fun installedModelVersion(): String {
+        check(isInstalled()) { "MobileCLIP-S2 is not installed" }
+        cachedModelVersion?.let { return it }
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(modelFile).use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        val shortHash = digest.digest().joinToString("") { "%02x".format(it) }.take(16)
+        return "$MODEL_VERSION-$shortHash".also { cachedModelVersion = it }
+    }
 
     suspend fun importModel(source: Uri, onProgress: (copied: Long, total: Long) -> Unit = { _, _ -> }): File = withContext(Dispatchers.IO) {
         val run = diagnostics.begin("MODEL_IMPORT", mapOf("model" to MODEL_FILE_NAME, "source" to source.toString()))
@@ -47,7 +68,9 @@ class MobileClipModelManager(private val context: Context) {
             validateTflite(temp)
             if (modelFile.exists()) modelFile.delete()
             if (!temp.renameTo(modelFile)) { temp.copyTo(modelFile, overwrite = true); temp.delete() }
-            run.success("MobileCLIP-S2 imported, validated and inference-tested", mapOf("bytes" to modelFile.length().toString()))
+            cachedModelVersion = null
+            val version = installedModelVersion()
+            run.success("MobileCLIP-S2 imported, validated and inference-tested", mapOf("bytes" to modelFile.length().toString(), "modelVersion" to version))
             modelFile
         } catch (t: Throwable) {
             health.loadFailure(MODEL_FILE_NAME, t, mapOf("operation" to "IMPORT"))
@@ -90,7 +113,7 @@ class MobileClipModelManager(private val context: Context) {
 
     fun deleteModel() {
         val run = diagnostics.begin("MODEL_DELETE", mapOf("model" to MODEL_FILE_NAME))
-        try { if (modelFile.exists()) modelFile.delete(); run.success("Local model deleted") }
+        try { if (modelFile.exists()) modelFile.delete(); cachedModelVersion = null; run.success("Local model deleted") }
         catch (t: Throwable) { run.failure("DELETE", t); throw t }
     }
 }
