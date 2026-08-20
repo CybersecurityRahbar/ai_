@@ -21,83 +21,106 @@ class FaceIndexingService(
     data class IndexResult(val imageId: Long, val detectedFaces: Int, val indexedFaces: Int, val rejectedFaces: Int, val modelEmbeddings: Map<String, Int> = emptyMap())
     private val diagnostics = context?.let { DiagnosticsManager.get(it) }
 
+    /** First analyzes successfully, then replaces the persisted face evidence. */
+    suspend fun replaceImageIndex(imageId: Long, bitmap: Bitmap): IndexResult = withContext(Dispatchers.Default) {
+        val run = diagnostics?.begin("FACE_INDEX_REPLACE", mapOf("imageId" to imageId.toString()))
+        try {
+            run?.stage("DETECT", "Analyzing faces before replacing persisted evidence")
+            val analyzedFaces = analysisService.analyze(bitmap)
+            run?.stage("DETECTION_RESULT", "Face analysis completed", mapOf("faces" to analyzedFaces.size.toString()))
+            removeImageIndex(imageId)
+            persistAnalyzedFaces(imageId, analyzedFaces, run)
+        } catch (t: Throwable) {
+            run?.failure("PIPELINE", t)
+            throw t
+        }
+    }
+
     suspend fun indexImage(imageId: Long, bitmap: Bitmap): IndexResult = withContext(Dispatchers.Default) {
         val run = diagnostics?.begin("FACE_INDEX", mapOf("imageId" to imageId.toString()))
         try {
             run?.stage("DETECT", "Running face detector, landmarks, pose, quality and all configured identity models")
             val analyzedFaces = analysisService.analyze(bitmap)
             run?.stage("DETECTION_RESULT", "Face analysis completed", mapOf("faces" to analyzedFaces.size.toString()))
-            var indexed = 0
-            var rejected = 0
-            val modelCounts = linkedMapOf<String, Int>()
-            for ((index, face) in analyzedFaces.withIndex()) {
-                try {
-                    val box = face.detection.boundingBox
-                    val shape = face.landmarkShape
-                    val faceEntity = FaceEntity(
-                        imageId = imageId,
-                        boundingLeft = box.left,
-                        boundingTop = box.top,
-                        boundingRight = box.right,
-                        boundingBottom = box.bottom,
-                        detectionConfidence = face.detection.detectionConfidence,
-                        qualityScore = face.quality.score,
-                        rotationX = face.detection.rotationX,
-                        rotationY = face.detection.rotationY,
-                        rotationZ = face.detection.rotationZ,
-                        hasEmbedding = face.embeddings.isNotEmpty(),
-                        hasLandmarks = face.detection.landmarks.isNotEmpty(),
-                        landmarkCount = face.detection.landmarks.size,
-                        isOccluded = detectOcclusion(face),
-                        usableForMatching = face.usableForMatching,
-                        analyzedAt = System.currentTimeMillis(),
-                        analyzerVersion = buildAnalyzerVersion(face)
-                    )
-                    val faceId = faceDao.insert(faceEntity)
-                    for ((_, modelEmbedding) in face.embeddings) {
-                        embeddingDao.insert(EmbeddingEntity(
-                            ownerType = OWNER_FACE,
-                            ownerId = faceId,
-                            vector = modelEmbedding.vector,
-                            dimension = modelEmbedding.vector.size,
-                            modelName = modelEmbedding.modelName,
-                            modelVersion = modelEmbedding.modelVersion,
-                            normalized = true,
-                            createdAt = System.currentTimeMillis()
-                        ))
-                        modelCounts[modelEmbedding.modelName] = (modelCounts[modelEmbedding.modelName] ?: 0) + 1
-                    }
-                    if (shape != null && shape.isNotEmpty()) {
-                        embeddingDao.insert(EmbeddingEntity(
-                            ownerType = FaceShapeEncoder.OWNER_TYPE,
-                            ownerId = faceId,
-                            vector = shape,
-                            dimension = shape.size,
-                            modelName = FaceShapeEncoder.MODEL_NAME,
-                            modelVersion = FaceShapeEncoder.MODEL_VERSION,
-                            normalized = true,
-                            createdAt = System.currentTimeMillis()
-                        ))
-                    }
-                    if (face.embeddings.isNotEmpty() && shape != null) {
-                        indexed++
-                        run?.stage("FACE_$index", "Face signatures persisted", mapOf("faceId" to faceId.toString(), "models" to face.embeddings.keys.joinToString(","), "modelCount" to face.embeddings.size.toString(), "shapeDimension" to shape.size.toString(), "quality" to "%.3f".format(java.util.Locale.US, face.quality.score), "modelErrors" to face.embeddingErrors.size.toString()))
-                    } else {
-                        rejected++
-                        run?.warning("Face detected but no complete matching signature was produced", mapOf("faceIndex" to index.toString(), "modelErrors" to face.embeddingErrors.entries.joinToString(";") { "${it.key}:${it.value}" }, "modelsProduced" to face.embeddings.keys.joinToString(","), "hasShapeSignature" to (shape != null).toString()))
-                    }
-                } catch (t: Throwable) {
-                    rejected++
-                    run?.failure("FACE_$index", t)
-                }
-            }
-            val result = IndexResult(imageId, analyzedFaces.size, indexed, rejected, modelCounts)
-            run?.success("Face indexing completed", mapOf("detected" to result.detectedFaces.toString(), "indexed" to indexed.toString(), "rejected" to rejected.toString(), "modelEmbeddings" to modelCounts.entries.joinToString(",") { "${it.key}=${it.value}" }))
-            result
+            persistAnalyzedFaces(imageId, analyzedFaces, run)
         } catch (t: Throwable) {
             run?.failure("PIPELINE", t)
             throw t
         }
+    }
+
+    private suspend fun persistAnalyzedFaces(
+        imageId: Long,
+        analyzedFaces: List<FaceAnalysisService.AnalyzedFace>,
+        run: DiagnosticsManager.Run?
+    ): IndexResult {
+        var indexed = 0
+        var rejected = 0
+        val modelCounts = linkedMapOf<String, Int>()
+        for ((index, face) in analyzedFaces.withIndex()) {
+            try {
+                val box = face.detection.boundingBox
+                val shape = face.landmarkShape
+                val faceEntity = FaceEntity(
+                    imageId = imageId,
+                    boundingLeft = box.left,
+                    boundingTop = box.top,
+                    boundingRight = box.right,
+                    boundingBottom = box.bottom,
+                    detectionConfidence = face.detection.detectionConfidence,
+                    qualityScore = face.quality.score,
+                    rotationX = face.detection.rotationX,
+                    rotationY = face.detection.rotationY,
+                    rotationZ = face.detection.rotationZ,
+                    hasEmbedding = face.embeddings.isNotEmpty(),
+                    hasLandmarks = face.detection.landmarks.isNotEmpty(),
+                    landmarkCount = face.detection.landmarks.size,
+                    isOccluded = detectOcclusion(face),
+                    usableForMatching = face.usableForMatching,
+                    analyzedAt = System.currentTimeMillis(),
+                    analyzerVersion = buildAnalyzerVersion(face)
+                )
+                val faceId = faceDao.insert(faceEntity)
+                for ((_, modelEmbedding) in face.embeddings) {
+                    embeddingDao.insert(EmbeddingEntity(
+                        ownerType = OWNER_FACE,
+                        ownerId = faceId,
+                        vector = modelEmbedding.vector,
+                        dimension = modelEmbedding.vector.size,
+                        modelName = modelEmbedding.modelName,
+                        modelVersion = modelEmbedding.modelVersion,
+                        normalized = true,
+                        createdAt = System.currentTimeMillis()
+                    ))
+                    modelCounts[modelEmbedding.modelName] = (modelCounts[modelEmbedding.modelName] ?: 0) + 1
+                }
+                if (shape != null && shape.isNotEmpty()) {
+                    embeddingDao.insert(EmbeddingEntity(
+                        ownerType = FaceShapeEncoder.OWNER_TYPE,
+                        ownerId = faceId,
+                        vector = shape,
+                        dimension = shape.size,
+                        modelName = FaceShapeEncoder.MODEL_NAME,
+                        modelVersion = FaceShapeEncoder.MODEL_VERSION,
+                        normalized = true,
+                        createdAt = System.currentTimeMillis()
+                    ))
+                }
+                if (face.embeddings.isNotEmpty() && shape != null) {
+                    indexed++
+                    run?.stage("FACE_$index", "Face signatures persisted", mapOf("faceId" to faceId.toString(), "models" to face.embeddings.keys.joinToString(","), "modelCount" to face.embeddings.size.toString(), "shapeDimension" to shape.size.toString(), "quality" to "%.3f".format(java.util.Locale.US, face.quality.score), "modelErrors" to face.embeddingErrors.size.toString()))
+                } else {
+                    rejected++
+                    run?.warning("Face detected but no complete matching signature was produced", mapOf("faceIndex" to index.toString(), "modelErrors" to face.embeddingErrors.entries.joinToString(";") { "${it.key}:${it.value}" }, "modelsProduced" to face.embeddings.keys.joinToString(","), "hasShapeSignature" to (shape != null).toString()))
+                }
+            } catch (t: Throwable) {
+                rejected++
+                run?.failure("FACE_$index", t)
+            }
+        }
+        val result = IndexResult(imageId, analyzedFaces.size, indexed, rejected, modelCounts)
+        run?.success("Face indexing completed", mapOf("detected" to result.detectedFaces.toString(), "indexed" to indexed.toString(), "rejected" to rejected.toString(), "modelEmbeddings" to modelCounts.entries.joinToString(",") { "${it.key}=${it.value}" }))
+        return result
     }
 
     suspend fun removeImageIndex(imageId: Long) {
