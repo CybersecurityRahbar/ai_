@@ -50,7 +50,7 @@ class SemanticSearchService(context: Context) : AutoCloseable {
             val dimension = runCatching { encoder.modelOutputShape().fold(1) { a, b -> a * b } }.getOrDefault(-1)
             database.embeddingDao().getAllForImageSearch().count { it.modelName == MobileClipImageEncoder.MODEL_NAME && it.modelVersion == MobileClipImageEncoder.MODEL_VERSION && it.dimension == dimension && it.vector.size == dimension && it.vector.all { v -> v.isFinite() } }
         } else 0
-        VisualHealth(images, embeddings, compatible, modelReady, modelManager.installedSizeBytes(), if (modelReady) encoder.modelInputShape() else intArrayOf(), if (modelReady) encoder.modelOutputShape() else intArrayOf())
+        VisualHealth(images.toLong(), embeddings, compatible, modelReady, modelManager.installedSizeBytes(), if (modelReady) encoder.modelInputShape() else intArrayOf(), if (modelReady) encoder.modelOutputShape() else intArrayOf())
     }
 
     suspend fun indexAllImages(onProgress: (processed: Int, total: Int, embedded: Int, skipped: Int, failed: Int) -> Unit = { _, _, _, _, _ -> }) = withContext(Dispatchers.Default) {
