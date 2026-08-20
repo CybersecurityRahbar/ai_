@@ -20,8 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class DiagnosticsActivity : AppCompatActivity() {
-    private val bg = Color.rgb(5, 11, 17)
-    private val text = Color.rgb(235, 246, 255)
+    private val primaryText = Color.rgb(235, 246, 255)
     private val muted = Color.rgb(126, 157, 178)
     private val neon = Color.rgb(151, 255, 0)
     private val cyan = Color.rgb(89, 226, 255)
@@ -47,19 +46,30 @@ class DiagnosticsActivity : AppCompatActivity() {
         action(actions, "REFRESH", 1f) { refresh() }
         action(actions, "CLEAR", 1f) { diagnostics.clear(); refresh() }
         root.addView(actions, margin())
-        healthView = panelText("LOADING…", text, 10f)
+        healthView = panelText("LOADING…", primaryText, 10f)
         root.addView(section("PIPELINE TELEMETRY", cyan), margin())
         root.addView(healthView, margin())
-        logView = panelText("NO EVENTS YET", text, 9f)
+        logView = panelText("NO EVENTS YET", primaryText, 9f)
         root.addView(section("DIAGNOSTIC JOURNAL", cyan), margin())
         root.addView(logView)
         refresh()
     }
 
-    private fun header() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(15), dp(16), dp(15)); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel); elevation = dp(5).toFloat(); addView(TextView(this@DiagnosticsActivity).apply { text = "◈ INTELLIGENCE COMMAND / HEALTH CORE"; textSize = 10f; setTextColor(cyan); setTypeface(null, Typeface.BOLD) }); addView(TextView(this@DiagnosticsActivity).apply { text = "SYSTEM DIAGNOSTICS"; textSize = 27f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(3), 0, dp(2)) }); addView(TextView(this@DiagnosticsActivity).apply { text = "LIVE TELEMETRY • MODEL READINESS • INDEX COVERAGE • FAILURE TRACE"; textSize = 9f; setTextColor(muted) }) }
+    private fun header() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(15), dp(16), dp(15))
+        setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel)
+        elevation = dp(5).toFloat()
+        addView(TextView(this@DiagnosticsActivity).apply { text = "◈ INTELLIGENCE COMMAND / HEALTH CORE"; textSize = 10f; setTextColor(cyan); setTypeface(null, Typeface.BOLD) })
+        addView(TextView(this@DiagnosticsActivity).apply { text = "SYSTEM DIAGNOSTICS"; textSize = 27f; setTextColor(primaryText); setTypeface(null, Typeface.BOLD); setPadding(0, dp(3), 0, dp(2)) })
+        addView(TextView(this@DiagnosticsActivity).apply { text = "LIVE TELEMETRY • MODEL READINESS • INDEX COVERAGE • FAILURE TRACE"; textSize = 9f; setTextColor(muted) })
+    }
+
     private fun section(v: String, c: Int) = TextView(this).apply { text = "▌  $v"; textSize = 10f; setTextColor(c); setTypeface(null, Typeface.BOLD) }
     private fun panelText(v: String, c: Int, size: Float) = TextView(this).apply { text = v; textSize = size; setTextColor(c); setTypeface(Typeface.MONOSPACE, Typeface.NORMAL); setPadding(dp(14), dp(13), dp(14), dp(13)); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel); setTextIsSelectable(true) }
-    private fun action(parent: LinearLayout, label: String, weight: Float, click: () -> Unit) { parent.addView(Button(this).apply { text = label; textSize = 8.5f; setAllCaps(false); setTextColor(text); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_action); setOnClickListener { click() }; layoutParams = LinearLayout.LayoutParams(0, dp(48), weight).apply { setMargins(dp(2), 0, dp(2), 0) } }) }
+    private fun action(parent: LinearLayout, label: String, weight: Float, click: () -> Unit) {
+        parent.addView(Button(this).apply { text = label; textSize = 8.5f; setAllCaps(false); setTextColor(primaryText); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_action); setOnClickListener { click() }; layoutParams = LinearLayout.LayoutParams(0, dp(48), weight).apply { setMargins(dp(2), 0, dp(2), 0) } })
+    }
     private fun margin() = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(9)) }
 
     private fun refresh() {
@@ -99,5 +109,6 @@ class DiagnosticsActivity : AppCompatActivity() {
             refresh()
         }
     }
+
     private fun assetExists(path: String): Boolean = try { assets.open(path).use { }; true } catch (_: Throwable) { false }
 }
