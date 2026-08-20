@@ -1,72 +1,140 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#03070A">
-
-    <ImageView
-        android:id="@+id/imageView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:scaleType="fitCenter"
-        android:contentDescription="الصورة الأصلية" />
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="110dp"
-        android:layout_gravity="top"
-        android:background="@drawable/bg_intel_panel" />
+    android:background="#03070A"
+    android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="top"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
+        android:orientation="vertical"
         android:padding="12dp">
 
-        <Button
-            android:id="@+id/closeButton"
-            android:layout_width="52dp"
-            android:layout_height="48dp"
-            android:text="‹"
-            android:textColor="#7DFF19"
-            android:textSize="25sp"
-            android:textStyle="bold"
-            android:background="@drawable/bg_intel_button" />
-
         <LinearLayout
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical"
-            android:paddingStart="12dp">
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="EVIDENCE VIEWER"
-                android:textColor="#49D9FF"
-                android:textSize="10sp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:padding="10dp"
+            android:background="@drawable/bg_neon_panel">
+
+            <Button
+                android:id="@+id/closeButton"
+                android:layout_width="52dp"
+                android:layout_height="48dp"
+                android:text="‹"
+                android:textColor="#7DFF19"
+                android:textSize="25sp"
                 android:textStyle="bold"
-                android:letterSpacing="0.12" />
-            <TextView
-                android:layout_width="match_parent"
+                android:background="@drawable/bg_intel_button" />
+
+            <LinearLayout
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:text="ORIGINAL IMAGE / VISUAL EVIDENCE"
-                android:textColor="#F2FAFF"
-                android:textSize="15sp"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:paddingStart="12dp">
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="EVIDENCE DOSSIER / LOCAL INTELLIGENCE"
+                    android:textColor="#49D9FF"
+                    android:textSize="9sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.08" />
+                <TextView
+                    android:id="@+id/headerTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="UNKNOWN EVIDENCE"
+                    android:textColor="#F2FAFF"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:paddingTop="3dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/headerStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="● READY"
+                android:textColor="#7DFF19"
+                android:textSize="8sp"
                 android:textStyle="bold"
-                android:paddingTop="3dp" />
+                android:background="@drawable/bg_status_ok"
+                android:padding="7dp" />
         </LinearLayout>
 
+        <ImageView
+            android:id="@+id/imageView"
+            android:layout_width="match_parent"
+            android:layout_height="300dp"
+            android:layout_marginTop="10dp"
+            android:background="#050A0D"
+            android:scaleType="fitCenter"
+            android:contentDescription="Original evidence image" />
+
         <TextView
-            android:layout_width="wrap_content"
+            android:id="@+id/sourceValue"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="● LIVE"
-            android:textColor="#7DFF19"
-            android:textSize="9sp"
-            android:textStyle="bold"
-            android:background="@drawable/bg_status_ok"
-            android:padding="7dp" />
+            android:layout_marginTop="10dp"
+            android:padding="13dp"
+            android:background="@drawable/bg_intel_panel"
+            android:textColor="#E9FFF4"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/technicalValue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:padding="13dp"
+            android:background="@drawable/bg_intel_panel"
+            android:textColor="#7FA99A"
+            android:textSize="9sp" />
+
+        <TextView
+            android:id="@+id/faceValue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:padding="13dp"
+            android:background="@drawable/bg_neon_panel"
+            android:textColor="#35E8FF"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/objectValue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:padding="13dp"
+            android:background="@drawable/bg_neon_panel"
+            android:textColor="#B36BFF"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/ocrValue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:padding="13dp"
+            android:background="@drawable/bg_intel_panel"
+            android:textColor="#FFC857"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/indexValue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="18dp"
+            android:padding="13dp"
+            android:background="@drawable/bg_intel_panel"
+            android:textColor="#59E2FF"
+            android:textSize="9sp" />
+
     </LinearLayout>
-</FrameLayout>
+</ScrollView>
