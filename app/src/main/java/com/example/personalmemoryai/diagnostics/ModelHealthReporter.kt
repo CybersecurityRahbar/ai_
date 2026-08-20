@@ -20,7 +20,7 @@ class ModelHealthReporter(context: Context) {
     fun loadFailure(model: String, throwable: Throwable, details: Map<String, String> = emptyMap()) {
         diagnostics.record(
             "MODEL_HEALTH", "LOAD_FAILURE", DiagnosticsManager.Severity.ERROR,
-            "$model failed to load", throwable = throwable,
+            "$model failed to load", exception = throwable,
             metadata = details + mapOf("component" to model)
         )
     }
@@ -48,7 +48,7 @@ class ModelHealthReporter(context: Context) {
     fun inferenceFailure(model: String, throwable: Throwable, details: Map<String, String> = emptyMap()) {
         diagnostics.record(
             "MODEL_HEALTH", "INFERENCE_FAILURE", DiagnosticsManager.Severity.ERROR,
-            "$model inference failed", throwable = throwable,
+            "$model inference failed", exception = throwable,
             metadata = details + mapOf("component" to model)
         )
     }
