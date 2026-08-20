@@ -24,20 +24,9 @@ import com.example.personalmemoryai.semantic.SemanticSearchService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.Locale
 
-/**
- * Phase-7 search console.
- *
- * TextEncoder is deliberately NOT used here. The current release supports:
- * 1) OCR/object keyword retrieval from persisted evidence.
- * 2) image-to-image visual retrieval through MobileCLIP image embeddings.
- *
- * A future TextEncoder can be plugged into the same console without changing
- * either search mode or the persisted image embedding contract.
- */
 class EvidenceSearchActivity : AppCompatActivity() {
-    private val text = Color.rgb(233, 255, 244)
+    private val primaryText = Color.rgb(233, 255, 244)
     private val muted = Color.rgb(127, 169, 154)
     private val green = Color.rgb(57, 255, 136)
     private val cyan = Color.rgb(53, 232, 255)
@@ -73,12 +62,8 @@ class EvidenceSearchActivity : AppCompatActivity() {
             setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_intelligence)
         }
         root.addView(header())
-
         val scroll = ScrollView(this).apply { isFillViewport = true; clipToPadding = false }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(10), 0, dp(24))
-        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, dp(24)) }
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
@@ -96,10 +81,10 @@ class EvidenceSearchActivity : AppCompatActivity() {
         content.addView(sectionTitle("OCR / OBJECT EVIDENCE RETRIEVAL", violet))
         query = EditText(this).apply {
             hint = "Search OCR text or object label…"
-            hintTextColor = muted
-            setTextColor(text)
+            setHintTextColor(muted)
+            setTextColor(primaryText)
             textSize = 14f
-            singleLine = true
+            setSingleLine(true)
             setPadding(dp(13), dp(5), dp(13), dp(5))
             setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_search)
         }
@@ -134,9 +119,7 @@ class EvidenceSearchActivity : AppCompatActivity() {
             status.text = "VISUAL SEARCH / LOADING MOBILECLIP-S2…"
             status.setTextColor(cyan)
             try {
-                val ranked = withContext(Dispatchers.Default) {
-                    semanticService!!.searchSimilarImages(uri, 30)
-                }
+                val ranked = withContext(Dispatchers.Default) { semanticService!!.searchSimilarImages(uri, 30) }
                 results.adapter = VisualResultAdapter(ranked.map { VisualRow(it.image, it.percent, it.band.name) })
                 status.text = "VISUAL SEARCH COMPLETE / ${ranked.size} COMPATIBLE RESULTS"
                 status.setTextColor(green)
@@ -157,9 +140,7 @@ class EvidenceSearchActivity : AppCompatActivity() {
         lifecycleScope.launch {
             status.text = "EVIDENCE SEARCH / QUERYING OCR + OBJECT INDEX…"
             status.setTextColor(violet)
-            val matches = withContext(Dispatchers.IO) {
-                AppDatabase.getInstance(applicationContext).imageDao().searchTextAndObjects(value)
-            }
+            val matches = withContext(Dispatchers.IO) { AppDatabase.getInstance(applicationContext).imageDao().searchTextAndObjects(value) }
             results.adapter = EvidenceResultAdapter(matches)
             status.text = "EVIDENCE SEARCH COMPLETE / ${matches.size} RESULTS"
             status.setTextColor(if (matches.isEmpty()) muted else green)
@@ -172,30 +153,16 @@ class EvidenceSearchActivity : AppCompatActivity() {
         setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel)
         elevation = dp(5).toFloat()
         addView(TextView(this@EvidenceSearchActivity).apply { text = "◈ EVIDENCE RETRIEVAL / LOCAL CORE"; textSize = 10f; setTextColor(cyan); setTypeface(null, Typeface.BOLD) })
-        addView(TextView(this@EvidenceSearchActivity).apply { text = "EVIDENCE SEARCH CONSOLE"; textSize = 27f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(3), 0, dp(2)) })
+        addView(TextView(this@EvidenceSearchActivity).apply { text = "EVIDENCE SEARCH CONSOLE"; textSize = 27f; setTextColor(primaryText); setTypeface(null, Typeface.BOLD); setPadding(0, dp(3), 0, dp(2)) })
         addView(TextView(this@EvidenceSearchActivity).apply { text = "VISUAL SIMILARITY  •  OCR  •  OBJECTS  •  PERSISTED EVIDENCE"; textSize = 9f; setTextColor(muted) })
     }
 
     private fun sectionTitle(value: String, color: Int) = TextView(this).apply {
-        text = "▌  $value"
-        textSize = 10f
-        setTextColor(color)
-        setTypeface(null, Typeface.BOLD)
-        setPadding(dp(3), dp(13), dp(3), dp(7))
+        text = "▌  $value"; textSize = 10f; setTextColor(color); setTypeface(null, Typeface.BOLD); setPadding(dp(3), dp(13), dp(3), dp(7))
     }
 
     private fun button(label: String, accent: Int, action: () -> Unit) = Button(this).apply {
-        text = "●  $label"
-        textSize = 10f
-        gravity = Gravity.START or Gravity.CENTER_VERTICAL
-        setTextColor(accent)
-        setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_action)
-        setAllCaps(false)
-        setPadding(dp(15), dp(7), dp(15), dp(7))
-        stateListAnimator = null
-        elevation = dp(2).toFloat()
-        setOnClickListener { action() }
-        layoutParams = LinearLayout.LayoutParams(-1, dp(58)).apply { setMargins(0, dp(3), 0, dp(3)) }
+        text = "●  $label"; textSize = 10f; gravity = Gravity.START or Gravity.CENTER_VERTICAL; setTextColor(accent); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_action); setAllCaps(false); setPadding(dp(15), dp(7), dp(15), dp(7)); stateListAnimator = null; elevation = dp(2).toFloat(); setOnClickListener { action() }; layoutParams = LinearLayout.LayoutParams(-1, dp(58)).apply { setMargins(0, dp(3), 0, dp(3)) }
     }
 
     private inner class EvidenceResultAdapter(private val items: List<ImageEntity>) : RecyclerView.Adapter<ResultHolder>() {
@@ -223,21 +190,12 @@ class EvidenceSearchActivity : AppCompatActivity() {
     }
 
     private fun resultHolder(parent: ViewGroup): ResultHolder {
-        val box = LinearLayout(parent.context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(9), dp(9), dp(9), dp(9))
-            setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel)
-            layoutParams = RecyclerView.LayoutParams(-1, dp(112)).apply { bottomMargin = dp(8) }
-        }
-        val image = ImageView(parent.context).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            layoutParams = LinearLayout.LayoutParams(dp(92), dp(92)).apply { rightMargin = dp(10) }
-        }
+        val box = LinearLayout(parent.context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(9), dp(9), dp(9), dp(9)); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel); layoutParams = RecyclerView.LayoutParams(-1, dp(112)).apply { bottomMargin = dp(8) } }
+        val image = ImageView(parent.context).apply { scaleType = ImageView.ScaleType.CENTER_CROP; layoutParams = LinearLayout.LayoutParams(dp(92), dp(92)).apply { rightMargin = dp(10) } }
         val info = LinearLayout(parent.context).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
-        val title = TextView(parent.context).apply { textSize = 12f; setTextColor(text); setTypeface(null, Typeface.BOLD) }
+        val title = TextView(parent.context).apply { textSize = 12f; setTextColor(primaryText); setTypeface(null, Typeface.BOLD) }
         val details = TextView(parent.context).apply { textSize = 8.5f; setTextColor(muted); setPadding(0, dp(5), 0, 0) }
-        info.addView(title); info.addView(details)
-        box.addView(image); box.addView(info, LinearLayout.LayoutParams(0, -1, 1f))
+        info.addView(title); info.addView(details); box.addView(image); box.addView(info, LinearLayout.LayoutParams(0, -1, 1f))
         return ResultHolder(box, image, title, details)
     }
 
@@ -245,9 +203,5 @@ class EvidenceSearchActivity : AppCompatActivity() {
     private class ResultHolder(view: ViewGroup, val image: ImageView, val title: TextView, val details: TextView) : RecyclerView.ViewHolder(view)
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    override fun onDestroy() {
-        semanticService?.close()
-        semanticService = null
-        super.onDestroy()
-    }
+    override fun onDestroy() { semanticService?.close(); semanticService = null; super.onDestroy() }
 }
