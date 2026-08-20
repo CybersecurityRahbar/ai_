@@ -43,14 +43,14 @@ class SemanticSearchService(context: Context) : AutoCloseable {
     suspend fun imageEmbeddingCount(): Long = withContext(Dispatchers.IO) { database.embeddingDao().countByOwnerType(MobileClipImageEncoder.OWNER_TYPE) }
 
     suspend fun visualHealth(): VisualHealth = withContext(Dispatchers.IO) {
-        val images = database.imageDao().count()
-        val embeddings = database.embeddingDao().countByOwnerType(MobileClipImageEncoder.OWNER_TYPE)
+        val imageCount: Long = database.imageDao().count().toLong()
+        val embeddings: Long = database.embeddingDao().countByOwnerType(MobileClipImageEncoder.OWNER_TYPE)
         val modelReady = try { ensureModel(); true } catch (_: Throwable) { false }
-        val compatible = if (modelReady) {
+        val compatible: Int = if (modelReady) {
             val dimension = runCatching { encoder.modelOutputShape().fold(1) { a, b -> a * b } }.getOrDefault(-1)
             database.embeddingDao().getAllForImageSearch().count { it.modelName == MobileClipImageEncoder.MODEL_NAME && it.modelVersion == MobileClipImageEncoder.MODEL_VERSION && it.dimension == dimension && it.vector.size == dimension && it.vector.all { v -> v.isFinite() } }
         } else 0
-        VisualHealth(images.toLong(), embeddings, compatible, modelReady, modelManager.installedSizeBytes(), if (modelReady) encoder.modelInputShape() else intArrayOf(), if (modelReady) encoder.modelOutputShape() else intArrayOf())
+        VisualHealth(imageCount, embeddings, compatible, modelReady, modelManager.installedSizeBytes(), if (modelReady) encoder.modelInputShape() else intArrayOf(), if (modelReady) encoder.modelOutputShape() else intArrayOf())
     }
 
     suspend fun indexAllImages(onProgress: (processed: Int, total: Int, embedded: Int, skipped: Int, failed: Int) -> Unit = { _, _, _, _, _ -> }) = withContext(Dispatchers.Default) {
