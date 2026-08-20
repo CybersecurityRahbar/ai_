@@ -42,16 +42,7 @@ class PersonProfileActivity : AppCompatActivity() {
             val repImage = representative?.let { face -> images.firstOrNull { it.id == face.imageId } }
 
             root.addView(header(person))
-            root.addView(section("INVESTIGATION WORKSPACE", cyan), margin())
-            val workspace = LinearLayout(this@PersonProfileActivity).apply { orientation = LinearLayout.VERTICAL }
-            workspace.addView(workspaceButton("◷  OPEN SUBJECT TIMELINE", "Chronology • observations • indexed evidence", neon) {
-                startActivity(Intent(this@PersonProfileActivity, SubjectTimelineActivity::class.java).apply { putExtra("person_id", personId) })
-            })
-            workspace.addView(workspaceButton("◎  EVIDENCE RELATIONSHIPS", "Linked subjects • images • objects • OCR evidence", violet) {
-                startActivity(Intent(this@PersonProfileActivity, EvidenceRelationshipsActivity::class.java).apply { putExtra("person_id", personId) })
-            })
-            root.addView(workspace, margin())
-
+            root.addView(workspaceButtons(personId), margin())
             root.addView(section("SUBJECT TELEMETRY", cyan))
             val metrics = LinearLayout(this@PersonProfileActivity).apply { orientation = LinearLayout.HORIZONTAL }
             metric(metrics, "OBSERVATIONS", faces.size.toString(), neon)
@@ -70,27 +61,36 @@ class PersonProfileActivity : AppCompatActivity() {
         }
     }
 
+    private fun workspaceButtons(personId: Long): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(Button(this@PersonProfileActivity).apply {
+            text = "◷  OPEN SUBJECT TIMELINE"
+            textSize = 10f
+            setTextColor(Color.rgb(5, 10, 13))
+            setTypeface(null, Typeface.BOLD)
+            setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_intel_button)
+            setOnClickListener {
+                startActivity(Intent(this@PersonProfileActivity, SubjectTimelineActivity::class.java).apply { putExtra("person_id", personId) })
+            }
+        }, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(6) })
+        addView(Button(this@PersonProfileActivity).apply {
+            text = "◎  OPEN EVIDENCE RELATIONSHIPS"
+            textSize = 10f
+            setTextColor(Color.rgb(5, 10, 13))
+            setTypeface(null, Typeface.BOLD)
+            setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_intel_button)
+            setOnClickListener {
+                startActivity(Intent(this@PersonProfileActivity, EvidenceRelationshipsActivity::class.java).apply { putExtra("person_id", personId) })
+            }
+        }, LinearLayout.LayoutParams(-1, dp(48)))
+    }
+
     private fun header(person: com.example.personalmemoryai.database.PersonEntity) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(15), dp(16), dp(15)); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel); elevation = dp(5).toFloat()
         addView(TextView(this@PersonProfileActivity).apply { text = "◈ SUBJECT PROFILE / IDENTITY EVIDENCE"; textSize = 10f; setTextColor(cyan); setTypeface(null, Typeface.BOLD) })
         addView(TextView(this@PersonProfileActivity).apply { text = person.displayName?.takeIf { it.isNotBlank() } ?: "UNKNOWN SUBJECT"; textSize = 27f; setTextColor(text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(4), 0, dp(2)) })
         addView(TextView(this@PersonProfileActivity).apply { text = "SUBJECT ${String.format(Locale.US, "%06d", person.id)}  •  ${if (person.isFavorite) "PRIORITY SUBJECT" else "UNCLASSIFIED CLUSTER"}"; textSize = 9f; setTextColor(if (person.isFavorite) neon else muted) })
         addView(TextView(this@PersonProfileActivity).apply { text = "MODEL  ${person.modelVersion}  •  REPRESENTATIVE  ${if (person.hasRepresentativeEmbedding) "READY" else "MISSING"}"; textSize = 9f; setTextColor(muted); setPadding(0, dp(6), 0, 0) })
-    }
-
-    private fun workspaceButton(title: String, subtitle: String, accent: Int, click: () -> Unit) = Button(this).apply {
-        text = "$title\n    $subtitle"
-        textSize = 9.5f
-        gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
-        setTextColor(accent)
-        setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_action)
-        setAllCaps(false)
-        stateListAnimator = null
-        elevation = dp(2).toFloat()
-        setPadding(dp(14), dp(7), dp(14), dp(7))
-        layoutParams = LinearLayout.LayoutParams(-1, dp(64)).apply { setMargins(0, dp(2), 0, dp(2)) }
-        setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-        setOnClickListener { click() }
     }
 
     private fun section(value: String, color: Int) = TextView(this).apply { text = "▌  $value"; textSize = 10f; setTextColor(color); setTypeface(null, Typeface.BOLD); setPadding(dp(3), dp(6), dp(3), dp(7)) }
