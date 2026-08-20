@@ -30,7 +30,7 @@ object IdentityEvidenceEngine {
         val scored = templates.mapNotNull { template ->
             val identity = similarity(queryIdentity, template.identity)
             val secondary = similarity(querySecondaryIdentity, template.secondaryIdentity)
-            val shape = if (queryShape != null && template.shape != null && queryShape.dimension == template.shape.dimension) FaceShapeEncoder.similarity(queryShape.vector, template.shape.vector) else null
+            val shape = if (queryShape != null && template.shape != null) similarity(queryShape, template.shape) else null
             val pose = poseCompatibility(query, template.face)
             val quality = ((query.qualityScore.coerceIn(0f, 1f) + template.face.qualityScore.coerceIn(0f, 1f)) * 0.5f)
             if (identity == null && secondary == null && shape == null) null else {
@@ -70,6 +70,8 @@ object IdentityEvidenceEngine {
 
     private fun similarity(a: EmbeddingEntity?, b: EmbeddingEntity?): Float? {
         if (a == null || b == null || a.dimension != b.dimension || a.vector.isEmpty() || b.vector.isEmpty()) return null
+        if (!a.modelName.equals(b.modelName, ignoreCase = true) || a.modelVersion != b.modelVersion) return null
+        if (!a.vector.all { it.isFinite() } || !b.vector.all { it.isFinite() }) return null
         return ((FaceSimilarity.cosineSimilarity(a.vector, b.vector) + 1f) / 2f).coerceIn(0f, 1f)
     }
 
