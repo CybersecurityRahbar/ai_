@@ -9,6 +9,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.PersonalMemoryAI">
+        <activity android:name=".ui.EvidenceSearchActivity" android:exported="false" />
         <activity android:name=".ui.OcrEvidenceActivity" android:exported="false" />
         <activity android:name=".ui.ObjectIntelligenceActivity" android:exported="false" />
         <activity android:name=".ui.DiagnosticsActivity" android:exported="false" />
