@@ -4,6 +4,8 @@ import com.example.personalmemoryai.database.EmbeddingDao
 import com.example.personalmemoryai.database.FaceDao
 import com.example.personalmemoryai.database.PersonDao
 import com.example.personalmemoryai.database.PersonEntity
+import com.example.personalmemoryai.database.FaceEntity
+import com.example.personalmemoryai.database.EmbeddingEntity
 import com.example.personalmemoryai.vision.FaceShapeEncoder
 import com.example.personalmemoryai.vision.IdentityEvidenceEngine
 import kotlinx.coroutines.Dispatchers
@@ -27,73 +29,44 @@ class PersonClusteringEngine(
         val faceNetByFace = allIdentity.filter { it.modelName.equals("facenet_512", true) }.groupBy { it.ownerId }.mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
         val shapeByFace = embeddingDao.getAllForOwnerType(FaceShapeEncoder.OWNER_TYPE).groupBy { it.ownerId }.mapValues { (_, values) -> values.maxByOrNull { it.createdAt }!! }
 
-        fun template(faceId: Long): IdentityEvidenceEngine.Template? {
-            val face = faceDao.getById(faceId) ?: return null
+        fun template(face: FaceEntity): IdentityEvidenceEngine.Template? {
             if (!face.usableForMatching) return null
-            val identity = mobileByFace[faceId]
-            val secondary = faceNetByFace[faceId]
-            val shape = shapeByFace[faceId]
+            val identity = mobileByFace[face.id]; val secondary = faceNetByFace[face.id]; val shape = shapeByFace[face.id]
             if (identity == null && secondary == null && shape == null) return null
             return IdentityEvidenceEngine.Template(face, identity, shape, secondary)
         }
 
         val people = personDao.getMostObserved().mapNotNull { person ->
-            val templates = faceDao.getByPersonId(person.id).mapNotNull { template(it.id) }
+            val templates = faceDao.getByPersonId(person.id).mapNotNull { template(it) }
             if (templates.isEmpty()) null else ClusterCandidate(person, templates)
         }.toMutableList()
 
-        var created = 0
-        var assigned = 0
+        var created = 0; var assigned = 0
         for (face in candidates.sortedByDescending { it.qualityScore }) {
-            val identity = mobileByFace[face.id]
-            val secondary = faceNetByFace[face.id]
-            val shape = shapeByFace[face.id]
+            val identity = mobileByFace[face.id]; val secondary = faceNetByFace[face.id]; val shape = shapeByFace[face.id]
             if (identity == null && secondary == null && shape == null) continue
-
-            val best = people.mapNotNull { candidate ->
-                IdentityEvidenceEngine.compare(face, identity, shape, candidate.templates, secondary)?.let { candidate to it }
-            }.maxByOrNull { it.second.composite }
-
+            val best = people.mapNotNull { candidate -> IdentityEvidenceEngine.compare(face, identity, shape, candidate.templates, secondary)?.let { candidate to it } }.maxByOrNull { it.second.composite }
             if (best != null && IdentityEvidenceEngine.shouldAssociate(best.second)) {
-                faceDao.assignToPerson(face.id, best.first.person.id)
-                assigned++
-                val refreshed = faceDao.getByPersonId(best.first.person.id).mapNotNull { template(it.id) }
-                val index = people.indexOf(best.first)
-                if (index >= 0) people[index] = best.first.copy(templates = boundedTemplates(refreshed))
+                faceDao.assignToPerson(face.id, best.first.person.id); assigned++
+                val refreshed = faceDao.getByPersonId(best.first.person.id).mapNotNull { template(it) }
+                val index = people.indexOf(best.first); if (index >= 0) people[index] = best.first.copy(templates = boundedTemplates(refreshed))
             } else {
-                val personId = personDao.insert(PersonEntity(
-                    faceCount = 1,
-                    bestQualityScore = face.qualityScore.coerceIn(0f, 1f),
-                    hasRepresentativeEmbedding = identity != null || secondary != null,
-                    representativeFaceId = face.id,
-                    modelVersion = "identity-evidence-v5"
-                ))
-                faceDao.assignToPerson(face.id, personId)
-                people += ClusterCandidate(personDao.getById(personId)!!, listOfNotNull(template(face.id)))
-                created++
-                assigned++
+                val personId = personDao.insert(PersonEntity(faceCount = 1, bestQualityScore = face.qualityScore.coerceIn(0f, 1f), hasRepresentativeEmbedding = identity != null || secondary != null, representativeFaceId = face.id, modelVersion = "identity-evidence-v5"))
+                faceDao.assignToPerson(face.id, personId); people += ClusterCandidate(personDao.getById(personId)!!, listOfNotNull(template(face))); created++; assigned++
             }
         }
 
         for (person in personDao.getMostObserved()) {
-            val faces = faceDao.getByPersonId(person.id)
-            if (faces.isEmpty()) continue
+            val faces = faceDao.getByPersonId(person.id); if (faces.isEmpty()) continue
             val bestFace = faces.maxByOrNull { it.qualityScore }
-            personDao.updateStatistics(
-                personId = person.id,
-                faceCount = faces.size,
-                bestQualityScore = faces.maxOf { it.qualityScore }.coerceIn(0f, 1f),
-                hasRepresentativeEmbedding = bestFace?.let { mobileByFace[it.id] != null || faceNetByFace[it.id] != null } == true,
-                representativeFaceId = bestFace?.id
-            )
+            personDao.updateStatistics(person.id, faces.size, faces.maxOf { it.qualityScore }.coerceIn(0f, 1f), bestFace?.let { mobileByFace[it.id] != null || faceNetByFace[it.id] != null } == true, bestFace?.id)
         }
         ClusterResult(created, assigned)
     }
 
     private data class ClusterCandidate(val person: PersonEntity, val templates: List<IdentityEvidenceEngine.Template>)
     private fun boundedTemplates(input: List<IdentityEvidenceEngine.Template>): List<IdentityEvidenceEngine.Template> {
-        val sorted = input.sortedByDescending { it.face.qualityScore }
-        if (sorted.size <= MAX_TEMPLATES) return sorted
+        val sorted = input.sortedByDescending { it.face.qualityScore }; if (sorted.size <= MAX_TEMPLATES) return sorted
         val selected = sorted.take(4).toMutableList()
         for (candidate in sorted.drop(4)) {
             if (selected.size >= MAX_TEMPLATES) break
