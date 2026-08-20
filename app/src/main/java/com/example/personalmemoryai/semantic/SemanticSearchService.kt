@@ -25,7 +25,7 @@ class SemanticSearchService(context: Context) : AutoCloseable {
         }
         try {
             check(encoder.load()) { "تعذر تحميل نموذج MobileCLIP-S2" }
-            diagnostics.record("VISUAL_ENGINE", "MODEL_READY", DiagnosticsManager.Severity.INFO, "MobileCLIP-S2 runtime ready: ${encoder.tensorReport()}")
+            diagnostics.record("VISUAL_ENGINE", "MODEL_READY", DiagnosticsManager.Severity.INFO, "MobileCLIP-S2 runtime ready: ${encoder.tensorReport()}", metadata = mapOf("modelVersion" to encoder.modelVersion))
         } catch (t: Throwable) {
             diagnostics.record("VISUAL_ENGINE", "MODEL_LOAD", DiagnosticsManager.Severity.ERROR, "Failed to load MobileCLIP-S2", t)
             throw t
@@ -35,34 +35,37 @@ class SemanticSearchService(context: Context) : AutoCloseable {
     suspend fun importModel(source: Uri, onProgress: (Long, Long) -> Unit = { _, _ -> }) {
         modelManager.importModel(source, onProgress)
         encoder.close()
-        diagnostics.record("VISUAL_ENGINE", "MODEL_IMPORTED", DiagnosticsManager.Severity.INFO, "MobileCLIP-S2 imported; runtime will reload on next operation")
+        diagnostics.record("VISUAL_ENGINE", "MODEL_IMPORTED", DiagnosticsManager.Severity.INFO, "MobileCLIP-S2 imported; runtime will reload on next operation", metadata = mapOf("modelVersion" to modelManager.installedModelVersion()))
     }
 
     fun isModelInstalled(): Boolean = modelManager.isInstalled()
     fun modelSizeBytes(): Long = modelManager.installedSizeBytes()
+    fun currentModelVersion(): String = modelManager.installedModelVersion()
     suspend fun imageEmbeddingCount(): Long = withContext(Dispatchers.IO) { database.embeddingDao().countByOwnerType(MobileClipImageEncoder.OWNER_TYPE) }
 
     suspend fun visualHealth(): VisualHealth = withContext(Dispatchers.IO) {
-        val images = database.imageDao().count()
-        val embeddings = database.embeddingDao().countByOwnerType(MobileClipImageEncoder.OWNER_TYPE)
+        val imageCount: Long = database.imageDao().count().toLong()
+        val embeddings: Long = database.embeddingDao().countByOwnerType(MobileClipImageEncoder.OWNER_TYPE)
         val modelReady = try { ensureModel(); true } catch (_: Throwable) { false }
-        val compatible = if (modelReady) {
+        val compatible: Int = if (modelReady) {
+            val version = encoder.modelVersion
             val dimension = runCatching { encoder.modelOutputShape().fold(1) { a, b -> a * b } }.getOrDefault(-1)
-            database.embeddingDao().getAllForImageSearch().count { it.modelName == MobileClipImageEncoder.MODEL_NAME && it.modelVersion == MobileClipImageEncoder.MODEL_VERSION && it.dimension == dimension && it.vector.size == dimension && it.vector.all { v -> v.isFinite() } }
+            database.embeddingDao().getAllForImageSearch().count { it.modelName == MobileClipImageEncoder.MODEL_NAME && it.modelVersion == version && it.dimension == dimension && it.vector.size == dimension && it.vector.all { v -> v.isFinite() } }
         } else 0
-        VisualHealth(images.toLong(), embeddings, compatible, modelReady, modelManager.installedSizeBytes(), if (modelReady) encoder.modelInputShape() else intArrayOf(), if (modelReady) encoder.modelOutputShape() else intArrayOf())
+        VisualHealth(imageCount, embeddings, compatible, modelReady, modelManager.installedSizeBytes(), if (modelReady) encoder.modelInputShape() else intArrayOf(), if (modelReady) encoder.modelOutputShape() else intArrayOf())
     }
 
     suspend fun indexAllImages(onProgress: (processed: Int, total: Int, embedded: Int, skipped: Int, failed: Int) -> Unit = { _, _, _, _, _ -> }) = withContext(Dispatchers.Default) {
         val run = diagnostics.begin("VISUAL_INDEX")
         try {
             ensureModel()
+            val currentVersion = encoder.modelVersion
             val images = database.imageDao().getAll(); val total = images.size
-            run.stage("LOAD", "Loaded images for visual embedding", mapOf("total" to total.toString(), "tensor" to encoder.modelInputShape().contentToString()))
+            run.stage("LOAD", "Loaded images for visual embedding", mapOf("total" to total.toString(), "tensor" to encoder.modelInputShape().contentToString(), "modelVersion" to currentVersion))
             var processed = 0; var embedded = 0; var skipped = 0; var failed = 0
             for (image in images) {
                 try {
-                    val existing = database.embeddingDao().getForOwnerAndModel(MobileClipImageEncoder.OWNER_TYPE, image.id, MobileClipImageEncoder.MODEL_NAME, MobileClipImageEncoder.MODEL_VERSION)
+                    val existing = database.embeddingDao().getForOwnerAndModel(MobileClipImageEncoder.OWNER_TYPE, image.id, MobileClipImageEncoder.MODEL_NAME, currentVersion)
                     if (existing != null && existing.vector.isNotEmpty() && existing.dimension == existing.vector.size && existing.vector.all { it.isFinite() }) skipped++ else {
                         database.embeddingDao().deleteForOwner(MobileClipImageEncoder.OWNER_TYPE, image.id); indexImageAndStore(image); embedded++
                     }
@@ -70,14 +73,14 @@ class SemanticSearchService(context: Context) : AutoCloseable {
                 finally { processed++; onProgress(processed, total, embedded, skipped, failed) }
             }
             val persisted = database.embeddingDao().countByOwnerType(MobileClipImageEncoder.OWNER_TYPE)
-            run.stage("VERIFY", "Visual index persistence verification", mapOf("persisted" to persisted.toString(), "expectedMinimum" to (total - failed).coerceAtLeast(0).toString()))
-            if (total > 0 && persisted == 0L) { val error = IllegalStateException("No MobileCLIP embeddings were persisted"); run.failure("ZERO_PERSISTED_EMBEDDINGS", error); throw IllegalStateException("تم تشغيل النموذج لكن لم يتم حفظ أي بصمة بصرية. راجع Diagnostics.") }
+            val compatiblePersisted = database.embeddingDao().getAllForImageSearch().count { it.modelName == MobileClipImageEncoder.MODEL_NAME && it.modelVersion == currentVersion && it.dimension > 0 && it.vector.size == it.dimension && it.vector.all { v -> v.isFinite() } }
+            run.stage("VERIFY", "Visual index persistence verification", mapOf("persisted" to persisted.toString(), "compatiblePersisted" to compatiblePersisted.toString(), "expectedMinimum" to (total - failed).coerceAtLeast(0).toString(), "modelVersion" to currentVersion))
+            if (total > 0 && compatiblePersisted == 0) { val error = IllegalStateException("No compatible MobileCLIP embeddings were persisted"); run.failure("ZERO_PERSISTED_EMBEDDINGS", error); throw IllegalStateException("تم تشغيل النموذج لكن لم يتم حفظ بصمات بصرية متوافقة. راجع Diagnostics.") }
             if (failed > 0) run.warning("Visual index completed with failed images", mapOf("failed" to failed.toString()))
-            run.success("Visual index completed", mapOf("processed" to processed.toString(), "embedded" to embedded.toString(), "skipped" to skipped.toString(), "failed" to failed.toString(), "persisted" to persisted.toString()))
+            run.success("Visual index completed", mapOf("processed" to processed.toString(), "embedded" to embedded.toString(), "skipped" to skipped.toString(), "failed" to failed.toString(), "persisted" to persisted.toString(), "compatiblePersisted" to compatiblePersisted.toString(), "modelVersion" to currentVersion))
         } catch (t: Throwable) { run.failure("PIPELINE", t); throw t }
     }
 
-    /** Compatibility overload for the legacy MainActivity callback. */
     suspend fun indexAllImages(onProgress: (processed: Int, total: Int, embedded: Int, skipped: Int) -> Unit) =
         indexAllImages { processed, total, embedded, skipped, _ -> onProgress(processed, total, embedded, skipped) }
 
@@ -85,26 +88,31 @@ class SemanticSearchService(context: Context) : AutoCloseable {
         ensureModel()
         val vector = encoder.encode(Uri.parse(image.uri))
         require(vector.isNotEmpty() && vector.all { it.isFinite() }) { "MobileCLIP produced an invalid embedding" }
-        EmbeddingEntity(ownerType = MobileClipImageEncoder.OWNER_TYPE, ownerId = image.id, vector = vector, dimension = vector.size, modelName = MobileClipImageEncoder.MODEL_NAME, modelVersion = MobileClipImageEncoder.MODEL_VERSION, normalized = true)
+        EmbeddingEntity(ownerType = MobileClipImageEncoder.OWNER_TYPE, ownerId = image.id, vector = vector, dimension = vector.size, modelName = MobileClipImageEncoder.MODEL_NAME, modelVersion = encoder.modelVersion, normalized = true)
     }
 
     suspend fun indexImageAndStore(image: ImageEntity): Long {
-        val embedding = indexImage(image); database.embeddingDao().deleteForOwner(embedding.ownerType, embedding.ownerId); return database.embeddingDao().insert(embedding)
+        val embedding = indexImage(image)
+        database.embeddingDao().deleteForOwner(embedding.ownerType, embedding.ownerId)
+        return database.embeddingDao().insert(embedding)
     }
 
     suspend fun searchSimilarImages(queryUri: Uri, limit: Int = 30): List<ScoredImage> = withContext(Dispatchers.Default) {
         val run = diagnostics.begin("VISUAL_SEARCH", mapOf("limit" to limit.toString()))
         try {
-            ensureModel(); val query = encoder.encode(queryUri); require(query.isNotEmpty() && query.all { it.isFinite() }) { "تعذر إنشاء البصمة البصرية لصورة البحث" }
-            val embeddings = database.embeddingDao().getAllForImageSearch(); run.stage("LOAD_INDEX", "Loaded visual embeddings", mapOf("embeddings" to embeddings.size.toString(), "queryDimension" to query.size.toString()))
+            ensureModel()
+            val currentVersion = encoder.modelVersion
+            val query = encoder.encode(queryUri)
+            require(query.isNotEmpty() && query.all { it.isFinite() }) { "تعذر إنشاء البصمة البصرية لصورة البحث" }
+            val embeddings = database.embeddingDao().getAllForImageSearch(); run.stage("LOAD_INDEX", "Loaded visual embeddings", mapOf("embeddings" to embeddings.size.toString(), "queryDimension" to query.size.toString(), "modelVersion" to currentVersion))
             if (embeddings.isEmpty()) { run.warning("VISUAL_INDEX_EMPTY", mapOf("message" to "Build the visual index before image search")); throw IllegalStateException("لا توجد بصمات بصرية. اضغط BUILD VISUAL INDEX أولًا.") }
             val imageIds = embeddings.map { it.ownerId }.distinct(); val images = database.imageDao().getByIds(imageIds).associateBy { it.id }; val results = ArrayList<ScoredImage>(embeddings.size); var compatible = 0
             for (embedding in embeddings) {
-                if (embedding.modelName != MobileClipImageEncoder.MODEL_NAME || embedding.modelVersion != MobileClipImageEncoder.MODEL_VERSION || embedding.dimension != query.size || embedding.vector.size != embedding.dimension || !embedding.vector.all { it.isFinite() }) continue
+                if (embedding.modelName != MobileClipImageEncoder.MODEL_NAME || embedding.modelVersion != currentVersion || embedding.dimension != query.size || embedding.vector.size != embedding.dimension || !embedding.vector.all { it.isFinite() }) continue
                 val image = images[embedding.ownerId] ?: continue; compatible++; val score = cosine(query, embedding.vector); results += ScoredImage(image, score, scoreBand(score), scorePercent(score))
             }
-            if (compatible == 0) { val error = IllegalStateException("Stored visual embeddings are incompatible with the active MobileCLIP model/version"); run.failure("NO_COMPATIBLE_EMBEDDINGS", error); throw IllegalStateException("البصمات الموجودة غير متوافقة مع إصدار MobileCLIP-S2 الحالي. أعد بناء الفهرس البصري.") }
-            val ranked = results.sortedByDescending { it.score }.take(limit); run.success("Visual search completed", mapOf("compatible" to compatible.toString(), "results" to ranked.size.toString())); ranked
+            if (compatible == 0) { val error = IllegalStateException("Stored visual embeddings are incompatible with the active MobileCLIP model/version"); run.failure("NO_COMPATIBLE_EMBEDDINGS", error); throw IllegalStateException("البصمات الموجودة غير متوافقة مع ملف MobileCLIP-S2 الحالي. أعد بناء الفهرس البصري.") }
+            val ranked = results.sortedByDescending { it.score }.take(limit.coerceAtLeast(1)); run.success("Visual search completed", mapOf("compatible" to compatible.toString(), "results" to ranked.size.toString(), "modelVersion" to currentVersion)); ranked
         } catch (t: Throwable) { run.failure("SEARCH", t); throw t }
     }
 

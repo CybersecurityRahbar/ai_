@@ -12,6 +12,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.database.ImageEntity
 import com.example.personalmemoryai.indexing.FaceIndexCoordinator
+import com.example.personalmemoryai.indexing.FullIndexingCoordinator
 import com.example.personalmemoryai.indexing.ImageIndexer
 import com.example.personalmemoryai.semantic.SemanticSearchService
 import com.example.personalmemoryai.ui.DataCenterActivity
@@ -30,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: ImageResultAdapter
     private lateinit var semanticSearchService: SemanticSearchService
     private lateinit var faceIndexCoordinator: FaceIndexCoordinator
+    private lateinit var fullIndexingCoordinator: FullIndexingCoordinator
     private var indexer: ImageIndexer? = null
 
     private val imagePicker = registerForActivityResult(
@@ -40,7 +42,7 @@ class MainActivity : AppCompatActivity() {
             return@registerForActivityResult
         }
         val limitedUris = uris.take(1000)
-        showStatus("تم اختيار ${limitedUris.size} صورة • بدء التحليل المحلي...")
+        showStatus("تم اختيار ${limitedUris.size} صورة • بدء خط أنابيب الفهرسة الكامل محليًا...")
         indexImages(limitedUris)
     }
 
@@ -73,6 +75,7 @@ class MainActivity : AppCompatActivity() {
         indexer = ImageIndexer(applicationContext)
         semanticSearchService = SemanticSearchService(applicationContext)
         faceIndexCoordinator = FaceIndexCoordinator(applicationContext)
+        fullIndexingCoordinator = FullIndexingCoordinator(applicationContext)
 
         setupRecyclerView()
         binding.selectButton.setOnClickListener { imagePicker.launch("image/*") }
@@ -116,7 +119,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 setBusy(false)
                 updateModelStatus()
-                binding.statusText.text = "تم استيراد MobileCLIP-S2. اضغط BUILD VISUAL INDEX لإنشاء البصمات البصرية الدائمة."
+                binding.statusText.text = "تم استيراد MobileCLIP-S2. سيستخدم تلقائيًا أثناء الفهرسة الكاملة للصور."
             } catch (e: Exception) {
                 setBusy(false)
                 binding.modelStatusText.text = "○ نموذج MobileCLIP غير متوفر"
@@ -134,7 +137,7 @@ class MainActivity : AppCompatActivity() {
                 val mb = semanticSearchService.modelSizeBytes() / (1024 * 1024)
                 "● MobileCLIP-S2 جاهز • ${mb} MB • بصمات الصور: $embeddings"
             } else {
-                "○ MobileCLIP-S2 غير مستورد • اختر ملف .tflite"
+                "○ MobileCLIP-S2 غير مستورد • الفهرسة الأساسية ستعمل، والفهرسة البصرية تحتاج النموذج"
             }
         }
     }
@@ -150,7 +153,7 @@ class MainActivity : AppCompatActivity() {
     private fun buildVisualIndex() {
         lifecycleScope.launch {
             if (!semanticSearchService.isModelInstalled()) {
-                showStatus("استورد model.float16.tflite / MobileCLIP-S2 أولًا.")
+                showStatus("استورد نموذج MobileCLIP-S2 أولًا من Data Center أو من هذه الشاشة.")
                 return@launch
             }
             val total = withContext(Dispatchers.IO) { database.imageDao().count() }
@@ -172,7 +175,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val finalCount = semanticSearchService.imageEmbeddingCount()
                 binding.modelStatusText.text = "● MobileCLIP-S2 جاهز • بصمات الصور: $finalCount"
-                binding.statusText.text = "اكتمل الفهرس البصري. البحث بالصورة أصبح يعتمد على embeddings محفوظة بدل إعادة تحليل كل الصور."
+                binding.statusText.text = "اكتمل الفهرس البصري. البحث بالصورة يعتمد الآن على embeddings محفوظة."
             } catch (e: Exception) {
                 showStatus("فشل بناء الفهرس البصري: ${e.message}")
                 Toast.makeText(this@MainActivity, "فشل بناء الفهرس البصري", Toast.LENGTH_LONG).show()
@@ -215,34 +218,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * One user action now drives the complete local image pipeline:
+     * image/OCR/object metadata -> faces -> person clustering -> optional MobileCLIP.
+     * Each stage is independently guarded and recorded by FullIndexingCoordinator.
+     */
     private fun indexImages(uris: List<Uri>) {
         lifecycleScope.launch {
             setBusy(true)
-            binding.progressBar.max = uris.size
+            binding.progressBar.max = uris.size.coerceAtLeast(1)
             binding.progressBar.progress = 0
-            var completed = 0
-            var failed = 0
-            val startedAt = System.currentTimeMillis()
-            for (uri in uris) {
-                try {
-                    val entity = withContext(Dispatchers.IO) { indexer?.indexImage(uri) }
-                    if (entity != null) completed++ else failed++
-                } catch (t: Throwable) {
-                    failed++
-                    t.printStackTrace()
+            binding.statusText.text = "تهيئة خط أنابيب الفهرسة الكامل..."
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    fullIndexingCoordinator.indexUris(uris) { progress ->
+                        runOnUiThread {
+                            binding.progressBar.progress = progress.processed
+                            binding.counterText.text = "FULL INDEX • ${progress.processed}/${progress.total}"
+                            binding.statusText.text = "فهرسة كاملة: ${progress.processed}/${progress.total}\nصور: ${progress.imagesIndexed} • وجوه: ${progress.facesIndexed}/${progress.facesDetected} • بصري: ${progress.visualEmbedded} جديد / ${progress.visualSkipped} موجود • فشل: ${progress.imageFailures + progress.faceFailures + progress.visualFailures}"
+                        }
+                    }
                 }
-                val processed = completed + failed
-                binding.progressBar.progress = processed
-                val elapsed = ((System.currentTimeMillis() - startedAt) / 1000L).coerceAtLeast(1L)
-                val rate = processed.toDouble() / elapsed
-                binding.counterText.text = "$processed / ${uris.size} • ${String.format(Locale.US, "%.1f", rate)} صورة/ث"
-                binding.statusText.text = "تحليل الصورة $processed من ${uris.size}\nOCR + كائنات + بيانات الصورة"
-            }
-            setBusy(false)
-            loadAllImages()
-            binding.statusText.text = "اكتملت الفهرسة • تمت معالجة ${uris.size} صورة • نجح $completed • فشل $failed"
-            if (semanticSearchService.isModelInstalled()) {
-                binding.statusText.append("\nاضغط BUILD VISUAL INDEX لإضافة embeddings للصور الجديدة.")
+                loadAllImages()
+                updateFaceStatus()
+                updateModelStatus()
+                binding.statusText.text = "اكتملت الفهرسة الكاملة.\nالصور: ${result.imagesIndexed}/${result.total} • الوجوه: ${result.facesIndexed}/${result.facesDetected} • بصمات MobileCLIP: ${result.visualEmbedded} جديدة / ${result.visualSkipped} موجودة • إخفاقات: ${result.imageFailures + result.faceFailures + result.visualFailures}"
+            } catch (e: Exception) {
+                showStatus("توقفت الفهرسة الكاملة بسبب خطأ: ${e.message}")
+                Toast.makeText(this@MainActivity, "فشل خط أنابيب الفهرسة", Toast.LENGTH_LONG).show()
+            } finally {
+                setBusy(false)
             }
         }
     }
@@ -250,7 +255,7 @@ class MainActivity : AppCompatActivity() {
     private fun performSearch(query: String) {
         val normalized = query.trim()
         if (normalized.isBlank()) {
-            showStatus("اكتب وصفًا أو كلمات للبحث.")
+            showStatus("اكتب كلمات أو وصفًا للبحث.")
             return
         }
         lifecycleScope.launch {
@@ -281,7 +286,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 adapter.submitList(results)
                 binding.counterText.text = "النتائج: ${results.size}"
-                binding.statusText.text = if (results.isEmpty()) "لم توجد مطابقة للكلمات أو الكائنات: $normalized" else "${results.size} نتيجة • OCR + YOLO object labels.\nText Encoder مؤجل كما هو مخطط."
+                binding.statusText.text = if (results.isEmpty()) "لم توجد مطابقة للكلمات أو الكائنات: $normalized" else "${results.size} نتيجة • OCR + object labels.\nالبحث النصي الحالي يعتمد على OCR/object retrieval المحلي؛ Text Encoder غير متاح بعد."
             } catch (e: Exception) {
                 showStatus("حدث خطأ أثناء البحث: ${e.message}")
             }
@@ -297,7 +302,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val embeddings = withContext(Dispatchers.IO) { semanticSearchService.imageEmbeddingCount() }
                 if (embeddings == 0L) {
-                    showStatus("لا توجد بصمات بصرية. اضغط BUILD VISUAL INDEX أولًا.")
+                    showStatus("لا توجد بصمات بصرية. اضغط INDEX PHOTOS أو BUILD VISUAL INDEX أولًا.")
                     return@launch
                 }
                 setBusy(true)
@@ -337,6 +342,7 @@ class MainActivity : AppCompatActivity() {
     private fun showStatus(text: String) { binding.statusText.text = text }
 
     override fun onDestroy() {
+        fullIndexingCoordinator.close()
         semanticSearchService.close()
         faceIndexCoordinator.close()
         indexer?.close()

@@ -17,6 +17,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
     private val database = AppDatabase.getInstance(context)
     private val dao = database.imageDao()
     private val objectDao = database.objectDao()
+    private val embeddingDao = database.embeddingDao()
     private val ocrEngine = OcrEngine(context)
     private val objectDetector = YoloObjectDetector(context)
     private val imageStore = ManagedImageStore(context)
@@ -46,8 +47,8 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
 
             val existing = dao.findBySourceUri(sourceUri) ?: dao.findByUri(sourceUri)
             if (existing != null) {
-                run.warning("Image already indexed", mapOf("imageId" to existing.id.toString()))
-                return existing
+                run.warning("Image already indexed; rebuilding derived evidence instead of silently skipping", mapOf("imageId" to existing.id.toString()))
+                return reindexExistingImage(existing, uri, run)
             }
 
             run.stage("OCR", "Running multi-pass OCR pipeline")
@@ -55,12 +56,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
                 run.failure("OCR", t)
                 OcrResult("", "none", 0f, 0, 0, 0, 0)
             }
-            run.stage("OCR_RESULT", "OCR evidence evaluated", mapOf(
-                "characters" to ocr.text.length.toString(), "language" to ocr.language,
-                "quality" to "%.3f".format(java.util.Locale.US, ocr.qualityScore), "passes" to ocr.passCount.toString(),
-                "successfulPasses" to ocr.successfulPasses.toString(), "arabicCharacters" to ocr.arabicCharacters.toString(),
-                "latinCharacters" to ocr.latinCharacters.toString()
-            ))
+            run.stage("OCR_RESULT", "OCR evidence evaluated", mapOf("characters" to ocr.text.length.toString(), "language" to ocr.language, "quality" to "%.3f".format(java.util.Locale.US, ocr.qualityScore), "passes" to ocr.passCount.toString(), "successfulPasses" to ocr.successfulPasses.toString(), "arabicCharacters" to ocr.arabicCharacters.toString(), "latinCharacters" to ocr.latinCharacters.toString()))
             if (ocr.text.isBlank()) run.warning("OCR produced no text; this is not treated as a successful extraction")
 
             run.stage("OBJECTS", "Running YOLO object detector")
@@ -79,13 +75,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             val managedUri = managedFile?.let { Uri.fromFile(it).toString() } ?: sourceUri
             if (managedFile == null) run.warning("Managed image copy unavailable; source URI retained")
 
-            val entity = ImageEntity(
-                uri = managedUri, fileName = fileName, filePath = sourceUri, dateTaken = dateTaken, dateModified = dateModified,
-                fileSize = fileSize, width = width, height = height, mimeType = mimeType, ocrText = ocr.text, ocrLanguage = ocr.language,
-                ocrQualityScore = ocr.qualityScore, ocrPassCount = ocr.passCount, ocrSuccessfulPasses = ocr.successfulPasses,
-                ocrLatinCharacters = ocr.latinCharacters, ocrArabicCharacters = ocr.arabicCharacters,
-                detectedObjects = serializeObjects(objects), indexedAt = System.currentTimeMillis()
-            )
+            val entity = ImageEntity(uri = managedUri, fileName = fileName, filePath = sourceUri, dateTaken = dateTaken, dateModified = dateModified, fileSize = fileSize, width = width, height = height, mimeType = mimeType, ocrText = ocr.text, ocrLanguage = ocr.language, ocrQualityScore = ocr.qualityScore, ocrPassCount = ocr.passCount, ocrSuccessfulPasses = ocr.successfulPasses, ocrLatinCharacters = ocr.latinCharacters, ocrArabicCharacters = ocr.arabicCharacters, detectedObjects = serializeObjects(objects), indexedAt = System.currentTimeMillis())
             run.stage("DATABASE", "Persisting indexed image")
             val id = dao.insert(entity)
             val result = entity.copy(id = id)
@@ -93,9 +83,7 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             run.stage("OBJECT_PERSISTENCE", "Persisting object observations")
             try {
                 objectDao.deleteForImage(id)
-                if (objects.isNotEmpty()) objectDao.insertAll(objects.map { detection ->
-                    ObjectEntity(imageId = id, classId = detection.classId, label = detection.label, arabicLabel = detection.arabicLabel, confidence = detection.confidence, left = detection.left, top = detection.top, right = detection.right, bottom = detection.bottom, detectorName = "YOLO26n W8A32", detectorVersion = "1", inferenceTimeMs = objectInferenceMs, createdAt = System.currentTimeMillis())
-                })
+                if (objects.isNotEmpty()) objectDao.insertAll(objects.map { detection -> ObjectEntity(imageId = id, classId = detection.classId, label = detection.label, arabicLabel = detection.arabicLabel, confidence = detection.confidence, left = detection.left, top = detection.top, right = detection.right, bottom = detection.bottom, detectorName = "YOLO26n W8A32", detectorVersion = "1", inferenceTimeMs = objectInferenceMs, createdAt = System.currentTimeMillis()) })
                 run.stage("OBJECT_PERSISTENCE_RESULT", "Object observations persisted", mapOf("rows" to objects.size.toString()))
             } catch (t: Throwable) { run.failure("OBJECT_PERSISTENCE", t, mapOf("imageId" to id.toString())) }
 
@@ -131,29 +119,70 @@ class ImageIndexer(private val context: Context) : AutoCloseable {
             }
 
             val degraded = objectFailed || faceFailed || visualFailed || visualSkipped
-            run.stage("PIPELINE_HEALTH", "Per-image intelligence health evaluated", mapOf(
-                "imageId" to id.toString(), "ocr" to if (ocr.text.isNotBlank()) "SUCCESS" else "NO_TEXT",
-                "objects" to if (objectFailed) "FAILED" else "SUCCESS",
-                "faces" to if (faceFailed) "FAILED" else "SUCCESS",
-                "visual" to when { visualFailed -> "FAILED"; visualSkipped -> "NOT_READY"; else -> "SUCCESS" },
-                "overall" to if (degraded) "DEGRADED" else "SUCCESS"
-            ))
+            run.stage("PIPELINE_HEALTH", "Per-image intelligence health evaluated", mapOf("imageId" to id.toString(), "ocr" to if (ocr.text.isNotBlank()) "SUCCESS" else "NO_TEXT", "objects" to if (objectFailed) "FAILED" else "SUCCESS", "faces" to if (faceFailed) "FAILED" else "SUCCESS", "visual" to when { visualFailed -> "FAILED"; visualSkipped -> "NOT_READY"; else -> "SUCCESS" }, "overall" to if (degraded) "DEGRADED" else "SUCCESS"))
 
-            if (degraded) {
-                run.warning("Image indexed with degraded intelligence coverage", mapOf("imageId" to id.toString(), "objectFailed" to objectFailed.toString(), "faceFailed" to faceFailed.toString(), "visualFailed" to visualFailed.toString(), "visualSkipped" to visualSkipped.toString()))
-            } else {
-                run.success("Complete image intelligence indexed", mapOf(
-                    "imageId" to id.toString(), "ocrChars" to ocr.text.length.toString(), "ocrQuality" to "%.3f".format(java.util.Locale.US, ocr.qualityScore),
-                    "ocrArabicChars" to ocr.arabicCharacters.toString(), "objects" to objects.size.toString(), "objectInferenceMs" to objectInferenceMs.toString(),
-                    "visualModelInstalled" to semanticSearchService.isModelInstalled().toString()
-                ))
-            }
+            if (degraded) run.warning("Image indexed with degraded intelligence coverage", mapOf("imageId" to id.toString(), "objectFailed" to objectFailed.toString(), "faceFailed" to faceFailed.toString(), "visualFailed" to visualFailed.toString(), "visualSkipped" to visualSkipped.toString()))
+            else run.success("Complete image intelligence indexed", mapOf("imageId" to id.toString(), "ocrChars" to ocr.text.length.toString(), "ocrQuality" to "%.3f".format(java.util.Locale.US, ocr.qualityScore), "ocrArabicChars" to ocr.arabicCharacters.toString(), "objects" to objects.size.toString(), "objectInferenceMs" to objectInferenceMs.toString(), "visualModelInstalled" to semanticSearchService.isModelInstalled().toString()))
             result
         } catch (t: Throwable) { run.failure("PIPELINE", t, mapOf("uri" to uri.toString())); null }
     }
 
-    private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> = objectDetector.detect(uri)
+    /** Rebuilds derived evidence without creating a duplicate image row or deleting a valid visual embedding prematurely. */
+    private suspend fun reindexExistingImage(existing: ImageEntity, sourceUri: Uri, run: DiagnosticsManager.Run): ImageEntity {
+        val imageId = existing.id
+        val ocr = try {
+            run.stage("REINDEX_OCR", "Refreshing OCR evidence")
+            ocrEngine.process(sourceUri)
+        } catch (t: Throwable) {
+            run.failure("REINDEX_OCR", t, mapOf("imageId" to imageId.toString())); null
+        }
 
+        val objectResult = try {
+            run.stage("REINDEX_OBJECTS", "Refreshing object evidence")
+            val started = System.nanoTime()
+            val detected = runObjectDetection(sourceUri)
+            val inferenceMs = (System.nanoTime() - started) / 1_000_000L
+            objectDao.deleteForImage(imageId)
+            if (detected.isNotEmpty()) objectDao.insertAll(detected.map { detection -> ObjectEntity(imageId = imageId, classId = detection.classId, label = detection.label, arabicLabel = detection.arabicLabel, confidence = detection.confidence, left = detection.left, top = detection.top, right = detection.right, bottom = detection.bottom, detectorName = "YOLO26n W8A32", detectorVersion = "1", inferenceTimeMs = inferenceMs, createdAt = System.currentTimeMillis()) })
+            Pair(detected, inferenceMs)
+        } catch (t: Throwable) {
+            run.failure("REINDEX_OBJECTS", t, mapOf("imageId" to imageId.toString())); null
+        }
+
+        if (ocr != null || objectResult != null) {
+            dao.updateAnalysis(imageId = imageId, ocrText = ocr?.text ?: existing.ocrText, ocrLanguage = ocr?.language ?: existing.ocrLanguage, ocrQualityScore = ocr?.qualityScore ?: existing.ocrQualityScore, ocrPassCount = ocr?.passCount ?: existing.ocrPassCount, ocrSuccessfulPasses = ocr?.successfulPasses ?: existing.ocrSuccessfulPasses, ocrLatinCharacters = ocr?.latinCharacters ?: existing.ocrLatinCharacters, ocrArabicCharacters = ocr?.arabicCharacters ?: existing.ocrArabicCharacters, detectedObjects = objectResult?.first?.let(::serializeObjects) ?: existing.detectedObjects, indexedAt = System.currentTimeMillis())
+        }
+
+        val sourceForAi = if (canOpen(existing.uri)) Uri.parse(existing.uri) else sourceUri
+        var faceResult: FaceIndexingService.IndexResult? = null
+        try {
+            run.stage("REINDEX_FACES", "Refreshing face landmarks and identity embeddings", mapOf("imageId" to imageId.toString()))
+            faceResult = faceCoordinator.indexSingleImage(imageId, sourceForAi)
+            run.stage("REINDEX_FACES_RESULT", "Face evidence refreshed", mapOf("faces" to faceResult.detectedFaces.toString(), "indexed" to faceResult.indexedFaces.toString()))
+        } catch (t: Throwable) {
+            run.failure("REINDEX_FACES", t, mapOf("imageId" to imageId.toString()))
+        }
+
+        var visualPersisted = false
+        if (semanticSearchService.isModelInstalled()) {
+            try {
+                run.stage("REINDEX_VISUAL", "Refreshing MobileCLIP image embedding", mapOf("imageId" to imageId.toString()))
+                semanticSearchService.indexImageAndStore(existing)
+                visualPersisted = true
+            } catch (t: Throwable) {
+                run.failure("REINDEX_VISUAL", t, mapOf("imageId" to imageId.toString()))
+            }
+        } else {
+            run.warning("REINDEX_VISUAL_SKIPPED", "MobileCLIP-S2 is not installed; existing visual embedding retained")
+        }
+
+        val refreshed = dao.getById(imageId) ?: existing
+        run.success("Existing image rebuilt without duplication", mapOf("imageId" to imageId.toString(), "ocrRefreshed" to (ocr != null).toString(), "objectsRefreshed" to (objectResult != null).toString(), "facesIndexed" to (faceResult?.indexedFaces ?: 0).toString(), "visualPersisted" to visualPersisted.toString()))
+        return refreshed
+    }
+
+    private fun canOpen(uri: String): Boolean = try { context.contentResolver.openInputStream(Uri.parse(uri))?.use { true } ?: false } catch (_: Throwable) { false }
+    private fun runObjectDetection(uri: Uri): List<ObjectDetectionResult> = objectDetector.detect(uri)
     private fun serializeObjects(objects: List<ObjectDetectionResult>): String = objects.groupBy { it.classId }.values.joinToString("; ") { detections ->
         val best = detections.maxByOrNull { it.confidence } ?: return@joinToString ""
         if (best.arabicLabel.isBlank()) "${best.label}:${"%.3f".format(java.util.Locale.US, best.confidence)}" else "${best.label}|${best.arabicLabel}:${"%.3f".format(java.util.Locale.US, best.confidence)}"
