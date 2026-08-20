@@ -1,10 +1,12 @@
 package com.example.personalmemoryai.ui
 
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -40,6 +42,7 @@ class PersonProfileActivity : AppCompatActivity() {
             val repImage = representative?.let { face -> images.firstOrNull { it.id == face.imageId } }
 
             root.addView(header(person))
+            root.addView(timelineButton(personId), margin())
             root.addView(section("SUBJECT TELEMETRY", cyan))
             val metrics = LinearLayout(this@PersonProfileActivity).apply { orientation = LinearLayout.HORIZONTAL }
             metric(metrics, "OBSERVATIONS", faces.size.toString(), neon)
@@ -55,6 +58,19 @@ class PersonProfileActivity : AppCompatActivity() {
             images.forEachIndexed { index, image ->
                 root.addView(imageCard(image.uri, "EVIDENCE ${String.format(Locale.US, "%02d", index + 1)}  •  ${image.fileName}\nOCR ${if (image.ocrText.isBlank()) "NONE" else "AVAILABLE"}  •  OBJECTS ${if (image.detectedObjects == "[]" || image.detectedObjects.isBlank()) "NONE" else "INDEXED"}", violet), margin())
             }
+        }
+    }
+
+    private fun timelineButton(personId: Long) = Button(this).apply {
+        text = "◷  OPEN SUBJECT TIMELINE"
+        textSize = 10f
+        setTextColor(Color.rgb(5, 10, 13))
+        setTypeface(null, Typeface.BOLD)
+        setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_intel_button)
+        setOnClickListener {
+            startActivity(Intent(this@PersonProfileActivity, SubjectTimelineActivity::class.java).apply {
+                putExtra("person_id", personId)
+            })
         }
     }
 
