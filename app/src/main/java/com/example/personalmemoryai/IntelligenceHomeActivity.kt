@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import com.example.personalmemoryai.diagnostics.IntelligenceHealthService
 import com.example.personalmemoryai.ui.DataCenterActivity
 import com.example.personalmemoryai.ui.DiagnosticsActivity
+import com.example.personalmemoryai.ui.EvidenceRelationshipsActivity
 import com.example.personalmemoryai.ui.EvidenceSearchActivity
 import com.example.personalmemoryai.ui.FaceSearchActivity
 import com.example.personalmemoryai.ui.ImageIntelligenceActivity
@@ -62,6 +63,11 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         content.addView(title("SEARCH / EVIDENCE RETRIEVAL", cyan))
         content.addView(action("EVIDENCE SEARCH CONSOLE", "Image-to-image similarity • OCR • object retrieval • no Text Encoder dependency", cyan) { startActivity(Intent(this, EvidenceSearchActivity::class.java)) })
         content.addView(action("COMPOSITE INVESTIGATION", "Face • body • pose • appearance • scene • visual • OCR • objects", violet) { startActivity(Intent(this, InvestigationActivity::class.java)) })
+        content.addView(action("EVIDENCE RELATIONSHIPS", "Subject graph • shared images • linked subjects • object evidence", green) {
+            val intent = Intent(this, EvidenceRelationshipsActivity::class.java)
+            intent.putExtra("person_id", 0L)
+            startActivity(intent)
+        })
         content.addView(title("IDENTITY / HUMAN ANALYSIS", green))
         content.addView(action("FACE MATCH CONSOLE", "MobileFaceNet • FaceNet-512 • 478-point shape • ranked confidence", green) { startActivity(Intent(this, FaceSearchActivity::class.java)) })
         content.addView(action("PEOPLE & FACE INTELLIGENCE", "Clusters • observations • representatives • identity evidence", green) { startActivity(Intent(this, PeopleIntelligenceActivity::class.java)) })
