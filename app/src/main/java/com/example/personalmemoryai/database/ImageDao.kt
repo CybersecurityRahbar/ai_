@@ -42,6 +42,32 @@ interface ImageDao {
     """)
     suspend fun searchTextAndObjects(query: String): List<ImageEntity>
 
+    @Query("""
+        UPDATE images SET
+            ocrText = :ocrText,
+            ocrLanguage = :ocrLanguage,
+            ocrQualityScore = :ocrQualityScore,
+            ocrPassCount = :ocrPassCount,
+            ocrSuccessfulPasses = :ocrSuccessfulPasses,
+            ocrLatinCharacters = :ocrLatinCharacters,
+            ocrArabicCharacters = :ocrArabicCharacters,
+            detectedObjects = :detectedObjects,
+            indexedAt = :indexedAt
+        WHERE id = :imageId
+    """)
+    suspend fun updateAnalysis(
+        imageId: Long,
+        ocrText: String,
+        ocrLanguage: String,
+        ocrQualityScore: Float,
+        ocrPassCount: Int,
+        ocrSuccessfulPasses: Int,
+        ocrLatinCharacters: Int,
+        ocrArabicCharacters: Int,
+        detectedObjects: String,
+        indexedAt: Long
+    )
+
     @Query("UPDATE images SET detectedObjects = :objects WHERE id = :imageId")
     suspend fun updateDetectedObjects(imageId: Long, objects: String)
 
