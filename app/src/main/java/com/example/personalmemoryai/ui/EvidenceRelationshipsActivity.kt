@@ -31,7 +31,7 @@ import java.util.Locale
  * No new relationship schema and no live AI inference are required. TextEncoder is not used.
  */
 class EvidenceRelationshipsActivity : AppCompatActivity() {
-    private val text = Color.rgb(233, 255, 244)
+    private val primaryText = Color.rgb(233, 255, 244)
     private val muted = Color.rgb(127, 169, 154)
     private val green = Color.rgb(57, 255, 136)
     private val cyan = Color.rgb(53, 232, 255)
@@ -117,7 +117,7 @@ class EvidenceRelationshipsActivity : AppCompatActivity() {
     private fun globalHeader(total: Int) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(15), dp(16), dp(15)); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel); elevation = dp(5).toFloat()
         addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "◈ EVIDENCE RELATIONSHIPS / GLOBAL INDEX"; textSize = 10f; setTextColor(cyan); setTypeface(null, Typeface.BOLD) })
-        addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "RELATIONSHIP COMMAND"; textSize = 26f; setTextColor(this@EvidenceRelationshipsActivity.text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(4), 0, dp(2)) })
+        addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "RELATIONSHIP COMMAND"; textSize = 26f; setTextColor(this@EvidenceRelationshipsActivity.primaryText); setTypeface(null, Typeface.BOLD); setPadding(0, dp(4), 0, dp(2)) })
         addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "$total ACTIVE SUBJECT CLUSTERS  •  LOCAL GRAPH  •  ROOM INDEX"; textSize = 9f; setTextColor(green) })
         addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "NO LIVE INFERENCE  •  DERIVED FROM PERSISTED PERSON / FACE / IMAGE EVIDENCE"; textSize = 8f; setTextColor(muted); setPadding(0, dp(6), 0, 0) })
     }
@@ -132,7 +132,7 @@ class EvidenceRelationshipsActivity : AppCompatActivity() {
     private fun header(person: PersonEntity, images: Int, faces: Int) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(15), dp(16), dp(15)); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_panel); elevation = dp(5).toFloat()
         addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "◈ EVIDENCE RELATIONSHIPS / LOCAL GRAPH"; textSize = 10f; setTextColor(cyan); setTypeface(null, Typeface.BOLD) })
-        addView(TextView(this@EvidenceRelationshipsActivity).apply { text = person.displayName?.takeIf { it.isNotBlank() } ?: "UNKNOWN SUBJECT"; textSize = 26f; setTextColor(this@EvidenceRelationshipsActivity.text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(4), 0, dp(2)) })
+        addView(TextView(this@EvidenceRelationshipsActivity).apply { text = person.displayName?.takeIf { it.isNotBlank() } ?: "UNKNOWN SUBJECT"; textSize = 26f; setTextColor(this@EvidenceRelationshipsActivity.primaryText); setTypeface(null, Typeface.BOLD); setPadding(0, dp(4), 0, dp(2)) })
         addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "SUBJECT ${String.format(Locale.US, "%06d", person.id)}  •  ${images} IMAGES  •  ${faces} FACES"; textSize = 9f; setTextColor(green) })
         addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "DERIVED GRAPH  •  PERSON → FACE → IMAGE → OBJECT / OCR → RELATED SUBJECT"; textSize = 8f; setTextColor(muted); setPadding(0, dp(6), 0, 0) })
     }
@@ -154,7 +154,7 @@ class EvidenceRelationshipsActivity : AppCompatActivity() {
 
     private fun objectCard(label: String, count: Int) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(11), dp(9), dp(11), dp(9)); setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_intel_panel)
-        addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "◆  $label"; textSize = 11f; setTextColor(this@EvidenceRelationshipsActivity.text); setTypeface(null, Typeface.BOLD) }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "◆  $label"; textSize = 11f; setTextColor(this@EvidenceRelationshipsActivity.primaryText); setTypeface(null, Typeface.BOLD) }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "$count OBS"; textSize = 9f; setTextColor(amber); setTypeface(null, Typeface.BOLD) })
     }
 
@@ -164,7 +164,7 @@ class EvidenceRelationshipsActivity : AppCompatActivity() {
         card.addView(thumb)
         val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         info.addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "EVIDENCE ${String.format(Locale.US, "%03d", sequence)}  •  ${formatTime(image.dateTaken ?: image.dateModified)}"; textSize = 8f; setTextColor(cyan); setTypeface(null, Typeface.BOLD) })
-        info.addView(TextView(this@EvidenceRelationshipsActivity).apply { text = image.fileName; textSize = 12f; setTextColor(this@EvidenceRelationshipsActivity.text); setTypeface(null, Typeface.BOLD); setPadding(0, dp(5), 0, dp(4)); maxLines = 2 })
+        info.addView(TextView(this@EvidenceRelationshipsActivity).apply { text = image.fileName; textSize = 12f; setTextColor(this@EvidenceRelationshipsActivity.primaryText); setTypeface(null, Typeface.BOLD); setPadding(0, dp(5), 0, dp(4)); maxLines = 2 })
         info.addView(TextView(this@EvidenceRelationshipsActivity).apply { text = "FACE $faceCount  •  OCR ${if (image.ocrText.isBlank()) "NONE" else "YES"}  •  OBJECTS ${if (image.detectedObjects.isBlank() || image.detectedObjects == "[]") "NONE" else "YES"}"; textSize = 8f; setTextColor(green) })
         card.addView(info)
         return card
@@ -175,7 +175,7 @@ class EvidenceRelationshipsActivity : AppCompatActivity() {
     }
 
     private fun section(value: String, color: Int) = TextView(this).apply { text = "▌  $value"; textSize = 10f; setTextColor(color); setTypeface(null, Typeface.BOLD); setPadding(dp(3), dp(6), dp(3), dp(7)) }
-    private fun message(title: String, body: String, critical: Boolean) = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(14), dp(14), dp(14)); setBackgroundResource(if (critical) com.example.personalmemoryai.R.drawable.bg_critical_alert else com.example.personalmemoryai.R.drawable.bg_neon_panel); addView(TextView(this@EvidenceRelationshipsActivity).apply { text = title; textSize = 13f; setTextColor(if (critical) red else this@EvidenceRelationshipsActivity.text); setTypeface(null, Typeface.BOLD) }); addView(TextView(this@EvidenceRelationshipsActivity).apply { text = body; textSize = 10f; setTextColor(muted); setPadding(0, dp(5), 0, 0) }) }
+    private fun message(title: String, body: String, critical: Boolean) = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(14), dp(14), dp(14)); setBackgroundResource(if (critical) com.example.personalmemoryai.R.drawable.bg_critical_alert else com.example.personalmemoryai.R.drawable.bg_neon_panel); addView(TextView(this@EvidenceRelationshipsActivity).apply { text = title; textSize = 13f; setTextColor(if (critical) red else this@EvidenceRelationshipsActivity.primaryText); setTypeface(null, Typeface.BOLD) }); addView(TextView(this@EvidenceRelationshipsActivity).apply { text = body; textSize = 10f; setTextColor(muted); setPadding(0, dp(5), 0, 0) }) }
     private fun formatTime(time: Long?): String = time?.let { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(it)) } ?: "UNKNOWN"
     private fun margin() = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(9)) }
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
