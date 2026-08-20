@@ -7,7 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-/** Single source of truth for intelligence pipeline readiness and coverage. */
+/** Single source of truth for intelligence pipeline readiness and current coverage. */
 class IntelligenceHealthService(context: Context) {
     private val appContext = context.applicationContext
 
@@ -60,10 +60,8 @@ class IntelligenceHealthService(context: Context) {
         val objectCoverage get() = if (images == 0L) 0 else ((imagesWithObjects * 100L) / images).toInt().coerceIn(0, 100)
         val overall: String
             get() = when {
-                errors > 0 && images == 0L -> "CRITICAL"
                 images == 0L -> "EMPTY"
-                errors > 0 -> "DEGRADED"
-                visualIndexReady && faceIndexReady -> "READY"
+                visualIndexReady && faceIndexReady && ocrCoverage >= 90 && objectCoverage >= 90 -> "READY"
                 else -> "PARTIAL"
             }
     }
@@ -87,10 +85,10 @@ class IntelligenceHealthService(context: Context) {
         val modelReady = model.isInstalled()
         val stages = listOf(
             PipelineStage("IMAGE_DECODE", if (images > 0) Status.ONLINE else Status.NOT_READY, images, images, 100, "$images images persisted"),
-            PipelineStage("OCR", stageStatus(imagesWithOcr, images, errors), ocrAttempted, imagesWithOcr, coverage(imagesWithOcr, images), "avg quality=${"%.1f".format(avgOcr)}"),
-            PipelineStage("FACE_EMBEDDING", stageStatus(facesWithEmbedding, faces, errors), faces, facesWithEmbedding, coverage(facesWithEmbedding, faces), "$facesWithEmbedding/$faces faces have embeddings"),
-            PipelineStage("MOBILECLIP", if (!modelReady) Status.NOT_READY else stageStatus(imageEmbeddings, images, errors), images, imageEmbeddings, coverage(imageEmbeddings, images), if (modelReady) "model imported; index coverage is measured separately" else "model not installed"),
-            PipelineStage("OBJECTS", stageStatus(objects, images, errors), images, objects, coverage(objects, images), "$objects images contain persisted object data"),
+            PipelineStage("OCR", stageStatus(imagesWithOcr, images), ocrAttempted, imagesWithOcr, coverage(imagesWithOcr, images), "avg quality=${"%.1f".format(avgOcr)}"),
+            PipelineStage("FACE_EMBEDDING", stageStatus(facesWithEmbedding, faces), faces, facesWithEmbedding, coverage(facesWithEmbedding, faces), "$facesWithEmbedding/$faces faces have embeddings"),
+            PipelineStage("MOBILECLIP", if (!modelReady) Status.NOT_READY else stageStatus(imageEmbeddings, images), images, imageEmbeddings, coverage(imageEmbeddings, images), if (modelReady) "model imported; index coverage is measured separately" else "model not installed"),
+            PipelineStage("OBJECTS", stageStatus(objects, images), images, objects, coverage(objects, images), "$objects images contain persisted object data"),
             PipelineStage("PERSISTENCE", if (images > 0) Status.ONLINE else Status.NOT_READY, images, images, 100, "Room database reachable")
         )
         val engines = buildEngineHealth(events)
@@ -104,13 +102,11 @@ class IntelligenceHealthService(context: Context) {
     private fun buildEngineHealth(events: List<String>): List<EngineHealth> {
         val names = listOf("MobileCLIP-S2", "MobileFaceNet", "FaceNet-512", "Facial Landmarks", "Arabic OCR", "Object Detection")
         return names.map { name ->
-            val componentEvents = events.mapNotNull { raw ->
-                runCatching { JSONObject(raw) }.getOrNull()
-            }.filter { json ->
-                val metadata = json.optJSONObject("metadata")
-                metadata?.optString("component").equals(name, ignoreCase = true) ||
-                    json.optString("message").contains(name, ignoreCase = true)
-            }
+            val componentEvents = events.mapNotNull { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+                .filter { json ->
+                    val metadata = json.optJSONObject("metadata")
+                    metadata?.optString("component").equals(name, ignoreCase = true) || json.optString("message").contains(name, ignoreCase = true)
+                }
             val latest = componentEvents.lastOrNull()
             if (latest == null) {
                 EngineHealth(name, Status.NOT_READY, "NO_RUNTIME_TELEMETRY", 0L, 0L, "")
@@ -126,23 +122,17 @@ class IntelligenceHealthService(context: Context) {
                     severity == "WARNING" -> Status.DEGRADED
                     else -> Status.NOT_READY
                 }
-                EngineHealth(
-                    name,
-                    status,
-                    stage.ifBlank { "UNKNOWN" },
-                    latest.optLong("timestamp", 0L),
-                    latency,
-                    if (severity == "ERROR" || severity == "CRITICAL") latest.optString("cause").ifBlank { latest.optString("message") } else ""
-                )
+                EngineHealth(name, status, stage.ifBlank { "UNKNOWN" }, latest.optLong("timestamp", 0L), latency,
+                    if (severity == "ERROR" || severity == "CRITICAL") latest.optString("cause").ifBlank { latest.optString("message") } else "")
             }
         }
     }
 
     private fun coverage(successful: Long, processed: Long): Int = if (processed <= 0) 0 else ((successful * 100L) / processed).toInt().coerceIn(0, 100)
 
-    private fun stageStatus(successful: Long, processed: Long, errors: Int): Status = when {
+    private fun stageStatus(successful: Long, processed: Long): Status = when {
         processed == 0L -> Status.NOT_READY
-        successful == processed && errors == 0 -> Status.ONLINE
+        successful == processed -> Status.ONLINE
         successful > 0L -> Status.DEGRADED
         else -> Status.OFFLINE
     }
