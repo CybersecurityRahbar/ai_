@@ -60,6 +60,11 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         val health = healthPanel(); content.addView(health, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(10), 0, dp(8)) })
         val engineMatrix = engineMatrix(); content.addView(title("LIVE ENGINE MATRIX", cyan)); content.addView(engineMatrix, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(8)) })
 
+        content.addView(title("DATA INGESTION / INDEXING", green))
+        content.addView(action("IMAGE INGESTION / INDEXING CONSOLE", "Select local images • OCR • objects • metadata • Face/Visual index controls", green) {
+            startActivity(Intent(this, MainActivity::class.java))
+        })
+
         content.addView(title("SEARCH / EVIDENCE RETRIEVAL", cyan))
         content.addView(action("EVIDENCE SEARCH CONSOLE", "Image-to-image similarity • OCR • object retrieval • no Text Encoder dependency", cyan) { startActivity(Intent(this, EvidenceSearchActivity::class.java)) })
         content.addView(action("COMPOSITE INVESTIGATION", "Face • body • pose • appearance • scene • visual • OCR • objects", violet) { startActivity(Intent(this, InvestigationActivity::class.java)) })
