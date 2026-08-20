@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import com.example.personalmemoryai.diagnostics.IntelligenceHealthService
 import com.example.personalmemoryai.ui.DataCenterActivity
 import com.example.personalmemoryai.ui.DiagnosticsActivity
+import com.example.personalmemoryai.ui.EvidenceSearchActivity
 import com.example.personalmemoryai.ui.FaceSearchActivity
 import com.example.personalmemoryai.ui.ImageIntelligenceActivity
 import com.example.personalmemoryai.ui.ObjectIntelligenceActivity
@@ -57,6 +58,8 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         val health = healthPanel(); content.addView(health, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(10), 0, dp(8)) })
         val engineMatrix = engineMatrix(); content.addView(title("LIVE ENGINE MATRIX", cyan)); content.addView(engineMatrix, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(8)) })
 
+        content.addView(title("SEARCH / EVIDENCE RETRIEVAL", cyan))
+        content.addView(action("EVIDENCE SEARCH CONSOLE", "Image-to-image similarity • OCR • object retrieval • no Text Encoder dependency", cyan) { startActivity(Intent(this, EvidenceSearchActivity::class.java)) })
         content.addView(title("IDENTITY / HUMAN ANALYSIS", green))
         content.addView(action("FACE MATCH CONSOLE", "MobileFaceNet • FaceNet-512 • 478-point shape • ranked confidence", green) { startActivity(Intent(this, FaceSearchActivity::class.java)) })
         content.addView(action("PEOPLE & FACE INTELLIGENCE", "Clusters • observations • representatives • identity evidence", green) { startActivity(Intent(this, PeopleIntelligenceActivity::class.java)) })
