@@ -5,7 +5,6 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
-import com.example.personalmemoryai.vision.FaceAnalysisService
 import com.example.personalmemoryai.vision.FaceNet512ModelManager
 import com.example.personalmemoryai.vision.FileTFLiteFaceEmbeddingModel
 import com.example.personalmemoryai.vision.MediaPipeFaceAnalyzer
@@ -24,16 +23,11 @@ class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
     private val faceNetManager by lazy { FaceNet512ModelManager(context) }
     private val faceNetModelLazy = lazy {
         if (!faceNetManager.isInstalled()) null
-        else FileTFLiteFaceEmbeddingModel(
-            context,
-            faceNetManager.modelFile,
-            FileTFLiteFaceEmbeddingModel.Preprocessing.NEGATIVE_ONE_TO_ONE,
-            FaceNet512ModelManager.EMBEDDING_DIMENSION
-        )
+        else FileTFLiteFaceEmbeddingModel(context, faceNetManager.modelFile, FileTFLiteFaceEmbeddingModel.Preprocessing.NEGATIVE_ONE_TO_ONE, FaceNet512ModelManager.EMBEDDING_DIMENSION)
     }
     private val analysisServiceLazy = lazy {
         val additional = faceNetModelLazy.value?.let { listOf(it) } ?: emptyList()
-        FaceAnalysisService(faceAnalyzerLazy.value, embeddingModelLazy.value, additional)
+        com.example.personalmemoryai.vision.FaceAnalysisService(faceAnalyzerLazy.value, embeddingModelLazy.value, additional)
     }
     private val faceIndexingServiceLazy = lazy { FaceIndexingService(faceDao, embeddingDao, analysisServiceLazy.value, context) }
     private val clusteringEngineLazy = lazy { PersonClusteringEngine(faceDao, personDao, embeddingDao) }
@@ -53,8 +47,8 @@ class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
             val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
                 ?: throw IllegalStateException("تعذر فك الصورة الخاصة بتحليل الوجه: $uri")
             try {
-                faceIndexingServiceLazy.value.removeImageIndex(imageId)
-                val result = faceIndexingServiceLazy.value.indexImage(imageId, bitmap)
+                // Analyze first; old persisted evidence is removed only after the analysis succeeds.
+                val result = faceIndexingServiceLazy.value.replaceImageIndex(imageId, bitmap)
                 run.success("Single-image face index completed", mapOf("detected" to result.detectedFaces.toString(), "indexed" to result.indexedFaces.toString(), "models" to result.modelEmbeddings.entries.joinToString(",") { "${it.key}=${it.value}" }))
                 result
             } finally {
@@ -83,8 +77,7 @@ class FaceIndexCoordinator(private val context: Context) : AutoCloseable {
                     failed++
                     run.warning("IMAGE_DECODE", mapOf("imageId" to image.id.toString()))
                 } else {
-                    service.removeImageIndex(image.id)
-                    val result = service.indexImage(image.id, bitmap)
+                    val result = service.replaceImageIndex(image.id, bitmap)
                     detected += result.detectedFaces
                     indexed += result.indexedFaces
                     result.modelEmbeddings.forEach { (name, count) -> modelCounts[name] = (modelCounts[name] ?: 0) + count }
