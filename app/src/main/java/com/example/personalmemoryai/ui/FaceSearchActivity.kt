@@ -13,6 +13,7 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import com.example.personalmemoryai.vision.FaceSearchService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -22,7 +23,6 @@ import java.util.Locale
 /** Identity retrieval command console with evidence-oriented result cards. */
 class FaceSearchActivity : AppCompatActivity() {
     private val bg = Color.rgb(5, 11, 17)
-    private val panel = Color.rgb(12, 24, 34)
     private val text = Color.rgb(235, 246, 255)
     private val muted = Color.rgb(126, 157, 178)
     private val neon = Color.rgb(151, 255, 0)
@@ -32,7 +32,9 @@ class FaceSearchActivity : AppCompatActivity() {
     private val picker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) runSearch(uri) }
     private lateinit var resultHost: LinearLayout
     private lateinit var status: TextView
+    private lateinit var telemetry: TextView
     private var service: FaceSearchService? = null
+    private val diagnostics by lazy { DiagnosticsManager.get(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,13 +42,21 @@ class FaceSearchActivity : AppCompatActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(12), dp(12), dp(14))
-            setBackgroundColor(bg)
+            setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_intelligence)
         }
         root.addView(header())
+        telemetry = TextView(this).apply {
+            text = "FACE ENGINE READY  •  LOCAL INFERENCE  •  MULTI-SIGNAL RANKING"
+            textSize = 9f
+            setTextColor(neon)
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(6), dp(9), dp(6), dp(2))
+        }
+        root.addView(telemetry)
         val scroll = ScrollView(this).apply { isFillViewport = true; clipToPadding = false }
         resultHost = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(12), 0, dp(18))
+            setPadding(0, dp(10), 0, dp(18))
         }
         scroll.addView(resultHost)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -71,10 +81,11 @@ class FaceSearchActivity : AppCompatActivity() {
         addView(TextView(this@FaceSearchActivity).apply { text = "MULTI-SIGNAL RETRIEVAL  •  LOCAL INFERENCE  •  RANKED EVIDENCE"; textSize = 9f; setTextColor(muted) })
         addView(TextView(this@FaceSearchActivity).apply { text = "IDENTITY + 478-LANDMARK SHAPE + HEAD POSE + QUALITY"; textSize = 9f; setTextColor(cyan); setPadding(0, dp(7), 0, 0) })
         addView(Button(this@FaceSearchActivity).apply {
-            text = "SELECT QUERY IMAGE"
+            text = "▸  SELECT QUERY IMAGE"
             textSize = 10f
-            setTextColor(Color.rgb(5, 20, 10))
-            setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_button)
+            setAllCaps(false)
+            setTextColor(text)
+            setBackgroundResource(com.example.personalmemoryai.R.drawable.bg_neon_action)
             setOnClickListener { picker.launch("image/*") }
             layoutParams = LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(12) }
         })
@@ -82,13 +93,21 @@ class FaceSearchActivity : AppCompatActivity() {
 
     private fun runSearch(uri: android.net.Uri) {
         resultHost.removeAllViews()
-        status.text = "● RUNNING  /  ANALYZING QUERY FACE..."
+        status.text = "◉ RUNNING  /  ANALYZING QUERY FACE..."
         status.setTextColor(cyan)
+        telemetry.text = "FACE DETECTION → LANDMARKS → EMBEDDING → SHAPE → RANKING"
+        telemetry.setTextColor(cyan)
+        val run = diagnostics.begin("FACE_SEARCH_UI", mapOf("queryUri" to uri.toString()))
         lifecycleScope.launch {
             try {
+                val started = System.nanoTime()
                 val results = withContext(Dispatchers.IO) { service!!.search(uri, 50) }
-                status.text = "● COMPLETE  /  ${results.size} RANKED CANDIDATES"
+                val elapsed = (System.nanoTime() - started) / 1_000_000L
+                status.text = "● COMPLETE  /  ${results.size} RANKED CANDIDATES  /  ${elapsed} ms"
                 status.setTextColor(neon)
+                telemetry.text = "SEARCH COMPLETE  •  ${results.size} CANDIDATES  •  ${elapsed} ms  •  LOCAL-ONLY"
+                telemetry.setTextColor(neon)
+                run.success("Face search completed", mapOf("candidates" to results.size.toString(), "latencyMs" to elapsed.toString()))
                 if (results.isEmpty()) {
                     addMessage("NO MATCH CANDIDATES", "لا توجد وجوه قابلة للمقارنة مع الفهرس الحالي.", false)
                     return@launch
@@ -97,6 +116,9 @@ class FaceSearchActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 status.text = "● CRITICAL  /  SEARCH FAILED"
                 status.setTextColor(red)
+                telemetry.text = "FACE SEARCH FAILURE  •  CHECK DIAGNOSTICS JOURNAL"
+                telemetry.setTextColor(red)
+                run.failure("FACE_SEARCH", t)
                 addMessage("DIAGNOSTIC FAILURE", t.message ?: t.javaClass.simpleName, true)
             }
         }
@@ -165,6 +187,5 @@ class FaceSearchActivity : AppCompatActivity() {
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
     override fun onDestroy() { service?.close(); service = null; super.onDestroy() }
 }
