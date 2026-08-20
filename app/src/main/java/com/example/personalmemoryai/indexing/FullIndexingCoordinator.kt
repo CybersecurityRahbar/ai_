@@ -9,14 +9,7 @@ import com.example.personalmemoryai.semantic.MobileClipModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Batch orchestration/reporting layer for the complete local image pipeline.
- *
- * IMPORTANT: ImageIndexer is the single owner of per-image OCR, object,
- * face and optional MobileCLIP execution. This coordinator must never invoke
- * those engines a second time. It only batches images, measures persisted
- * results and performs the final person-cluster rebuild.
- */
+/** Batch orchestration/reporting layer for the complete local image pipeline. */
 class FullIndexingCoordinator(private val context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val db = AppDatabase.getInstance(appContext)
@@ -44,7 +37,8 @@ class FullIndexingCoordinator(private val context: Context) : AutoCloseable {
         onProgress: (Progress) -> Unit = {}
     ): Progress = withContext(Dispatchers.IO) {
         val uniqueUris = uris.distinct()
-        val run = diagnostics.begin("FULL_INDEX", mapOf("total" to uniqueUris.size.toString(), "visual" to includeVisual.toString()))
+        val currentModelVersion = if (includeVisual) modelManager.installedModelVersion() else null
+        val run = diagnostics.begin("FULL_INDEX", mapOf("total" to uniqueUris.size.toString(), "visual" to includeVisual.toString(), "modelVersion" to (currentModelVersion ?: "")))
         var processed = 0
         var imagesIndexed = 0
         var imageFailures = 0
@@ -62,14 +56,9 @@ class FullIndexingCoordinator(private val context: Context) : AutoCloseable {
             try {
                 val existingBefore = db.imageDao().findBySourceUri(uri.toString()) ?: db.imageDao().findByUri(uri.toString())
                 val existingFaceCount = existingBefore?.let { db.faceDao().getByImageId(it.id).size } ?: 0
-                val existingVisual = existingBefore?.let {
-                    db.embeddingDao().getForOwnerAndModel(
-                        MobileClipImageEncoder.OWNER_TYPE,
-                        it.id,
-                        MobileClipImageEncoder.MODEL_NAME,
-                        MobileClipImageEncoder.MODEL_VERSION
-                    )
-                }
+                val existingVisual = if (existingBefore != null && currentModelVersion != null) {
+                    db.embeddingDao().getForOwnerAndModel(MobileClipImageEncoder.OWNER_TYPE, existingBefore.id, MobileClipImageEncoder.MODEL_NAME, currentModelVersion)
+                } else null
 
                 run.stage("IMAGE", "Delegating per-image OCR, objects, faces and visual indexing", mapOf("uri" to uri.toString()))
                 val entity = imageIndexer.indexImage(uri)
@@ -86,19 +75,16 @@ class FullIndexingCoordinator(private val context: Context) : AutoCloseable {
                         run.stage("FACES_REUSED", "Existing face evidence retained", mapOf("imageId" to entity.id.toString(), "faces" to persistedFaces.toString()))
                     }
 
-                    val persistedVisual = db.embeddingDao().getForOwnerAndModel(
-                        MobileClipImageEncoder.OWNER_TYPE,
-                        entity.id,
-                        MobileClipImageEncoder.MODEL_NAME,
-                        MobileClipImageEncoder.MODEL_VERSION
-                    )
+                    val persistedVisual = if (currentModelVersion != null) {
+                        db.embeddingDao().getForOwnerAndModel(MobileClipImageEncoder.OWNER_TYPE, entity.id, MobileClipImageEncoder.MODEL_NAME, currentModelVersion)
+                    } else null
                     when {
                         persistedVisual != null && persistedVisual.vector.isNotEmpty() -> {
                             if (existingVisual != null) visualSkipped++ else visualEmbedded++
                         }
                         includeVisual -> {
                             visualFailures++
-                            run.warning("VISUAL_NOT_PERSISTED", mapOf("imageId" to entity.id.toString()))
+                            run.warning("VISUAL_NOT_PERSISTED", mapOf("imageId" to entity.id.toString(), "modelVersion" to (currentModelVersion ?: "")))
                         }
                         else -> visualSkipped++
                     }
@@ -114,28 +100,14 @@ class FullIndexingCoordinator(private val context: Context) : AutoCloseable {
                 run.failure("IMAGE_PIPELINE_${imageId ?: "NEW"}", t)
             } finally {
                 processed++
-                onProgress(Progress(
-                    processed = processed,
-                    total = uniqueUris.size,
-                    imagesIndexed = imagesIndexed,
-                    imageFailures = imageFailures,
-                    facesDetected = facesDetected,
-                    facesIndexed = facesIndexed,
-                    faceFailures = faceFailures,
-                    visualEmbedded = visualEmbedded,
-                    visualSkipped = visualSkipped,
-                    visualFailures = visualFailures
-                ))
+                onProgress(Progress(processed, uniqueUris.size, imagesIndexed, imageFailures, facesDetected, facesIndexed, faceFailures, visualEmbedded, visualSkipped, visualFailures))
             }
         }
 
         if (facesIndexed > 0) {
             try {
                 val clusters = clusterCoordinator.buildPersonClusters()
-                run.stage("PERSON_CLUSTERING", "Person clusters rebuilt from persisted face evidence", mapOf(
-                    "createdClusters" to clusters.createdClusters.toString(),
-                    "assignedFaces" to clusters.assignedFaces.toString()
-                ))
+                run.stage("PERSON_CLUSTERING", "Person clusters rebuilt from persisted face evidence", mapOf("createdClusters" to clusters.createdClusters.toString(), "assignedFaces" to clusters.assignedFaces.toString()))
             } catch (t: Throwable) {
                 faceFailures++
                 run.failure("PERSON_CLUSTERING", t)
@@ -145,19 +117,9 @@ class FullIndexingCoordinator(private val context: Context) : AutoCloseable {
         val result = Progress(processed, uniqueUris.size, imagesIndexed, imageFailures, facesDetected, facesIndexed, faceFailures, visualEmbedded, visualSkipped, visualFailures)
         val totalFailures = imageFailures + faceFailures + visualFailures
         if (totalFailures == 0) {
-            run.success("Complete indexing finished", mapOf(
-                "imagesIndexed" to imagesIndexed.toString(),
-                "facesIndexed" to facesIndexed.toString(),
-                "visualEmbedded" to visualEmbedded.toString(),
-                "visualSkipped" to visualSkipped.toString()
-            ))
+            run.success("Complete indexing finished", mapOf("imagesIndexed" to imagesIndexed.toString(), "facesIndexed" to facesIndexed.toString(), "visualEmbedded" to visualEmbedded.toString(), "visualSkipped" to visualSkipped.toString()))
         } else {
-            run.warning("Complete indexing finished with degraded stages", mapOf(
-                "imageFailures" to imageFailures.toString(),
-                "faceFailures" to faceFailures.toString(),
-                "visualFailures" to visualFailures.toString(),
-                "visualSkipped" to visualSkipped.toString()
-            ))
+            run.warning("Complete indexing finished with degraded stages", mapOf("imageFailures" to imageFailures.toString(), "faceFailures" to faceFailures.toString(), "visualFailures" to visualFailures.toString(), "visualSkipped" to visualSkipped.toString()))
         }
         result
     }
