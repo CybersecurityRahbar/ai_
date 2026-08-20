@@ -30,13 +30,10 @@ class DiagnosticsManager private constructor(private val context: Context) {
         if (!installed.compareAndSet(false, true)) return
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            record("APP_CRASH", "UNCAUGHT_EXCEPTION", Severity.CRITICAL,
-                throwable.message ?: throwable.javaClass.simpleName, throwable,
-                mapOf("thread" to thread.name))
+            record("APP_CRASH", "UNCAUGHT_EXCEPTION", Severity.CRITICAL, throwable.message ?: throwable.javaClass.simpleName, throwable, mapOf("thread" to thread.name))
             previous?.uncaughtException(thread, throwable)
         }
-        record("SYSTEM", "STARTUP", Severity.INFO, "Diagnostic monitoring online",
-            metadata = mapOf("android" to Build.VERSION.SDK_INT.toString(), "device" to Build.MODEL))
+        record("SYSTEM", "STARTUP", Severity.INFO, "Diagnostic monitoring online", metadata = mapOf("android" to Build.VERSION.SDK_INT.toString(), "device" to Build.MODEL))
     }
 
     fun begin(operation: String, metadata: Map<String, String> = emptyMap()): Run {
@@ -45,8 +42,7 @@ class DiagnosticsManager private constructor(private val context: Context) {
         return Run(this, operation, id)
     }
 
-    fun record(operation: String, stage: String, severity: Severity, message: String,
-               exception: Throwable? = null, metadata: Map<String, String> = emptyMap()) {
+    fun record(operation: String, stage: String, severity: Severity, message: String, exception: Throwable? = null, metadata: Map<String, String> = emptyMap()) {
         val json = JSONObject().apply {
             put("timestamp", System.currentTimeMillis())
             put("time", SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date()))
@@ -63,56 +59,23 @@ class DiagnosticsManager private constructor(private val context: Context) {
             metadata.forEach { (key, value) -> meta.put(key, value.take(1000)) }
             put("metadata", meta)
         }
-        synchronized(file.absolutePath.intern()) {
-            file.parentFile?.mkdirs()
-            file.appendText(json.toString() + "\n", Charsets.UTF_8)
-            trimIfNeeded()
-        }
+        synchronized(file.absolutePath.intern()) { file.parentFile?.mkdirs(); file.appendText(json.toString() + "\n", Charsets.UTF_8); trimIfNeeded() }
     }
 
-    fun readLatest(limit: Int = 250): List<String> =
-        if (!file.exists()) emptyList() else file.readLines(Charsets.UTF_8).takeLast(limit.coerceIn(1, MAX_EVENTS))
-
-    fun clear() {
-        synchronized(file.absolutePath.intern()) { if (file.exists()) file.writeText("") }
-        record("SYSTEM", "CLEAR_LOG", Severity.INFO, "Diagnostic journal cleared")
-    }
-
+    fun readLatest(limit: Int = 250): List<String> = if (!file.exists()) emptyList() else file.readLines(Charsets.UTF_8).takeLast(limit.coerceIn(1, MAX_EVENTS))
+    fun clear() { synchronized(file.absolutePath.intern()) { if (file.exists()) file.writeText("") }; record("SYSTEM", "CLEAR_LOG", Severity.INFO, "Diagnostic journal cleared") }
     fun sizeBytes(): Long = if (file.exists()) file.length() else 0L
-
-    private fun trimIfNeeded() {
-        if (!file.exists()) return
-        val lines = file.readLines(Charsets.UTF_8)
-        if (lines.size > MAX_EVENTS) file.writeText(lines.takeLast(MAX_EVENTS).joinToString("\n") + "\n", Charsets.UTF_8)
-    }
+    private fun trimIfNeeded() { if (!file.exists()) return; val lines = file.readLines(Charsets.UTF_8); if (lines.size > MAX_EVENTS) file.writeText(lines.takeLast(MAX_EVENTS).joinToString("\n") + "\n", Charsets.UTF_8) }
 
     enum class Severity { DEBUG, INFO, WARNING, ERROR, CRITICAL }
 
     class Run internal constructor(private val manager: DiagnosticsManager, private val operation: String, val id: String) {
         private val startedAt = System.currentTimeMillis()
         private val terminal = AtomicBoolean(false)
-
-        fun stage(stage: String, message: String, metadata: Map<String, String> = emptyMap()) =
-            manager.record(operation, stage, Severity.INFO, message, metadata = metadata + ("runId" to id))
-
-        fun success(message: String = "Operation completed", metadata: Map<String, String> = emptyMap()) {
-            if (!terminal.compareAndSet(false, true)) return
-            manager.record(
-                operation, "SUCCESS", Severity.INFO, message,
-                metadata = metadata + ("runId" to id) + ("durationMs" to (System.currentTimeMillis() - startedAt).toString())
-            )
-        }
-
-        fun warning(message: String, metadata: Map<String, String> = emptyMap()) =
-            manager.record(operation, "WARNING", Severity.WARNING, message, metadata = metadata + ("runId" to id))
-
-        fun failure(stage: String, throwable: Throwable, metadata: Map<String, String> = emptyMap()) {
-            if (!terminal.compareAndSet(false, true)) return
-            manager.record(
-                operation, stage, Severity.ERROR,
-                throwable.message ?: "Operation failed", throwable,
-                metadata + ("runId" to id) + ("durationMs" to (System.currentTimeMillis() - startedAt).toString())
-            )
-        }
+        fun stage(stage: String, message: String, metadata: Map<String, String> = emptyMap()) = manager.record(operation, stage, Severity.INFO, message, metadata = metadata + ("runId" to id))
+        fun success(message: String = "Operation completed", metadata: Map<String, String> = emptyMap()) { if (!terminal.compareAndSet(false, true)) return; manager.record(operation, "SUCCESS", Severity.INFO, message, metadata = metadata + ("runId" to id) + ("durationMs" to (System.currentTimeMillis() - startedAt).toString())) }
+        fun warning(message: String, metadata: Map<String, String> = emptyMap()) = manager.record(operation, "WARNING", Severity.WARNING, message, metadata = metadata + ("runId" to id))
+        fun warning(stage: String, message: String, metadata: Map<String, String> = emptyMap()) = manager.record(operation, stage, Severity.WARNING, message, metadata = metadata + ("runId" to id))
+        fun failure(stage: String, throwable: Throwable, metadata: Map<String, String> = emptyMap()) { if (!terminal.compareAndSet(false, true)) return; manager.record(operation, stage, Severity.ERROR, throwable.message ?: "Operation failed", throwable, metadata + ("runId" to id) + ("durationMs" to (System.currentTimeMillis() - startedAt).toString())) }
     }
 }
