@@ -8,7 +8,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
-import com.example.personalmemoryai.database.ImageEntity
 import com.example.personalmemoryai.databinding.ActivityReverseImageSearchBinding
 import com.example.personalmemoryai.reverseimage.ReverseImageSearchService
 import kotlinx.coroutines.Dispatchers
@@ -27,25 +26,18 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         if (uri != null) runSearch(uri)
     }
 
-    private val indexPicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            Toast.makeText(this, "اختيار صورة واحدة لا يبني فهرس الصور؛ استخدم فهرسة الصور الموجودة في التطبيق أولًا.", Toast.LENGTH_LONG).show()
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityReverseImageSearchBinding.inflate(layoutInflater)
         setContentView(binding.root)
         service = ReverseImageSearchService(applicationContext)
-        adapter = ReverseImageResultAdapter { image -> ImageViewerActivity.start(this, image.uri) }
+        adapter = ReverseImageResultAdapter { result -> ImageViewerActivity.start(this, result.image.uri) }
         binding.resultsRecyclerView.layoutManager = GridLayoutManager(this, 2)
         binding.resultsRecyclerView.adapter = adapter
 
         binding.queryImageButton.setOnClickListener { queryPicker.launch("image/*") }
         binding.buildIndexButton.setOnClickListener { buildIndex(false) }
         binding.rebuildIndexButton.setOnClickListener { buildIndex(true) }
-        binding.statusText.text = "جاهز • فهرس البصمات: ${service.fingerprintCountSyncSafe()}"
         refreshCount()
     }
 
@@ -123,5 +115,3 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
-
-private suspend fun ReverseImageSearchService.fingerprintCountSyncSafe(): Long = withContext(Dispatchers.IO) { fingerprintCount() }
