@@ -92,14 +92,23 @@ The current fusion is intentionally conservative: Haar contributes 55% and the c
 - Added a dedicated visible indexing telemetry panel showing percentage, `processed/total`, processing rate, ETA, success count, skipped count, local-feature count, and failure count.
 - The same progress panel is reused for image-copy preparation and query execution state.
 
+### CI verification and exact failure record
+
+- GitHub Actions `Android Build` run #28 (`32887831504`) failed during `:app:compileDebugKotlin`.
+- Android SDK setup, resource processing, Room/KAPT, dex/native packaging, and OpenCV native library packaging all completed successfully before the Kotlin compiler failure.
+- Exact compiler error: `ReverseImageSearchService.kt:330:17 Suspend function 'upsert' should be called only from a coroutine or another suspend function`.
+- Root cause: the lazy durable-copy helper `ensurePrivateCopy()` called the Room DAO `upsert()` from a non-suspend function.
+- Fixed in commit `92af21f802f064ba9772b6b0bac0646e1254457c` by making `ensurePrivateCopy()` suspend. Its callers are already inside suspend/coroutine contexts, so the DAO write is now correctly awaited without `runBlocking` or blocking the thread.
+- The next GitHub Actions run is expected to validate this exact correction. No new APK is claimed until that run succeeds.
+
 ### Runtime bug being addressed
 
 The user-observed crash was traced to `ReverseImageResultAdapter` calling `ImageView.setImageURI()` with a `content://com.android.providers.media.MediaDocumentsProvider/...` URI after its permission was no longer valid. The repair removes that long-lived dependency by displaying durable private files instead.
 
 ### Verification status
 
-- GitHub Actions `Android Build` run #26 for the latest progress-UI commit is currently `in_progress` at the time of this log update.
-- The new integration repair has not yet been declared device-verified.
+- The expanded classical stack previously built successfully and the user tested the earlier Haar implementation on 999 images.
+- The current integration-repair branch is not yet device-verified after the durable-copy changes.
 - Accuracy weights remain provisional until the controlled benchmark in the next section is completed.
 
 ### Required device benchmark
