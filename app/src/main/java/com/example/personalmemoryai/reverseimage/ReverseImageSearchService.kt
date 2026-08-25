@@ -11,26 +11,49 @@ import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Standalone local reverse-image search. It does not use MobileCLIP, OCR, faces or legacy image indexing. */
+/**
+ * Standalone local reverse-image search.
+ *
+ * The engine is independent from MobileCLIP/OCR/facial AI. It combines the digiKam-style
+ * Haar fingerprint with classical color, edge, perceptual-hash, AKAZE and RANSAC evidence.
+ */
 class ReverseImageSearchService(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val database = AppDatabase.getInstance(appContext)
     private val itemDao = database.reverseImageItemDao()
     private val fingerprintDao = database.haarFingerprintDao()
-    private val engine = HaarFingerprintEngine()
+    private val classicalDao = database.classicalVisualFingerprintDao()
+    private val haarEngine = HaarFingerprintEngine()
+    private val classicalEngine = ClassicalVisualFingerprintEngine()
     private val diagnostics = DiagnosticsManager.get(appContext)
     private val resolver: ContentResolver = appContext.contentResolver
 
-    data class IndexProgress(val processed: Int, val total: Int, val indexed: Int, val skipped: Int, val failed: Int)
+    data class IndexProgress(
+        val processed: Int,
+        val total: Int,
+        val indexed: Int,
+        val skipped: Int,
+        val failed: Int,
+        val localFeatureIndexed: Int
+    )
+
     data class Result(
         val item: ReverseImageItemEntity,
         val similarity: Float,
         val percent: Int,
-        val matchedCoefficients: Int
+        val matchedCoefficients: Int,
+        val phashPercent: Int,
+        val dhashPercent: Int,
+        val colorPercent: Int,
+        val edgePercent: Int,
+        val localPercent: Int,
+        val localMatches: Int,
+        val ransacInliers: Int
     )
 
     suspend fun itemCount(): Long = withContext(Dispatchers.IO) { itemDao.count() }
     suspend fun fingerprintCount(): Long = withContext(Dispatchers.IO) { fingerprintDao.count() }
+    suspend fun classicalFingerprintCount(): Long = withContext(Dispatchers.IO) { classicalDao.count() }
 
     suspend fun addImages(uris: List<Uri>): Int = withContext(Dispatchers.IO) {
         var added = 0
@@ -59,147 +82,192 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         added
     }
 
-    suspend fun buildIndex(rebuild: Boolean = false, onProgress: (IndexProgress) -> Unit = {}): IndexProgress = withContext(Dispatchers.Default) {
-        val run = diagnostics.begin("REVERSE_IMAGE_INDEX", mapOf("rebuild" to rebuild.toString(), "engine" to HaarFingerprintEngine.ENGINE_VERSION))
+    suspend fun buildIndex(
+        rebuild: Boolean = false,
+        onProgress: (IndexProgress) -> Unit = {}
+    ): IndexProgress = withContext(Dispatchers.Default) {
+        val run = diagnostics.begin(
+            "REVERSE_IMAGE_INDEX",
+            mapOf("rebuild" to rebuild.toString(), "haar" to HaarFingerprintEngine.ENGINE_VERSION, "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION)
+        )
         val items = withContext(Dispatchers.IO) { itemDao.getAll() }
         var indexed = 0
         var skipped = 0
         var failed = 0
+        var localFeatureIndexed = 0
 
         for ((index, item) in items.withIndex()) {
             try {
-                val existing = withContext(Dispatchers.IO) { fingerprintDao.getForItem(item.id) }
-                val unchanged = existing != null &&
-                    existing.engineVersion == HaarFingerprintEngine.ENGINE_VERSION &&
-                    existing.sourceModifiedAt == item.sourceModifiedAt
-                if (!rebuild && unchanged) {
+                val oldHaar = withContext(Dispatchers.IO) { fingerprintDao.getForItem(item.id) }
+                val oldClassical = withContext(Dispatchers.IO) { classicalDao.getForItem(item.id) }
+                val unchanged = !rebuild &&
+                    oldHaar?.engineVersion == HaarFingerprintEngine.ENGINE_VERSION &&
+                    oldClassical?.engineVersion == ClassicalVisualFingerprintEngine.ENGINE_VERSION
+                if (unchanged) {
                     skipped++
                 } else {
-                    val fp = decodeAndFingerprint(Uri.parse(item.uri))
-                    withContext(Dispatchers.IO) {
-                        fingerprintDao.insert(
-                            HaarFingerprintEntity(
-                                itemId = item.id,
-                                engineVersion = HaarFingerprintEngine.ENGINE_VERSION,
-                                sourceModifiedAt = item.sourceModifiedAt,
-                                width = fp.width,
-                                height = fp.height,
-                                channels = fp.channels,
-                                signature = fp.signature
-                            )
-                        )
+                    val bitmap = resolver.openInputStream(Uri.parse(item.uri)).use { input ->
+                        requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة الصورة: ${item.uri}" }
                     }
-                    indexed++
+                    try {
+                        val haar = haarEngine.fingerprint(bitmap)
+                        val classical = classicalEngine.fingerprint(bitmap)
+                        withContext(Dispatchers.IO) {
+                            fingerprintDao.insert(
+                                HaarFingerprintEntity(
+                                    itemId = item.id,
+                                    engineVersion = HaarFingerprintEngine.ENGINE_VERSION,
+                                    sourceModifiedAt = item.sourceModifiedAt,
+                                    width = haar.width,
+                                    height = haar.height,
+                                    channels = haar.channels,
+                                    signature = haar.signature
+                                )
+                            )
+                            classicalDao.insert(
+                                ClassicalVisualFingerprintEntity(
+                                    itemId = item.id,
+                                    engineVersion = ClassicalVisualFingerprintEngine.ENGINE_VERSION,
+                                    phash = classical.phash,
+                                    dhash = classical.dhash,
+                                    colorHistogram = classical.colorHistogram,
+                                    edgeHistogram = classical.edgeHistogram,
+                                    localKeypoints = classical.keypoints,
+                                    localDescriptors = classical.descriptors,
+                                    localDescriptorRows = classical.descriptorRows,
+                                    localDescriptorCols = classical.descriptorCols,
+                                    localDescriptorType = classical.descriptorType
+                                )
+                            )
+                        }
+                        indexed++
+                        if (classical.keypoints != null && classical.descriptors != null) localFeatureIndexed++
+                    } finally {
+                        bitmap.recycle()
+                    }
                 }
             } catch (t: Throwable) {
                 failed++
                 run.failure("ITEM_${item.id}", t)
             } finally {
-                onProgress(IndexProgress(index + 1, items.size, indexed, skipped, failed))
+                onProgress(IndexProgress(index + 1, items.size, indexed, skipped, failed, localFeatureIndexed))
             }
         }
 
         run.success(
-            "Reverse-image fingerprint index completed",
+            "Reverse-image multi-fingerprint index completed",
             mapOf(
                 "items" to items.size.toString(),
                 "indexed" to indexed.toString(),
                 "skipped" to skipped.toString(),
-                "failed" to failed.toString()
+                "failed" to failed.toString(),
+                "localFeatureIndexed" to localFeatureIndexed.toString()
             )
         )
-        IndexProgress(items.size, items.size, indexed, skipped, failed)
+        IndexProgress(items.size, items.size, indexed, skipped, failed, localFeatureIndexed)
     }
 
     suspend fun search(queryUri: Uri, limit: Int = 50, minimumSimilarity: Float = 0.35f): List<Result> = withContext(Dispatchers.Default) {
         val run = diagnostics.begin(
             "REVERSE_IMAGE_SEARCH",
-            mapOf("limit" to limit.toString(), "minimum" to minimumSimilarity.toString(), "engine" to HaarFingerprintEngine.ENGINE_VERSION)
+            mapOf("limit" to limit.toString(), "minimum" to minimumSimilarity.toString(), "haar" to HaarFingerprintEngine.ENGINE_VERSION, "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION)
         )
-
-        val queryBitmaps = decodeQueryBitmaps(queryUri)
-        val queryFingerprints = try {
-            buildQueryFingerprints(queryBitmaps)
-        } finally {
-            queryBitmaps.forEach { if (!it.isRecycled) it.recycle() }
+        val queryBitmap = resolver.openInputStream(queryUri).use { input ->
+            requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة صورة البحث العكسي: $queryUri" }
         }
-
-        val fingerprints = withContext(Dispatchers.IO) { fingerprintDao.getAll() }
-        if (fingerprints.isEmpty()) {
-            throw IllegalStateException("لا توجد بصمات في فهرس البحث العكسي. أضف الصور ثم ابنِ الفهرس.")
-        }
-
-        val items = withContext(Dispatchers.IO) {
-            itemDao.getByIds(fingerprints.map { it.itemId }.distinct()).associateBy { it.id }
-        }
-
-        val results = ArrayList<Result>(fingerprints.size)
-        for (fp in fingerprints) {
-            if (fp.engineVersion != HaarFingerprintEngine.ENGINE_VERSION) continue
-            val item = items[fp.itemId] ?: continue
-            val target = HaarFingerprintEngine.Fingerprint(fp.width, fp.height, fp.channels, fp.signature)
-
-            var best = HaarFingerprintEngine.Score(0f, 0)
-            for (query in queryFingerprints) {
-                val score = engine.compare(query, target)
-                if (score.similarity > best.similarity) best = score
+        try {
+            val haarQueries = buildHaarQueryVariants(queryBitmap)
+            val classicalQuery = classicalEngine.fingerprint(queryBitmap)
+            val fingerprints = withContext(Dispatchers.IO) { fingerprintDao.getAll() }
+            val classicalFingerprints = withContext(Dispatchers.IO) { classicalDao.getAll().associateBy { it.itemId } }
+            if (fingerprints.isEmpty()) {
+                throw IllegalStateException("لا توجد بصمات في فهرس البحث العكسي. أضف الصور ثم ابنِ الفهرس.")
+            }
+            val items = withContext(Dispatchers.IO) {
+                itemDao.getByIds(fingerprints.map { it.itemId }.distinct()).associateBy { it.id }
             }
 
-            if (best.similarity >= minimumSimilarity) {
+            val results = ArrayList<Result>(fingerprints.size)
+            for (fp in fingerprints) {
+                if (fp.engineVersion != HaarFingerprintEngine.ENGINE_VERSION) continue
+                val item = items[fp.itemId] ?: continue
+                val targetHaar = HaarFingerprintEngine.Fingerprint(fp.width, fp.height, fp.channels, fp.signature)
+                var bestHaar = HaarFingerprintEngine.Score(0f, 0)
+                for (query in haarQueries) {
+                    val score = haarEngine.compare(query, targetHaar)
+                    if (score.similarity > bestHaar.similarity) bestHaar = score
+                }
+
+                val classicalFp = classicalFingerprints[item.id]
+                    ?.takeIf { it.engineVersion == ClassicalVisualFingerprintEngine.ENGINE_VERSION }
+                val classicalScore = classicalFp?.let {
+                    classicalEngine.compare(
+                        classicalQuery,
+                        ClassicalVisualFingerprintEngine.Fingerprint(
+                            phash = it.phash,
+                            dhash = it.dhash,
+                            colorHistogram = it.colorHistogram,
+                            edgeHistogram = it.edgeHistogram,
+                            keypoints = it.localKeypoints,
+                            descriptors = it.localDescriptors,
+                            descriptorRows = it.localDescriptorRows,
+                            descriptorCols = it.localDescriptorCols,
+                            descriptorType = it.localDescriptorType
+                        )
+                    )
+                }
+
+                val finalSimilarity = if (classicalScore != null) {
+                    // Haar remains the primary anchor; classical local/global evidence refines it.
+                    (bestHaar.similarity * 0.55f + classicalScore.similarity * 0.45f).coerceIn(0f, 1f)
+                } else {
+                    bestHaar.similarity
+                }
+                if (finalSimilarity < minimumSimilarity) continue
                 results += Result(
                     item = item,
-                    similarity = best.similarity,
-                    percent = (best.similarity * 100f).toInt().coerceIn(0, 100),
-                    matchedCoefficients = best.matchedCoefficients
+                    similarity = finalSimilarity,
+                    percent = (finalSimilarity * 100f).toInt().coerceIn(0, 100),
+                    matchedCoefficients = bestHaar.matchedCoefficients,
+                    phashPercent = ((classicalScore?.phashSimilarity ?: 0f) * 100f).toInt(),
+                    dhashPercent = ((classicalScore?.dhashSimilarity ?: 0f) * 100f).toInt(),
+                    colorPercent = ((classicalScore?.colorSimilarity ?: 0f) * 100f).toInt(),
+                    edgePercent = ((classicalScore?.edgeSimilarity ?: 0f) * 100f).toInt(),
+                    localPercent = ((classicalScore?.localSimilarity ?: 0f) * 100f).toInt(),
+                    localMatches = classicalScore?.localMatches ?: 0,
+                    ransacInliers = classicalScore?.ransacInliers ?: 0
                 )
             }
+
+            val ranked = results.sortedWith(
+                compareByDescending<Result> { it.similarity }
+                    .thenByDescending { it.ransacInliers }
+                    .thenByDescending { it.localMatches }
+            ).take(limit)
+
+            run.success(
+                "Reverse-image multi-signal search completed",
+                mapOf("indexed" to fingerprints.size.toString(), "results" to ranked.size.toString(), "signals" to "haar,phash,dhash,color,edge,akaze,ransac")
+            )
+            ranked
+        } finally {
+            queryBitmap.recycle()
         }
-
-        val ranked = results
-            .sortedWith(compareByDescending<Result> { it.similarity }.thenBy { it.item.displayName.lowercase() })
-            .take(limit)
-
-        run.success(
-            "Reverse-image search completed",
-            mapOf("indexed" to fingerprints.size.toString(), "results" to ranked.size.toString(), "queryVariants" to queryFingerprints.size.toString())
-        )
-        ranked
     }
 
-    /** Query variants improve robustness to screenshots, borders and moderate crops. */
-    private fun buildQueryFingerprints(bitmaps: List<Bitmap>): List<HaarFingerprintEngine.Fingerprint> {
-        val result = ArrayList<HaarFingerprintEngine.Fingerprint>(bitmaps.size * 4)
-        val original = bitmaps.first()
-        result += engine.fingerprint(original)
-
-        val fractions = floatArrayOf(0.92f, 0.82f, 0.72f)
-        for (fraction in fractions) {
-            val crop = engine.cropCentered(original, fraction)
+    /** The original Haar image plus center crops improve robustness to moderate cropping and screenshots. */
+    private fun buildHaarQueryVariants(bitmap: Bitmap): List<HaarFingerprintEngine.Fingerprint> {
+        val result = ArrayList<HaarFingerprintEngine.Fingerprint>(4)
+        result += haarEngine.fingerprint(bitmap)
+        for (fraction in floatArrayOf(0.92f, 0.82f, 0.72f)) {
+            val crop = haarEngine.cropCentered(bitmap, fraction)
             try {
-                result += engine.fingerprint(crop)
+                result += haarEngine.fingerprint(crop)
             } finally {
                 crop.recycle()
             }
         }
         return result
-    }
-
-    private fun decodeQueryBitmaps(uri: Uri): List<Bitmap> {
-        val bitmap = resolver.openInputStream(uri).use { input ->
-            requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة صورة البحث العكسي: $uri" }
-        }
-        return listOf(bitmap)
-    }
-
-    private fun decodeAndFingerprint(uri: Uri): HaarFingerprintEngine.Fingerprint {
-        val bitmap = resolver.openInputStream(uri).use { input ->
-            requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة الصورة: $uri" }
-        }
-        return try {
-            engine.fingerprint(bitmap)
-        } finally {
-            bitmap.recycle()
-        }
     }
 
     private fun displayName(uri: Uri): String = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
