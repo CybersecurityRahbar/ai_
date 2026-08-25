@@ -319,7 +319,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         return result
     }
 
-    private fun ensurePrivateCopy(item: ReverseImageItemEntity): ReverseImageItemEntity {
+    private suspend fun ensurePrivateCopy(item: ReverseImageItemEntity): ReverseImageItemEntity {
         val existing = item.filePath?.let(::File)
         if (existing?.isFile == true && existing.length() > 0L) return item
 
