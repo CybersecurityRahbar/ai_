@@ -1,5 +1,6 @@
 package com.example.personalmemoryai.ui
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
@@ -22,7 +23,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
     private lateinit var adapter: ReverseImageResultAdapter
 
     private val queryPicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) runSearch(uri) }
-    private val corpusPicker = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris -> if (!uris.isNullOrEmpty()) addImages(uris) }
+    private val corpusPicker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> if (!uris.isNullOrEmpty()) addImages(uris) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,7 +34,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         binding.resultsRecyclerView.layoutManager = GridLayoutManager(this, 2)
         binding.resultsRecyclerView.adapter = adapter
         binding.queryImageButton.setOnClickListener { queryPicker.launch("image/*") }
-        binding.addImagesButton.setOnClickListener { corpusPicker.launch("image/*") }
+        binding.addImagesButton.setOnClickListener { corpusPicker.launch(arrayOf("image/*")) }
         binding.buildIndexButton.setOnClickListener { buildIndex(false) }
         binding.rebuildIndexButton.setOnClickListener { buildIndex(true) }
         refreshCount()
@@ -43,6 +44,11 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         lifecycleScope.launch {
             setBusy(true)
             try {
+                for (uri in uris) {
+                    runCatching {
+                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                }
                 val added = withContext(Dispatchers.IO) { service.addImages(uris) }
                 binding.statusText.text = "تمت إضافة $added صورة إلى Corpus البحث العكسي المستقل. ابنِ الفهرس الآن."
                 refreshCount()
@@ -96,9 +102,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         }
     }
 
-    private fun openUri(uri: String) {
-        ImageViewerActivity.start(this, uri)
-    }
+    private fun openUri(uri: String) { ImageViewerActivity.start(this, uri) }
 
     private fun setBusy(value: Boolean) {
         binding.progressBar.visibility = if (value) View.VISIBLE else View.GONE
