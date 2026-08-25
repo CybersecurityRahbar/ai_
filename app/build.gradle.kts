@@ -45,4 +45,7 @@ dependencies {
 
     // Bundled on-device pose model for static-image body/pose evidence.
     implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
+
+    // Classical local-feature computer vision only; no neural inference.
+    implementation("org.opencv:opencv:4.13.0")
 }
