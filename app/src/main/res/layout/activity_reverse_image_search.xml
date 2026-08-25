@@ -1,111 +1,209 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp"
-    android:background="#101318">
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="LOCAL REVERSE IMAGE SEARCH"
-        android:textStyle="bold"
-        android:textSize="22sp"
-        android:textColor="@android:color/white" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="DigiKam-style Haar/Wavelet fingerprint engine — مستقل عن MobileCLIP"
-        android:textColor="@android:color/white"
-        android:alpha="0.78" />
-
-    <Button
-        android:id="@+id/addImagesButton"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="ADD IMAGES TO LOCAL CORPUS" />
+    android:fillViewport="true"
+    android:background="@drawable/bg_intelligence">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:orientation="horizontal">
+        android:orientation="vertical"
+        android:padding="14dp">
 
-        <Button
-            android:id="@+id/buildIndexButton"
-            android:layout_width="0dp"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="BUILD INDEX" />
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:background="@drawable/panel_intelligence"
+            android:elevation="4dp">
 
-        <Button
-            android:id="@+id/rebuildIndexButton"
-            android:layout_width="0dp"
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="◈  VISUAL EVIDENCE CORE"
+                android:textColor="#7DFF19"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="LOCAL REVERSE IMAGE SEARCH"
+                android:textColor="#F2FAFF"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:paddingTop="4dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="DIGIKAM HAAR  •  LOCAL CORPUS  •  NO CLOUD  •  NO MOBILECLIP"
+                android:textColor="#71A0B8"
+                android:textSize="8sp"
+                android:paddingTop="5dp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:text="REBUILD" />
+            android:layout_marginTop="14dp"
+            android:text="CORPUS / FINGERPRINT CONTROL"
+            android:textColor="#7DFF19"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.10" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:background="@drawable/panel_intelligence">
+
+            <TextView
+                android:id="@+id/indexCountText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="CORPUS: 0  •  HAAR FINGERPRINTS: 0"
+                android:textColor="#E5F4FA"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/addImagesButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:minHeight="48dp"
+                android:text="ADD IMAGES TO REVERSE-SEARCH CORPUS"
+                android:textColor="#E9FFD2"
+                android:textStyle="bold"
+                android:background="@drawable/bg_intel_button" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/buildIndexButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="46dp"
+                    android:text="BUILD HAAR INDEX"
+                    android:textColor="#E9FFD2"
+                    android:textStyle="bold"
+                    android:background="@drawable/bg_intel_button" />
+
+                <Button
+                    android:id="@+id/rebuildIndexButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="6dp"
+                    android:minHeight="46dp"
+                    android:text="REBUILD"
+                    android:textColor="#FFC857"
+                    android:textStyle="bold"
+                    android:background="@drawable/bg_intel_button" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="REVERSE SEARCH COMMAND"
+            android:textColor="#49D9FF"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.10" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:background="@drawable/panel_intelligence">
+
+            <Button
+                android:id="@+id/queryImageButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="50dp"
+                android:text="SELECT QUERY IMAGE / REVERSE SEARCH"
+                android:textColor="#E9FFD2"
+                android:textStyle="bold"
+                android:background="@drawable/bg_intel_button" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="MINIMUM SIMILARITY"
+                android:textColor="#7196AA"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <SeekBar
+                android:id="@+id/thresholdSeek"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="35" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="● READY / LOCAL HAAR SEARCH"
+                android:textColor="#7DFF19"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/counterText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="#71A0B8"
+                android:textSize="9sp" />
+        </LinearLayout>
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            android:layout_width="match_parent"
+            android:layout_height="7dp"
+            android:layout_marginTop="10dp"
+            android:visibility="gone"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:progressTint="#7DFF19" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="LOCAL MATCH RESULTS"
+            android:textColor="#49D9FF"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.10" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/resultsRecyclerView"
+            android:layout_width="match_parent"
+            android:layout_height="520dp"
+            android:layout_marginTop="7dp"
+            android:clipToPadding="false"
+            android:padding="5dp"
+            android:background="@drawable/panel_intelligence" />
     </LinearLayout>
-
-    <Button
-        android:id="@+id/queryImageButton"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="CHOOSE QUERY IMAGE" />
-
-    <TextView
-        android:id="@+id/indexCountText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Corpus: 0 صورة • بصمات Haar: 0"
-        android:textColor="@android:color/white" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Minimum similarity"
-        android:textColor="@android:color/white" />
-
-    <SeekBar
-        android:id="@+id/thresholdSeek"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:max="100"
-        android:progress="50" />
-
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:textColor="@android:color/white" />
-
-    <TextView
-        android:id="@+id/counterText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:textColor="@android:color/white" />
-
-    <ProgressBar
-        android:id="@+id/progressBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:visibility="gone" />
-
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/resultsRecyclerView"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="12dp"
-        android:layout_weight="1" />
-
-</LinearLayout>
+</ScrollView>
