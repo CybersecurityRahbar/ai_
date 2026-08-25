@@ -7,14 +7,16 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.personalmemoryai.reverseimage.ClassicalVisualFingerprintDao
+import com.example.personalmemoryai.reverseimage.ClassicalVisualFingerprintEntity
 import com.example.personalmemoryai.reverseimage.HaarFingerprintDao
 import com.example.personalmemoryai.reverseimage.HaarFingerprintEntity
 import com.example.personalmemoryai.reverseimage.ReverseImageItemDao
 import com.example.personalmemoryai.reverseimage.ReverseImageItemEntity
 
 @Database(
-    entities = [ImageEntity::class, FaceEntity::class, PersonEntity::class, EmbeddingEntity::class, ObjectEntity::class, HaarFingerprintEntity::class, ReverseImageItemEntity::class],
-    version = 8,
+    entities = [ImageEntity::class, FaceEntity::class, PersonEntity::class, EmbeddingEntity::class, ObjectEntity::class, HaarFingerprintEntity::class, ReverseImageItemEntity::class, ClassicalVisualFingerprintEntity::class],
+    version = 9,
     exportSchema = true
 )
 @TypeConverters(DatabaseConverters::class)
@@ -26,6 +28,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun objectDao(): ObjectDao
     abstract fun haarFingerprintDao(): HaarFingerprintDao
     abstract fun reverseImageItemDao(): ReverseImageItemDao
+    abstract fun classicalVisualFingerprintDao(): ClassicalVisualFingerprintDao
 
     companion object {
         private const val DATABASE_NAME = "personal_memory.db"
@@ -86,10 +89,17 @@ abstract class AppDatabase : RoomDatabase() {
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_sourceModifiedAt ON image_fingerprints(sourceModifiedAt)")
             }
         }
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("""CREATE TABLE IF NOT EXISTS classical_visual_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, itemId INTEGER NOT NULL, engineVersion TEXT NOT NULL, phash INTEGER NOT NULL, dhash INTEGER NOT NULL, colorHistogram BLOB NOT NULL, edgeHistogram BLOB NOT NULL, localKeypoints BLOB, localDescriptors BLOB, localDescriptorRows INTEGER NOT NULL, localDescriptorCols INTEGER NOT NULL, localDescriptorType INTEGER NOT NULL, createdAt INTEGER NOT NULL)""")
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_classical_visual_fingerprints_itemId ON classical_visual_fingerprints(itemId)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_classical_visual_fingerprints_engineVersion ON classical_visual_fingerprints(engineVersion)")
+            }
+        }
 
         fun getInstance(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, DATABASE_NAME)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .build().also { INSTANCE = it }
         }
 
