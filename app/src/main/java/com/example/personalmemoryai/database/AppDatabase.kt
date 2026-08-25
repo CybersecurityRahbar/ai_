@@ -9,10 +9,12 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.personalmemoryai.reverseimage.HaarFingerprintDao
 import com.example.personalmemoryai.reverseimage.HaarFingerprintEntity
+import com.example.personalmemoryai.reverseimage.ReverseImageItemDao
+import com.example.personalmemoryai.reverseimage.ReverseImageItemEntity
 
 @Database(
-    entities = [ImageEntity::class, FaceEntity::class, PersonEntity::class, EmbeddingEntity::class, ObjectEntity::class, HaarFingerprintEntity::class],
-    version = 7,
+    entities = [ImageEntity::class, FaceEntity::class, PersonEntity::class, EmbeddingEntity::class, ObjectEntity::class, HaarFingerprintEntity::class, ReverseImageItemEntity::class],
+    version = 8,
     exportSchema = true
 )
 @TypeConverters(DatabaseConverters::class)
@@ -23,6 +25,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun embeddingDao(): EmbeddingDao
     abstract fun objectDao(): ObjectDao
     abstract fun haarFingerprintDao(): HaarFingerprintDao
+    abstract fun reverseImageItemDao(): ReverseImageItemDao
 
     companion object {
         private const val DATABASE_NAME = "personal_memory.db"
@@ -72,10 +75,21 @@ abstract class AppDatabase : RoomDatabase() {
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_sourceModifiedAt ON image_fingerprints(sourceModifiedAt)")
             }
         }
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("DROP TABLE IF EXISTS image_fingerprints")
+                database.execSQL("""CREATE TABLE IF NOT EXISTS reverse_image_items (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, uri TEXT NOT NULL, displayName TEXT NOT NULL, filePath TEXT, fileSize INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, mimeType TEXT, sourceModifiedAt INTEGER, addedAt INTEGER NOT NULL)""")
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_reverse_image_items_uri ON reverse_image_items(uri)")
+                database.execSQL("""CREATE TABLE IF NOT EXISTS image_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, itemId INTEGER NOT NULL, engineVersion TEXT NOT NULL, sourceModifiedAt INTEGER, width INTEGER NOT NULL, height INTEGER NOT NULL, channels INTEGER NOT NULL, signature BLOB NOT NULL, createdAt INTEGER NOT NULL)""")
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_image_fingerprints_itemId ON image_fingerprints(itemId)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_engineVersion ON image_fingerprints(engineVersion)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_sourceModifiedAt ON image_fingerprints(sourceModifiedAt)")
+            }
+        }
 
         fun getInstance(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, DATABASE_NAME)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .build().also { INSTANCE = it }
         }
 
