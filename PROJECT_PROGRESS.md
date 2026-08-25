@@ -30,7 +30,7 @@ The reverse-image feature remains a separate search/indexing capability inside t
    - 64-bit dHash based on luminance gradients.
 
 3. **Color fingerprint**
-   - HSV-derived spatially/global color distribution stored as a compact histogram.
+   - HSV-derived color distribution stored as a compact histogram.
    - Used as independent evidence, not as a replacement for Haar.
 
 4. **Shape / edge fingerprint**
@@ -38,7 +38,7 @@ The reverse-image feature remains a separate search/indexing capability inside t
    - Used to capture structural changes that color-only evidence misses.
 
 5. **AKAZE local features**
-   - OpenCV 4.13.0 Android AAR added for classical local feature extraction only.
+   - OpenCV Android AAR added for classical local feature extraction only.
    - No neural model is involved.
    - Keypoints and binary descriptors are persisted in the reverse-image database.
 
@@ -70,13 +70,21 @@ The current fusion is intentionally conservative: Haar contributes 55% and the c
 ### UI
 
 - Reverse Image Search remains reachable from the existing `IntelligenceHomeActivity`.
-- The result card now exposes Haar coefficient agreement, pHash, dHash, color, shape, AKAZE similarity, local-match count, and RANSAC inliers.
-- Index status now reports both Haar and classical fingerprint coverage.
+- The result card exposes Haar coefficient agreement, pHash, dHash, color, shape, AKAZE similarity, local-match count, and RANSAC inliers.
+- Index status reports both Haar and classical fingerprint coverage.
+
+### CI correction log
+
+- GitHub Actions run `#19` / commit `8fc7972d...` failed at Kotlin compilation.
+- Exact compiler error: `ClassicalVisualFingerprintEngine.kt:263:23 Type mismatch: inferred type is List<KeyPoint!> but Array<KeyPoint> was expected`.
+- Root cause: the AKAZE implementation selected top keypoints as a Kotlin `List` while `LocalData` required an `Array`, and the original version also risked losing descriptor-to-keypoint row alignment.
+- Fixed in commit `6db7515be442336b6886eba4310bb818e9ec8997` by selecting the original keypoint indices and copying the corresponding descriptor rows into the selected descriptor matrix. Engine version is now `CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V2`.
+- GitHub Actions run `#20` was automatically started for that fix and is currently in progress. It has not yet been declared successful.
 
 ### Verification status
 
 - The earlier debug APK was successfully built and tested by the user for the original Haar implementation.
-- The expanded classical stack has triggered a new GitHub Actions build; the build must finish successfully before this phase can be considered build-verified.
+- The expanded classical stack is not yet build-verified until Actions run `#20` completes successfully.
 - The new APK has not yet been runtime-tested on the phone.
 - Do not claim that the classical stack improves retrieval until actual device measurements are recorded.
 
