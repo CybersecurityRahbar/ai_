@@ -73,20 +73,34 @@ The current fusion is intentionally conservative: Haar contributes 55% and the c
 - The result card exposes Haar coefficient agreement, pHash, dHash, color, shape, AKAZE similarity, local-match count, and RANSAC inliers.
 - Index status reports both Haar and classical fingerprint coverage.
 
-### CI correction log
+## 2026-08-25 — Reverse-image integration repair pass
 
-- GitHub Actions run `#19` / commit `8fc7972d...` failed at Kotlin compilation.
-- Exact compiler error: `ClassicalVisualFingerprintEngine.kt:263:23 Type mismatch: inferred type is List<KeyPoint!> but Array<KeyPoint> was expected`.
-- Root cause: the AKAZE implementation selected top keypoints as a Kotlin `List` while `LocalData` required an `Array`, and the original version also risked losing descriptor-to-keypoint row alignment.
-- Fixed in commit `6db7515be442336b6886eba4310bb818e9ec8997` by selecting the original keypoint indices and copying the corresponding descriptor rows into the selected descriptor matrix. Engine version is now `CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V2`.
-- GitHub Actions run `#20` was automatically started for that fix and is currently in progress. It has not yet been declared successful.
+### Confirmed user test size
+
+- The user indexed **999 images** in the reverse-image corpus. `999` is intentional and is not considered an indexing defect.
+
+### Integration fixes applied
+
+- Removed the independent `ReverseImageSearchLauncher` `MAIN/LAUNCHER` entry from `AndroidManifest.xml`. `IntelligenceHomeActivity` is now the single application launcher, so Android should no longer expose a second `Reverse Image Search` application icon/name.
+- Reverse-image corpus selection now uses `GetMultipleContents`, matching the existing main image-ingestion picker family instead of `OpenMultipleDocuments`.
+- Reverse-image corpus images are copied into app-private durable storage under `filesDir/reverse_image/library` at ingestion time.
+- `ReverseImageItemEntity.filePath` now points to the durable local image copy while `uri` remains the original source/provenance URI.
+- Existing legacy reverse-image rows are migrated lazily at build/search time by recreating a private local copy when `filePath` is not an existing file.
+- Search result rendering now prefers durable local files and therefore no longer depends on `MediaDocumentsProvider` URI grants after the picker closes.
+- Reverse-image result adapter now has an explicit `clear()` operation.
+- Starting a new query clears the previous result list and cancels the previous search job before executing the next search.
+- Added a dedicated visible indexing telemetry panel showing percentage, `processed/total`, processing rate, ETA, success count, skipped count, local-feature count, and failure count.
+- The same progress panel is reused for image-copy preparation and query execution state.
+
+### Runtime bug being addressed
+
+The user-observed crash was traced to `ReverseImageResultAdapter` calling `ImageView.setImageURI()` with a `content://com.android.providers.media.MediaDocumentsProvider/...` URI after its permission was no longer valid. The repair removes that long-lived dependency by displaying durable private files instead.
 
 ### Verification status
 
-- The earlier debug APK was successfully built and tested by the user for the original Haar implementation.
-- The expanded classical stack is not yet build-verified until Actions run `#20` completes successfully.
-- The new APK has not yet been runtime-tested on the phone.
-- Do not claim that the classical stack improves retrieval until actual device measurements are recorded.
+- GitHub Actions `Android Build` run #26 for the latest progress-UI commit is currently `in_progress` at the time of this log update.
+- The new integration repair has not yet been declared device-verified.
+- Accuracy weights remain provisional until the controlled benchmark in the next section is completed.
 
 ### Required device benchmark
 
