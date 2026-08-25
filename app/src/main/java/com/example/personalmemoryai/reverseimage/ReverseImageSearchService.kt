@@ -261,8 +261,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
 
                 val classicalEntity = classicalFingerprints[fp.itemId]
                 val globalScore = classicalEntity?.let { entity ->
-                    val target = entity.toFingerprint()
-                    classicalEngine.compareBest(classicalQueries, target, runLocal = false)
+                    classicalEngine.compareBest(classicalQueries, entity.toFingerprint(), runLocal = false)
                 }
                 val preliminary = if (globalScore != null) {
                     (bestHaar.similarity * HAAR_WEIGHT + globalScore.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
@@ -285,7 +284,6 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
             val rankedCandidates = shortlist.map { candidate ->
                 val finalClassical = candidate.classical?.let { entity ->
                     val target = entity.toFingerprint()
-                    // Original query is retained for local geometry; crop variants already served global recall.
                     val localScore = classicalEngine.compare(classicalQueries.first(), target, runLocal = true)
                     val global = candidate.globalScore ?: localScore
                     ClassicalVisualFingerprintEngine.Score(
@@ -308,36 +306,31 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                         .coerceIn(0f, 1f)
                 } else candidate.haarScore.similarity
                 candidate to Pair(finalSimilarity, finalClassical)
-            }
+            }.sortedWith(
+                compareByDescending<Pair<Candidate, Pair<Float, ClassicalVisualFingerprintEngine.Score?>>> { it.second.first }
+                    .thenByDescending { it.first.haarScore.matchedCoefficients }
+                    .thenByDescending { it.second.second?.ransacInliers ?: 0 }
+                    .thenByDescending { it.second.second?.localMatches ?: 0 }
+            ).filter { it.second.first >= minimumSimilarity }.take(limit)
 
-            val ranked = rankedCandidates
-                .asSequence()
-                .filter { (_, pair) -> pair.first >= minimumSimilarity }
-                .sortedWith(
-                    compareByDescending<Pair<Candidate, Pair<Float, ClassicalVisualFingerprintEngine.Score?>>> { it.second.first }
-                        .thenByDescending { it.first.haarScore.matchedCoefficients }
-                        .thenByDescending { it.second.second?.ransacInliers ?: 0 }
-                        .thenByDescending { it.second.second?.localMatches ?: 0 }
+            val ranked = ArrayList<Result>(rankedCandidates.size)
+            for ((candidate, pair) in rankedCandidates) {
+                val durableItem = withContext(Dispatchers.IO) { ensurePrivateCopy(candidate.item) }
+                val finalClassical = pair.second
+                ranked += Result(
+                    item = durableItem,
+                    similarity = pair.first,
+                    percent = (pair.first * 100f).toInt().coerceIn(0, 100),
+                    matchedCoefficients = candidate.haarScore.matchedCoefficients,
+                    phashPercent = ((finalClassical?.phashSimilarity ?: 0f) * 100f).toInt(),
+                    dhashPercent = ((finalClassical?.dhashSimilarity ?: 0f) * 100f).toInt(),
+                    colorPercent = ((finalClassical?.colorSimilarity ?: 0f) * 100f).toInt(),
+                    edgePercent = ((finalClassical?.edgeSimilarity ?: 0f) * 100f).toInt(),
+                    localPercent = ((finalClassical?.localSimilarity ?: 0f) * 100f).toInt(),
+                    localMatches = finalClassical?.localMatches ?: 0,
+                    ransacInliers = finalClassical?.ransacInliers ?: 0
                 )
-                .take(limit)
-                .map { (candidate, pair) ->
-                    val durableItem = withContext(Dispatchers.IO) { ensurePrivateCopy(candidate.item) }
-                    val finalClassical = pair.second
-                    Result(
-                        item = durableItem,
-                        similarity = pair.first,
-                        percent = (pair.first * 100f).toInt().coerceIn(0, 100),
-                        matchedCoefficients = candidate.haarScore.matchedCoefficients,
-                        phashPercent = ((finalClassical?.phashSimilarity ?: 0f) * 100f).toInt(),
-                        dhashPercent = ((finalClassical?.dhashSimilarity ?: 0f) * 100f).toInt(),
-                        colorPercent = ((finalClassical?.colorSimilarity ?: 0f) * 100f).toInt(),
-                        edgePercent = ((finalClassical?.edgeSimilarity ?: 0f) * 100f).toInt(),
-                        localPercent = ((finalClassical?.localSimilarity ?: 0f) * 100f).toInt(),
-                        localMatches = finalClassical?.localMatches ?: 0,
-                        ransacInliers = finalClassical?.ransacInliers ?: 0
-                    )
-                }
-                .toList()
+            }
 
             run.success(
                 "Reverse-image staged multi-signal search completed",
