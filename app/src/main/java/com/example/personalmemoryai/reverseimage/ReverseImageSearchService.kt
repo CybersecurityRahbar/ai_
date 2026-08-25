@@ -22,9 +22,9 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
     companion object {
         private const val HAAR_WEIGHT = 0.55f
         private const val CLASSICAL_WEIGHT = 0.45f
-        private const val GLOBAL_SHORTLIST_MIN = 32
-        private const val GLOBAL_SHORTLIST_MAX = 64
-        private const val SIFT_RERANK_LIMIT = 16
+        private const val GLOBAL_SHORTLIST_MIN = 24
+        private const val GLOBAL_SHORTLIST_MAX = 40
+        private const val SIFT_RERANK_LIMIT = 8
     }
 
     private val appContext = context.applicationContext
@@ -207,7 +207,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
             "limit" to limit.toString(), "minimum" to minimumSimilarity.toString(),
             "haar" to HaarFingerprintEngine.ENGINE_VERSION,
             "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION,
-            "strategy" to "global-shortlist-64-akaze-ransac-sift-16"
+            "strategy" to "global-shortlist-40-akaze-ransac-sift-8"
         ))
         val queryBitmap = resolver.openInputStream(queryUri).use { input ->
             requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة صورة البحث العكسي: $queryUri" }
@@ -263,7 +263,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 }
             }
 
-            val shortlistSize = maxOf(GLOBAL_SHORTLIST_MIN, minOf(GLOBAL_SHORTLIST_MAX, maxOf(limit + 14, 48)))
+            val shortlistSize = maxOf(GLOBAL_SHORTLIST_MIN, minOf(GLOBAL_SHORTLIST_MAX, maxOf(limit + 10, 32)))
             val shortlist = candidates.sortedWith(
                 compareByDescending<Candidate> { it.preliminarySimilarity }
                     .thenByDescending { it.haarScore.matchedCoefficients }
@@ -275,8 +275,11 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
             for ((index, candidate) in shortlist.withIndex()) {
                 coroutineContext.ensureActive()
                 val finalClassical = candidate.classical?.let { entity ->
+                    // Reuse the already computed query variants. Rebuilding these inside this
+                    // loop used to run AKAZE repeatedly for every candidate and caused searches
+                    // on a 999-image index to take many minutes.
                     classicalEngine.compare(
-                        buildClassicalQueryVariants(queryBitmap)[candidate.bestClassicalQueryIndex],
+                        classicalQueries[candidate.bestClassicalQueryIndex.coerceIn(0, classicalQueries.lastIndex)],
                         entity.toFingerprint(),
                         runLocal = true
                     )
@@ -422,14 +425,26 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         return updated
     }
 
-    private fun copyToPrivateLibrary(source: Uri): File? = try {
-        val safeName = displayName(source).replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).ifBlank { "image" }
-        val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
-        resolver.openInputStream(source)?.use { input ->
-            FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) }
-        } ?: return null
-        if (target.length() <= 0L) { target.delete(); null } else target
-    } catch (_: Throwable) { null }
+    private fun copyToPrivateLibrary(source: Uri): File? {
+        return try {
+            val safeName = displayName(source)
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                .take(100)
+                .ifBlank { "image" }
+            val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
+            resolver.openInputStream(source)?.use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) }
+            } ?: return null
+            if (target.length() <= 0L) {
+                target.delete()
+                null
+            } else {
+                target
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     private fun displayName(uri: Uri): String = resolver.query(
         uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
