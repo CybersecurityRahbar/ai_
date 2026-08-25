@@ -22,10 +22,17 @@
         android:textColor="@android:color/white"
         android:alpha="0.78" />
 
-    <LinearLayout
+    <Button
+        android:id="@+id/addImagesButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
+        android:text="ADD IMAGES TO LOCAL CORPUS" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
         android:orientation="horizontal">
 
         <Button
@@ -56,7 +63,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="بصمات محلية: 0"
+        android:text="Corpus: 0 صورة • بصمات Haar: 0"
         android:textColor="@android:color/white" />
 
     <TextView
