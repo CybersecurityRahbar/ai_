@@ -17,10 +17,17 @@ import java.util.UUID
 /**
  * First-class local reverse-image search subsystem.
  *
- * Search is deliberately staged: cheap global retrieval over the whole corpus first,
- * followed by expensive AKAZE/RANSAC geometric verification only on a high-recall shortlist.
+ * The source URI is metadata only. A durable private copy is created for every corpus image,
+ * so indexing/search/result rendering never depend on transient DocumentsProvider permissions.
  */
 class ReverseImageSearchService(context: Context) : AutoCloseable {
+    companion object {
+        private const val HAAR_WEIGHT = 0.55f
+        private const val CLASSICAL_WEIGHT = 0.45f
+        private const val LOCAL_SHORTLIST_MIN = 48
+        private const val LOCAL_SHORTLIST_MAX = 192
+    }
+
     private val appContext = context.applicationContext
     private val database = AppDatabase.getInstance(appContext)
     private val itemDao = database.reverseImageItemDao()
@@ -33,13 +40,6 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
 
     private val libraryDirectory: File
         get() = File(appContext.filesDir, "reverse_image/library").also { it.mkdirs() }
-
-    companion object {
-        private const val HAAR_WEIGHT = 0.55f
-        private const val CLASSICAL_WEIGHT = 0.45f
-        private const val LOCAL_SHORTLIST_MAX = 192
-        private const val LOCAL_SHORTLIST_MIN = 96
-    }
 
     data class IndexProgress(
         val processed: Int,
@@ -66,10 +66,10 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
 
     private data class Candidate(
         val item: ReverseImageItemEntity,
-        val targetHaar: HaarFingerprintEngine.Fingerprint,
+        val haar: HaarFingerprintEngine.Fingerprint,
         val classical: ClassicalVisualFingerprintEntity?,
         val haarScore: HaarFingerprintEngine.Score,
-        val globalScore: ClassicalVisualFingerprintEngine.Score?,
+        val globalClassicalScore: ClassicalVisualFingerprintEngine.Score?,
         val preliminarySimilarity: Float
     )
 
@@ -281,40 +281,31 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 .take(shortlistSize)
 
             // Stage 2: expensive local geometric verification only on the shortlist.
-            val rankedCandidates = shortlist.map { candidate ->
+            val rankedCandidates = ArrayList<Pair<Candidate, Pair<Float, ClassicalVisualFingerprintEngine.Score?>>>(shortlist.size)
+            for (candidate in shortlist) {
                 val finalClassical = candidate.classical?.let { entity ->
-                    val target = entity.toFingerprint()
-                    val localScore = classicalEngine.compare(classicalQueries.first(), target, runLocal = true)
-                    val global = candidate.globalScore ?: localScore
-                    ClassicalVisualFingerprintEngine.Score(
-                        similarity = if (localScore.ransacInliers >= 4) {
-                            (global.similarity * 0.80f + localScore.localSimilarity * 0.20f).coerceIn(0f, 1f)
-                        } else {
-                            global.similarity
-                        },
-                        phashSimilarity = global.phashSimilarity,
-                        dhashSimilarity = global.dhashSimilarity,
-                        colorSimilarity = global.colorSimilarity,
-                        edgeSimilarity = global.edgeSimilarity,
-                        localSimilarity = localScore.localSimilarity,
-                        localMatches = localScore.localMatches,
-                        ransacInliers = localScore.ransacInliers
-                    )
+                    // IMPORTANT: local verification now evaluates all query variants.
+                    // This lets a crop/screenshot variant win instead of forcing the full query.
+                    classicalEngine.compareBest(classicalQueries, entity.toFingerprint(), runLocal = true)
                 }
                 val finalSimilarity = if (finalClassical != null) {
                     (candidate.haarScore.similarity * HAAR_WEIGHT + finalClassical.similarity * CLASSICAL_WEIGHT)
                         .coerceIn(0f, 1f)
                 } else candidate.haarScore.similarity
-                candidate to Pair(finalSimilarity, finalClassical)
-            }.sortedWith(
+                if (finalSimilarity >= minimumSimilarity) {
+                    rankedCandidates += candidate to Pair(finalSimilarity, finalClassical)
+                }
+            }
+
+            rankedCandidates.sortWith(
                 compareByDescending<Pair<Candidate, Pair<Float, ClassicalVisualFingerprintEngine.Score?>>> { it.second.first }
                     .thenByDescending { it.first.haarScore.matchedCoefficients }
                     .thenByDescending { it.second.second?.ransacInliers ?: 0 }
                     .thenByDescending { it.second.second?.localMatches ?: 0 }
-            ).filter { it.second.first >= minimumSimilarity }.take(limit)
+            )
 
-            val ranked = ArrayList<Result>(rankedCandidates.size)
-            for ((candidate, pair) in rankedCandidates) {
+            val ranked = ArrayList<Result>(minOf(limit, rankedCandidates.size))
+            for ((candidate, pair) in rankedCandidates.take(limit)) {
                 val durableItem = withContext(Dispatchers.IO) { ensurePrivateCopy(candidate.item) }
                 val finalClassical = pair.second
                 ranked += Result(
@@ -340,7 +331,8 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                     "shortlist" to shortlist.size.toString(),
                     "results" to ranked.size.toString(),
                     "localVerified" to shortlist.count { it.classical?.localKeypoints != null && it.classical.localDescriptors != null }.toString(),
-                    "signals" to "haar,phash,dhash,color,edge,akaze-mutual,ransac"
+                    "signals" to "haar,phash,dhash,color,edge,akaze-mutual,ransac",
+                    "localVariants" to classicalQueries.size.toString()
                 )
             )
             ranked
