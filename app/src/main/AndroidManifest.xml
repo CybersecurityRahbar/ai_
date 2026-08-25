@@ -18,16 +18,6 @@
         <activity android:name=".ui.DiagnosticsActivity" android:exported="false" />
         <activity android:name=".ui.DataCenterActivity" android:exported="false" />
         <activity android:name=".ui.ReverseImageSearchActivity" android:exported="false" />
-        <activity-alias
-            android:name=".ReverseImageSearchLauncher"
-            android:label="Reverse Image Search"
-            android:exported="true"
-            android:targetActivity=".ui.ReverseImageSearchActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
         <activity android:name=".ui.ImageViewerActivity" android:exported="false" />
         <activity android:name=".ui.FaceSearchActivity" android:exported="false" />
         <activity android:name=".ui.PeopleIntelligenceActivity" android:exported="false" />
