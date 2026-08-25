@@ -10,21 +10,27 @@ import android.provider.OpenableColumns
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.min
 
 /** First-class local reverse-image search subsystem. */
 class ReverseImageSearchService(context: Context) : AutoCloseable {
     companion object {
         private const val HAAR_WEIGHT = 0.55f
         private const val CLASSICAL_WEIGHT = 0.45f
-        private const val GLOBAL_SHORTLIST_MIN = 24
-        private const val GLOBAL_SHORTLIST_MAX = 40
-        private const val SIFT_RERANK_LIMIT = 8
+        private const val GLOBAL_SHORTLIST_MIN = 32
+        private const val GLOBAL_SHORTLIST_MAX = 64
+        private const val SIFT_RERANK_LIMIT = 16
+        private const val PARALLELISM = 4
     }
 
     private val appContext = context.applicationContext
@@ -40,6 +46,10 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
 
     private val libraryDirectory: File
         get() = File(appContext.filesDir, "reverse_image/library").also { it.mkdirs() }
+
+    private val cpuDispatcher = Dispatchers.Default.limitedParallelism(
+        min(PARALLELISM, Runtime.getRuntime().availableProcessors().coerceAtLeast(2))
+    )
 
     data class IndexProgress(
         val processed: Int,
@@ -85,6 +95,13 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         val candidate: Candidate,
         val similarity: Float,
         val classical: ClassicalVisualFingerprintEngine.Score?
+    )
+
+    private data class SiftOutcome(
+        val itemId: Long,
+        val similarity: Float,
+        val goodMatches: Int,
+        val inliers: Int
     )
 
     suspend fun itemCount(): Long = withContext(Dispatchers.IO) { itemDao.count() }
@@ -203,11 +220,12 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         minimumSimilarity: Float = 0.35f,
         onProgress: (SearchProgress) -> Unit = {}
     ): List<Result> = withContext(Dispatchers.Default) {
+        val startedAt = System.currentTimeMillis()
         val run = diagnostics.begin("REVERSE_IMAGE_SEARCH", mapOf(
             "limit" to limit.toString(), "minimum" to minimumSimilarity.toString(),
             "haar" to HaarFingerprintEngine.ENGINE_VERSION,
             "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION,
-            "strategy" to "global-shortlist-40-akaze-ransac-sift-8"
+            "strategy" to "global-all-64-akaze-ransac-16-sift-ransac-parallel4"
         ))
         val queryBitmap = resolver.openInputStream(queryUri).use { input ->
             requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة صورة البحث العكسي: $queryUri" }
@@ -228,68 +246,73 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 itemDao.getByIds(fingerprints.map { it.itemId }.distinct()).associateBy { it.id }
             }
 
-            val candidates = ArrayList<Candidate>(fingerprints.size)
-            onProgress(SearchProgress("البحث العالمي", 0, fingerprints.size))
-            for ((processed, fp) in fingerprints.withIndex()) {
-                coroutineContext.ensureActive()
-                if (fp.engineVersion != HaarFingerprintEngine.ENGINE_VERSION) continue
-                val item = items[fp.itemId] ?: continue
-                val targetHaar = HaarFingerprintEngine.Fingerprint(fp.width, fp.height, fp.channels, fp.signature)
-                var bestHaar = HaarFingerprintEngine.Score(0f, 0)
-                for (query in haarQueries) {
-                    val score = haarEngine.compare(query, targetHaar)
-                    if (score.similarity > bestHaar.similarity) bestHaar = score
-                }
-                val classicalEntity = classicalFingerprints[fp.itemId]
-                var bestGlobalClassical: ClassicalVisualFingerprintEngine.Score? = null
-                var bestQueryIndex = 0
-                if (classicalEntity != null) {
-                    val targetClassical = classicalEntity.toFingerprint()
-                    for (index in classicalQueries.indices) {
+            val globalProcessed = AtomicInteger(0)
+            val candidates = coroutineScope {
+                fingerprints.map { fp ->
+                    async(cpuDispatcher) {
                         coroutineContext.ensureActive()
-                        val score = classicalEngine.compare(classicalQueries[index], targetClassical, runLocal = false)
-                        if (bestGlobalClassical == null || score.similarity > bestGlobalClassical!!.similarity) {
-                            bestGlobalClassical = score
-                            bestQueryIndex = index
+                        if (fp.engineVersion != HaarFingerprintEngine.ENGINE_VERSION) return@async null
+                        val item = items[fp.itemId] ?: return@async null
+                        val targetHaar = HaarFingerprintEngine.Fingerprint(fp.width, fp.height, fp.channels, fp.signature)
+                        var bestHaar = HaarFingerprintEngine.Score(0f, 0)
+                        for (query in haarQueries) {
+                            val score = haarEngine.compare(query, targetHaar)
+                            if (score.similarity > bestHaar.similarity) bestHaar = score
                         }
+                        val classicalEntity = classicalFingerprints[fp.itemId]
+                        var bestGlobalClassical: ClassicalVisualFingerprintEngine.Score? = null
+                        var bestQueryIndex = 0
+                        if (classicalEntity != null) {
+                            val targetClassical = classicalEntity.toFingerprint()
+                            for (index in classicalQueries.indices) {
+                                coroutineContext.ensureActive()
+                                val score = classicalEngine.compare(classicalQueries[index], targetClassical, runLocal = false)
+                                if (bestGlobalClassical == null || score.similarity > bestGlobalClassical!!.similarity) {
+                                    bestGlobalClassical = score
+                                    bestQueryIndex = index
+                                }
+                            }
+                        }
+                        val preliminary = if (bestGlobalClassical != null) {
+                            (bestHaar.similarity * HAAR_WEIGHT + bestGlobalClassical.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
+                        } else bestHaar.similarity
+                        val processed = globalProcessed.incrementAndGet()
+                        if (processed % 16 == 0 || processed == fingerprints.size) {
+                            onProgress(SearchProgress("البحث العالمي الكامل", processed, fingerprints.size))
+                        }
+                        Candidate(item, bestHaar, classicalEntity, preliminary, bestQueryIndex)
                     }
-                }
-                val preliminary = if (bestGlobalClassical != null) {
-                    (bestHaar.similarity * HAAR_WEIGHT + bestGlobalClassical.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
-                } else bestHaar.similarity
-                candidates += Candidate(item, bestHaar, classicalEntity, preliminary, bestQueryIndex)
-                if ((processed + 1) % 16 == 0 || processed + 1 == fingerprints.size) {
-                    onProgress(SearchProgress("البحث العالمي", processed + 1, fingerprints.size))
-                }
+                }.awaitAll().filterNotNull()
             }
 
-            val shortlistSize = maxOf(GLOBAL_SHORTLIST_MIN, minOf(GLOBAL_SHORTLIST_MAX, maxOf(limit + 10, 32)))
             val shortlist = candidates.sortedWith(
                 compareByDescending<Candidate> { it.preliminarySimilarity }
                     .thenByDescending { it.haarScore.matchedCoefficients }
-            ).take(shortlistSize)
+            ).take(GLOBAL_SHORTLIST_MAX)
 
-            val reranked = ArrayList<RankedCandidate>(shortlist.size)
-            var localVerified = 0
-            onProgress(SearchProgress("التحقق الهندسي AKAZE/RANSAC", 0, shortlist.size, shortlist.size))
-            for ((index, candidate) in shortlist.withIndex()) {
-                coroutineContext.ensureActive()
-                val finalClassical = candidate.classical?.let { entity ->
-                    // Reuse the already computed query variants. Rebuilding these inside this
-                    // loop used to run AKAZE repeatedly for every candidate and caused searches
-                    // on a 999-image index to take many minutes.
-                    classicalEngine.compare(
-                        classicalQueries[candidate.bestClassicalQueryIndex.coerceIn(0, classicalQueries.lastIndex)],
-                        entity.toFingerprint(),
-                        runLocal = true
-                    )
-                }
-                if ((finalClassical?.ransacInliers ?: 0) >= 4) localVerified++
-                val finalSimilarity = if (finalClassical != null) {
-                    (candidate.haarScore.similarity * HAAR_WEIGHT + finalClassical.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
-                } else candidate.haarScore.similarity
-                if (finalSimilarity >= minimumSimilarity) reranked += RankedCandidate(candidate, finalSimilarity, finalClassical)
-                onProgress(SearchProgress("التحقق الهندسي AKAZE/RANSAC", index + 1, shortlist.size, shortlist.size, localVerified))
+            val localProcessed = AtomicInteger(0)
+            val localVerified = AtomicInteger(0)
+            onProgress(SearchProgress("التحقق الهندسي AKAZE/RANSAC — 64/64", 0, shortlist.size, shortlist.size))
+            val reranked = coroutineScope {
+                shortlist.map { candidate ->
+                    async(cpuDispatcher) {
+                        coroutineContext.ensureActive()
+                        val finalClassical = candidate.classical?.let { entity ->
+                            classicalEngine.compare(
+                                classicalQueries[candidate.bestClassicalQueryIndex.coerceIn(0, classicalQueries.lastIndex)],
+                                entity.toFingerprint(),
+                                runLocal = true
+                            )
+                        }
+                        if ((finalClassical?.ransacInliers ?: 0) >= 4) localVerified.incrementAndGet()
+                        val finalSimilarity = if (finalClassical != null) {
+                            (candidate.haarScore.similarity * HAAR_WEIGHT + finalClassical.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
+                        } else candidate.haarScore.similarity
+                        val processed = localProcessed.incrementAndGet()
+                        onProgress(SearchProgress("التحقق الهندسي AKAZE/RANSAC — 64/64", processed, shortlist.size, shortlist.size, localVerified.get()))
+                        if (finalSimilarity >= minimumSimilarity) RankedCandidate(candidate, finalSimilarity, finalClassical) else null
+                    }
+                }.awaitAll().filterNotNull().toMutableList()
             }
 
             reranked.sortWith(compareByDescending<RankedCandidate> { it.similarity }
@@ -297,37 +320,50 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 .thenByDescending { it.classical?.ransacInliers ?: 0 }
                 .thenByDescending { it.classical?.localMatches ?: 0 })
 
-            val siftPool = reranked.take(minOf(SIFT_RERANK_LIMIT, reranked.size))
-            var siftVerified = 0
-            var siftStrong = 0
-            onProgress(SearchProgress("التحقق الإضافي SIFT/RANSAC", 0, siftPool.size, shortlist.size, localVerified, 0))
-            for ((index, ranked) in siftPool.withIndex()) {
-                coroutineContext.ensureActive()
-                val targetBitmap = ranked.candidate.item.filePath?.let { BitmapFactory.decodeFile(it) }
-                if (targetBitmap != null) {
-                    try {
-                        val result = siftVerifier.compare(queryBitmap, targetBitmap)
-                        siftVerified++
-                        if (result.inliers >= 4) {
-                            siftStrong++
-                            val base = ranked.classical
-                            if (base != null) {
-                                val improvedLocal = maxOf(base.localSimilarity, result.similarity)
-                                val improvedClassical = base.copy(
-                                    similarity = maxOf(base.similarity, (base.similarity * 0.75f + improvedLocal * 0.25f).coerceIn(0f, 1f)),
-                                    localSimilarity = improvedLocal,
-                                    localMatches = maxOf(base.localMatches, result.goodMatches),
-                                    ransacInliers = maxOf(base.ransacInliers, result.inliers)
+            val siftPool = reranked.take(SIFT_RERANK_LIMIT)
+            val siftProcessed = AtomicInteger(0)
+            val siftVerified = AtomicInteger(0)
+            onProgress(SearchProgress("التحقق الإضافي SIFT/RANSAC — 16/16", 0, siftPool.size, shortlist.size, localVerified.get(), 0))
+            val siftOutcomes = coroutineScope {
+                siftPool.map { ranked ->
+                    async(cpuDispatcher) {
+                        coroutineContext.ensureActive()
+                        val targetBitmap = ranked.candidate.item.filePath?.let { BitmapFactory.decodeFile(it) }
+                        var outcome: SiftOutcome? = null
+                        if (targetBitmap != null) {
+                            try {
+                                val result = siftVerifier.compare(queryBitmap, targetBitmap)
+                                siftVerified.incrementAndGet()
+                                outcome = SiftOutcome(
+                                    itemId = ranked.candidate.item.id,
+                                    similarity = result.similarity,
+                                    goodMatches = result.goodMatches,
+                                    inliers = result.inliers
                                 )
-                                val improvedOverall = (ranked.candidate.haarScore.similarity * HAAR_WEIGHT + improvedClassical.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
-                                val replacement = RankedCandidate(ranked.candidate, maxOf(ranked.similarity, improvedOverall), improvedClassical)
-                                val position = reranked.indexOfFirst { it.candidate.item.id == ranked.candidate.item.id }
-                                if (position >= 0) reranked[position] = replacement
-                            }
+                            } finally { targetBitmap.recycle() }
                         }
-                    } finally { targetBitmap.recycle() }
-                }
-                onProgress(SearchProgress("التحقق الإضافي SIFT/RANSAC", index + 1, siftPool.size, shortlist.size, localVerified, siftVerified))
+                        val processed = siftProcessed.incrementAndGet()
+                        onProgress(SearchProgress("التحقق الإضافي SIFT/RANSAC — 16/16", processed, siftPool.size, shortlist.size, localVerified.get(), siftVerified.get()))
+                        outcome
+                    }
+                }.awaitAll().filterNotNull()
+            }
+
+            val siftByItemId = siftOutcomes.associateBy { it.itemId }
+            for (index in reranked.indices) {
+                val ranked = reranked[index]
+                val outcome = siftByItemId[ranked.candidate.item.id] ?: continue
+                if (outcome.inliers < 4) continue
+                val base = ranked.classical ?: continue
+                val improvedLocal = maxOf(base.localSimilarity, outcome.similarity)
+                val improvedClassical = base.copy(
+                    similarity = maxOf(base.similarity, (base.similarity * 0.75f + improvedLocal * 0.25f).coerceIn(0f, 1f)),
+                    localSimilarity = improvedLocal,
+                    localMatches = maxOf(base.localMatches, outcome.goodMatches),
+                    ransacInliers = maxOf(base.ransacInliers, outcome.inliers)
+                )
+                val improvedOverall = (ranked.candidate.haarScore.similarity * HAAR_WEIGHT + improvedClassical.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
+                reranked[index] = RankedCandidate(ranked.candidate, maxOf(ranked.similarity, improvedOverall), improvedClassical)
             }
 
             reranked.sortWith(compareByDescending<RankedCandidate> { it.similarity }
@@ -360,9 +396,11 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 "candidates" to candidates.size.toString(),
                 "shortlist" to shortlist.size.toString(),
                 "results" to ranked.size.toString(),
-                "localVerified" to localVerified.toString(),
-                "siftVerified" to siftVerified.toString(),
-                "siftStrong" to siftStrong.toString(),
+                "localVerified" to localVerified.get().toString(),
+                "siftVerified" to siftVerified.get().toString(),
+                "siftStrong" to siftOutcomes.count { it.inliers >= 4 }.toString(),
+                "durationMs" to (System.currentTimeMillis() - startedAt).toString(),
+                "parallelism" to PARALLELISM.toString(),
                 "signals" to "haar,phash,dhash,hsv256,shape,akaze-mutual,sift,ransac"
             ))
             ranked
