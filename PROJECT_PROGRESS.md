@@ -1,50 +1,73 @@
 # Personal Memory AI — Project Progress Log
 
-## 2026-08-25 — Persistent context and standalone reverse-image search
+## 2026-08-25 — Persistent context + standalone local reverse-image search
 
-### Starting point verified from repository
+### Repository state verified
 
 - Repository: `CybersecurityRahbar/ai_`.
-- Current default branch tree was inspected directly from GitHub.
-- The project already contains OCR, Arabic Tesseract assets, YOLO object detection, face analysis/embeddings/clustering, diagnostics, Room persistence, and a MobileCLIP-S2 image-embedding path.
-- `ImageIndexer.kt` orchestrates metadata, OCR, objects, managed storage, database persistence, face analysis, and optional MobileCLIP image embedding.
-- `SemanticSearchService.kt` performs MobileCLIP image embedding and brute-force cosine ranking over stored image embeddings.
-- MobileCLIP-S2 is not committed as a model binary; the application expects a locally imported validated FP16 TFLite model and requires a visual index before semantic image search works.
+- Existing stack includes OCR/Arabic OCR, YOLO objects, face analysis/embeddings/clustering, diagnostics, Room, and a MobileCLIP-S2 visual embedding path.
+- MobileCLIP-S2 is intentionally imported locally as a TFLite model; the code requires a built visual index before semantic image search can work.
 
-### Important correction
+### digiKam research
 
-Earlier conversation wording suggested that the project had no serious visual model. The repository now proves that a MobileCLIP-S2 path exists. However, code presence is not equivalent to verified runtime quality; actual model readiness and indexed embeddings must be tested before claiming successful semantic retrieval.
+- digiKam Similarity View provides Find Duplicates, Find Similar Image, and Find by Sketch.
+- Its fingerprint engine uses Wavelets/Haar based on Jacobs, Finkelstein and Salesin's `Fast Multi-Resolution Image Querying` (SIGGRAPH 1995).
+- Fingerprints are calculated in the background and stored separately for similarity search.
+- Historical digiKam developer material describes serialized `Haar::SignatureData` in `ImageHaarMatrix` and a search metric based on agreement of significant signed wavelet coefficients.
+- Current 2026 digiKam reports still reference `similarity.db` and `ImageHaarMatrix`, so the Haar fingerprint architecture remains relevant.
 
-### digiKam research completed
+### Architecture decision
 
-- Current digiKam documentation identifies Similarity View as the home of Find Duplicates, Find Similar Image, and Find by Sketch.
-- digiKam computes persistent image fingerprints in the background and stores them in a dedicated similarity database.
-- Documentation explicitly states that the fingerprint engine uses Wavelets/Haar algorithms based on Jacobs, Finkelstein and Salesin's `Fast Multi-Resolution Image Querying` publication.
-- Historical digiKam developer material confirms that Haar signature data is serialized and persisted in `ImageHaarMatrix`, and the search implementation compares the significant coefficients of stored signatures against the query signature.
-- A historical benchmark reported around 100,000 images searched in about three seconds on an older machine using the coefficient-signature approach.
-- Current 2026 digiKam bug reports still reference `similarity.db` and `ImageHaarMatrix`, confirming that Haar fingerprints remain part of the current similarity architecture.
+The reverse-image feature is intentionally **independent from the previous indexing/semantic system**.
 
-### Design decision
+It now has:
 
-The requested reverse-image search will be a **standalone feature**, not an extension of `SemanticSearchService`.
+- `reverseimage/HaarFingerprintEngine.kt`
+- `reverseimage/ReverseImageSearchService.kt`
+- `reverseimage/ReverseImageItemEntity.kt`
+- `reverseimage/ReverseImageItemDao.kt`
+- `reverseimage/HaarFingerprintEntity.kt`
+- `reverseimage/HaarFingerprintDao.kt`
+- dedicated Room tables for the reverse-image corpus and fingerprints
+- dedicated `ReverseImageSearchActivity.kt`
+- dedicated result adapter/layouts
+- dedicated launcher alias (`Reverse Image Search`)
 
-Planned layers:
+The feature does not depend on MobileCLIP, OCR, face indexing, or the legacy `images` table for its corpus/search.
 
-- `reverseimage/` package for the dedicated engine and service.
-- Dedicated Room `ImageFingerprintEntity` + DAO.
-- Dedicated Haar fingerprint computation and similarity ranking.
-- Dedicated Android screen for indexing, rebuilding, selecting a query image, and displaying ranked local matches.
-- Existing MobileCLIP remains independent and unchanged.
+### Current behavior implemented
 
-### Current implementation status
+1. User opens the separate Reverse Image Search entry.
+2. User adds multiple local images to the feature's own corpus.
+3. The feature builds/rebuilds persistent Haar/YIQ fingerprints.
+4. User selects a separate query image.
+5. The query gets a new fingerprint locally.
+6. Stored fingerprints are compared and ranked by coefficient agreement.
+7. Results show the image, name/path, similarity percentage, and matched coefficient count.
+8. A similarity threshold can filter results.
 
-- Persistent plan document added: `PROJECT_PLAN.md`.
-- Persistent progress document added: `PROJECT_PROGRESS.md`.
-- Haar engine code: not yet committed.
-- Reverse-image Room table/DAO: not yet committed.
-- Reverse-image UI: not yet committed.
-- Runtime validation: not yet performed.
+### Algorithm implementation note
 
-### Next implementation step
+The Android implementation follows the documented digiKam-style/Fast-Multi-Resolution recipe: 128x128 representation, YIQ channels, standard 2-D Haar decomposition, strongest 60 signed coefficients per channel, sparse serialization, and coefficient-agreement ranking. The serialized fingerprint is an app-owned format; it is **not claimed to be byte-for-byte compatible with digiKam's `ImageHaarMatrix` blob** without direct source-level verification.
 
-Implement and test the standalone Haar fingerprint engine, then connect it to Room and the dedicated reverse-image screen. After each meaningful change, update this document with the actual commit/result and do not infer success from code existence alone.
+### Verification status
+
+- Code and database integration committed to the default branch.
+- Persistent project plan committed as `PROJECT_PLAN.md`.
+- Persistent progress log committed as this file.
+- Temporary test files created during editing were removed.
+- **Android build/runtime verification has not yet been completed in this environment.** Do not claim the feature is production-ready until `assembleDebug`/release build and device tests pass.
+
+### Required next verification set
+
+Test the standalone engine with:
+
+- identical image
+- same image after JPEG recompression
+- resize
+- mild crop
+- mild brightness/color change
+- unrelated image
+- burst/near-duplicate images
+
+Record actual scores and ranking behavior here before changing thresholds or claiming accuracy.
