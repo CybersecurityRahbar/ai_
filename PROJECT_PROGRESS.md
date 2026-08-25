@@ -2,6 +2,14 @@
 
 ## 2026-08-25 — Reverse-image algorithm v3: global retrieval + geometric reranking
 
+### Latest hardening after staged-retrieval build
+
+- Commit `f2c8f0d04861abd364fc5c9a96f2f47a2c4c8f28` fixes an important retrieval/reranking inconsistency in `ReverseImageSearchService.kt`.
+- The search already generated four classical query variants (original + centered 0.92/0.82/0.72 crops) for high-recall global retrieval, but the local geometric stage previously checked only the original query variant.
+- Local verification now evaluates **all classical query variants** with `compareBest(..., runLocal = true)` and keeps the best complete classical score. Therefore a crop/screenshot variant can win during the expensive geometric reranking stage instead of being discarded because the full query had weaker local correspondence.
+- The expensive local stage remains bounded to the shortlist, so this accuracy improvement does not revert the architecture to `N × AKAZE` over the full corpus.
+- Search diagnostics now record the number of local query variants used.
+
 ### Baseline CI confirmation
 
 - GitHub Actions `Android Build` run #30 (`32888857312`) succeeded for the post-compile-fix project state.
@@ -178,6 +186,25 @@ The user-observed crash was traced to `ReverseImageResultAdapter` calling `Image
 
 ### Verification status
 
-- The earlier Haar implementation was exercised by the user with the 999-image corpus.
-- The durable-copy integration repair has not been device-verified yet.
-- Accuracy weights remain provisional until the controlled benchmark is completed.
+- The expanded classical stack previously built successfully and the user tested the earlier Haar implementation on 999 images.
+- The current integration-repair branch is not yet device-verified after the durable-copy changes.
+- Accuracy weights remain provisional until the controlled benchmark in the next section is completed.
+
+### Required device benchmark
+
+Use a controlled corpus containing:
+
+1. exact same image
+2. JPEG recompression
+3. resize
+4. screenshot with borders/UI chrome
+5. mild crop
+6. larger crop
+7. brightness/color change
+8. burst/near-duplicate
+9. unrelated image
+10. same subject/object from a different viewpoint
+11. perspective change
+12. screenshot containing the source image as a region
+
+For every case record the top-10 rankings and the component scores. The next optimization decisions must be based on these measured results, not on visual inspection alone.
