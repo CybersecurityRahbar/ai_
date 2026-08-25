@@ -10,112 +10,90 @@ Build a local-first Android Personal Memory / Evidence Intelligence system that 
 
 - `database/`: Room persistence for images, objects, faces, persons, and ML embeddings.
 - `indexing/`: image ingestion and analysis orchestration; OCR, Arabic OCR, YOLO objects, face indexing, and visual embedding indexing.
-- `semantic/`: MobileCLIP-S2 image embeddings and cosine-similarity search. TextEncoder is reserved and not yet implemented as a working text model.
+- `semantic/`: MobileCLIP-S2 image embeddings and cosine-similarity search. This remains intentionally out of scope for the current classical-search phase.
 - `vision/`: face detection/landmarks/quality/pose/embeddings/matching/clustering.
 - `intelligence/`: evidence and multi-signal analysis components.
 - `diagnostics/`: stage health and model/pipeline diagnostics.
 - `ui/`: Android screens for data, evidence, faces, objects, OCR, intelligence, image viewing, and reverse-image search.
-- `reverseimage/`: standalone classical visual-search subsystem. It intentionally does not depend on MobileCLIP, OCR, face AI, or the legacy `images` search path.
+- `reverseimage/`: independent classical visual-search subsystem inside the existing application shell. It does not depend on MobileCLIP, OCR, face AI, or the legacy `images` semantic-search path.
 
-## 3. Important truth about the current system
+## 3. Classical reverse-image architecture
 
-The codebase contains a complete MobileCLIP-S2 integration path, but the actual MobileCLIP-S2 FP16 TFLite model is intentionally not committed to Git. The user must import the validated model locally and build the visual index before semantic image search can return results. Do not claim that MobileCLIP search is working unless model readiness and persisted compatible image embeddings have been verified.
+### Persistent/indexed features
 
-## 4. Standalone local reverse-image search
+- DigiKam-style Haar/Wavelet fingerprint: 128x128, RGB->YIQ, separable 2-D Haar, 40 strongest signed coefficients per channel, Y/I/Q averages, digiKam WeightBin and weights, best/worst normalization.
+- 64-bit pHash based on low-frequency DCT coefficients with DC excluded.
+- 64-bit dHash using a complete 9x8 luminance comparison grid.
+- 256-bin L1-normalized HSV histogram: 16 Hue × 4 Saturation × 4 Value.
+- 128-bin spatial Sobel gradient magnitude/direction signature over a 4x4 spatial grid.
+- Persisted AKAZE binary local descriptors and keypoints for cheap shortlist verification.
 
-This feature is intentionally **separate from the existing semantic search system**, but it remains a first-class screen inside the existing application shell and command center.
+### Shortlist-only verification
 
-### User experience
-
-1. Open `LOCAL REVERSE IMAGE SEARCH` from the existing Intelligence Command Center.
-2. Add local images to the dedicated reverse-image corpus.
-3. Build/rebuild the dedicated fingerprint index.
-4. Pick a query image from the device.
-5. Compute its classical visual fingerprints locally.
-6. Search only the dedicated fingerprint index.
-7. Return ranked local matches with a transparent score breakdown.
-
-### Classical algorithm stack
-
-The reverse-image engine is a deliberately non-neural computer-vision subsystem:
-
-- **DigiKam-style Haar/Wavelet fingerprint**: 128x128, RGB->YIQ, separable 2-D Haar, 40 strongest signed coefficients per channel, stored Y/I/Q averages, `WeightBin`, and best/worst score normalization.
-- **pHash**: explicit low-frequency DCT with the DC term excluded from the hash comparison.
-- **dHash**: full 64-bit horizontal luminance difference hash over a 9x8 sample grid.
-- **Color fingerprint**: HSV distribution histogram with L1/total normalization, preserving distribution instead of peak-bin dominance.
-- **Shape/edge fingerprint**: spatial gradient magnitude/direction signature with L1 normalization.
-- **AKAZE local features**: classical binary local descriptors, persisted for each corpus image when OpenCV is available.
-- **Mutual local matching**: ratio-tested AKAZE matches must agree in both query->target and target->query directions.
-- **RANSAC geometric verification**: mutual matches are checked through homography estimation; local evidence is valid only when geometric inliers exist.
-
-OpenCV is used only for classical local-feature operations; no neural network inference is introduced by this subsystem. The current Maven artifact is `org.opencv:opencv:4.13.0` (Apache-2.0). Do not confuse this dependency with the existing TFLite/ML systems.
-
-The current classical engine version is `CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V3`. The BLOB schema is unchanged; the version marker deliberately invalidates older classical fingerprints and causes re-indexing.
+- AKAZE mutual matching + Lowe-style ratio test + homography RANSAC.
+- SIFT verification using OpenCV 4.13 `features2d.SIFT`, BFMatcher L2, mutual consistency, ratio test, and homography RANSAC. SIFT is not persisted for every image; it runs only on the high-recall shortlist.
+- Query global retrieval supports original, centered crop variants, and 90°/180°/270° rotations.
 
 ### Search architecture
 
-Reverse-image search is now explicitly staged:
+1. Compute global fingerprints for the query.
+2. Scan the complete corpus using cheap Haar + pHash/dHash/color/edge evidence.
+3. Retain a high-recall shortlist, bounded to 48–192 candidates depending on result count.
+4. Run persisted AKAZE geometric verification on the shortlist.
+5. Run SIFT geometric verification on the same shortlist.
+6. Fuse only geometrically validated local evidence into the global score.
+7. Rank and return transparent component telemetry.
 
-1. Build multi-region query fingerprints (original plus centered 0.92/0.82/0.72 crops) for both Haar and classical global signals.
-2. Run cheap global retrieval across the entire corpus using Haar + pHash/dHash/color/edge.
-3. Keep a bounded high-recall shortlist (currently 96–192 candidates depending on requested result count).
-4. Run expensive AKAZE mutual matching and RANSAC geometry only on the shortlist.
-5. Rerank using local geometric evidence while retaining transparent component telemetry.
+The explicit global fusion remains Haar 55% + classical 45% until controlled measurements justify another weight. SIFT is an additional local-evidence verifier; it is not a replacement for Haar.
 
-This architecture is intended to preserve recall while preventing `N × local-feature matching` from becoming the normal path. The exact shortlist bounds remain tunable after device benchmarking.
+## 4. Engineering constraints
 
-### Search fusion policy
+- Keep reverse-image storage isolated in its own corpus/tables/DAOs.
+- Keep the feature accessible through `IntelligenceHomeActivity`, not as a second Android application launcher.
+- Preserve durable app-private image copies so search results never depend on transient DocumentsProvider permissions.
+- Do not modify MobileCLIP during this phase.
+- Do not claim byte-for-byte compatibility with digiKam's database blobs; only the source-level Haar calculation is being reproduced.
+- Incremental index entries are versioned. Changing the classical fingerprint schema/version requires a full reverse-image index rebuild.
 
-- Haar remains the primary anchor because it has been directly validated by the user for exact/near visual matches.
-- pHash/dHash/color/edge provide independent global evidence.
-- AKAZE/RANSAC provides local structural evidence when available.
-- Current top-level fusion is explicit and non-learned: Haar 55% + classical composite 45%.
-- These weights are provisional and must be adjusted only after measured benchmark results.
-- Never hide the component scores; the UI should expose enough telemetry to understand why a result ranked highly.
+## 5. Accuracy roadmap
 
-### Engineering constraints
+The classical engine should be improved by measured evidence, not by arbitrary weight tuning.
 
-- Keep the reverse-image feature in its own package/service and dedicated Room tables/DAOs.
-- Do not replace or modify the existing MobileCLIP search path in this phase.
-- Do not make main text search depend on reverse-image search.
-- Keep the UI inside the existing application shell but visually consistent with the Intelligence Command Center.
-- Index incrementally using item ID plus engine-version/configuration markers.
-- Keep diagnostics for index build, OpenCV/local-feature availability, invalid images, query failures, result counts, shortlist size, and local verification coverage.
-- Keep durable private image copies independent of transient `DocumentsProvider` permissions.
-- The fingerprint BLOB format is app-owned. Do not claim byte-for-byte compatibility with digiKam's `ImageHaarMatrix` without direct binary conformance testing.
+Priority order:
 
-## 5. Future evolution of the classical subsystem
-
-- **First priority: benchmark V3 on the existing 999-image corpus** before changing top-level weights.
-- Add stronger **multi-region local verification** for screenshots and large crops if the benchmark shows global recall is insufficient.
-- Consider multiple local crops/tiling or adaptive region proposals rather than simply increasing descriptor counts globally.
-- Add face/person search as a separate identity-evidence mode using the existing face subsystem; do not force Haar to solve identity recognition.
-- Consider additional classical descriptors only when a benchmark demonstrates a specific gap: multi-scale local regions, line/contour signatures, improved spatial-color descriptors, or stronger geometric verification.
-- Only after the classical baseline is measured should we revisit MobileCLIP or stronger neural encoders.
+1. Verify current v4 on the 999-image corpus.
+2. Benchmark exact/recompressed/resized/screenshot/crop/burst cases.
+3. Benchmark rotation, perspective, and source-inside-screenshot cases.
+4. Inspect per-component scores and Top-10 ranks.
+5. Only add another descriptor or change weights if a benchmark demonstrates a reproducible gap.
+6. Face/person identity search remains a separate future mode and should use the existing face subsystem rather than forcing Haar to solve identity.
+7. Only after the classical baseline is measured should stronger neural image encoders be revisited.
 
 ## 6. Verification policy
 
-A feature is not considered complete merely because code compiles. For every visual-search engine, verify:
+A feature is not considered complete merely because code compiles. Record actual runtime results and top-10 rankings for:
 
 - identical file/content
 - resized image
 - recompressed image
-- screenshot with UI/borders
+- screenshot with borders/UI chrome
 - mild crop
-- larger crop
+- large crop
 - brightness/color change
 - burst/near-duplicate
 - unrelated image
 - same object/scene from a different viewpoint
 - perspective change
-- screenshot containing the source image as a region
+- 90°/180°/270° rotation
+- source image embedded inside a screenshot
+- source image embedded inside a larger unrelated image
 
-Record actual top-10 rankings and component scores in `PROJECT_PROGRESS.md` before claiming accuracy. The next algorithmic weight changes must be evidence-driven from this benchmark.
+Do not claim an accuracy percentage without a measured benchmark.
 
 ## 7. Persistent context rule
 
-- Read this file and `PROJECT_PROGRESS.md` before continuing work.
+- Read this file and `PROJECT_PROGRESS.md` before making project changes.
 - Update `PROJECT_PROGRESS.md` after meaningful implementation or verification.
-- Keep architectural decisions and constraints in this file.
+- Keep architectural constraints and roadmap here.
 - Keep chronological implementation/testing facts in `PROJECT_PROGRESS.md`.
 - Never infer runtime quality from source existence or build success alone.
