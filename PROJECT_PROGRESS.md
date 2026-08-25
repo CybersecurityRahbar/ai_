@@ -1,5 +1,76 @@
 # Personal Memory AI — Project Progress Log
 
+## 2026-08-25 — Reverse-image algorithm v3: global retrieval + geometric reranking
+
+### Baseline CI confirmation
+
+- GitHub Actions `Android Build` run #30 (`32888857312`) succeeded for the post-compile-fix project state.
+- The debug APK artifact was successfully uploaded as `personal-memory-ai-debug-apk.zip` (artifact ID `9578699472`).
+- The user explicitly chose **not** to install that APK yet; runtime/device verification is deferred until the algorithmic development pass is complete.
+
+### Classical fingerprint hardening
+
+`ClassicalVisualFingerprintEngine.kt` was upgraded from `V2` to `V3` in commit `a7b6903a92b87d288515939518473b339353cd4d`.
+
+Verified source-level corrections:
+
+- **dHash correctness:** replaced the previous early-return implementation that consumed only the first ~64 comparisons of a 32x32 image with a proper 9x8 luminance grid producing exactly 64 horizontal comparisons across the whole image.
+- **pHash correctness:** the DC coefficient is excluded from the hash population; the meaningful low-frequency coefficients produce the 63-bit comparison space, avoiding the strong brightness/DC term dominating the hash.
+- **Histogram normalization:** color and edge histograms now use L1/total-mass normalization rather than max-bin normalization. Relative distribution between bins is therefore retained.
+- **Edge robustness:** lower gradient threshold from 18 to 12 to retain more weak structural evidence while still using spatial orientation bins.
+- **Local matching:** AKAZE matching now uses a stricter 0.74 ratio test plus mutual/cross-check consistency in both directions.
+- **Geometric verification:** homography RANSAC reprojection threshold reduced to 4.0 pixels. Local evidence is considered valid only when at least 4 geometric inliers exist.
+- **Local score:** combines inlier count, inlier ratio, and good-match coverage rather than using inlier count alone.
+- **Safety against false positives:** local evidence no longer boosts the score when geometric verification fails.
+- Fingerprint BLOB schema remains unchanged; engine-version migration triggers re-indexing automatically.
+
+### Search architecture hardening
+
+`ReverseImageSearchService.kt` was upgraded to staged retrieval in commits `ed41fafc17e51224f69783e829432f1ba01ac9b8` and `7038ec90269c0868a66a9d812c55de903c8136dc`.
+
+The search pipeline is now:
+
+1. Compute multi-region Haar query variants (original + centered 0.92/0.82/0.72 crops).
+2. Compute the same multi-region set for the classical global fingerprints.
+3. Perform **cheap global retrieval over the full corpus** using Haar + pHash/dHash/color/edge, with the existing explicit 55% Haar / 45% classical fusion.
+4. Keep a high-recall shortlist of 96–192 candidates depending on requested result count.
+5. Run the expensive AKAZE + mutual matching + RANSAC geometry only on that shortlist.
+6. Rerank using the validated geometric local evidence while retaining transparent component telemetry.
+7. Create/restore durable local image copies only for final returned results, avoiding unnecessary I/O across the full corpus.
+
+This changes the computational pattern from `N × expensive local verification` to `N × cheap global retrieval + K × expensive local verification`, where `K` is the shortlist and is bounded to 96–192.
+
+### Compile-safety repair during v3 integration
+
+- The first staged-search implementation attempted to call suspend work from a `Sequence.map` lambda while materializing final results.
+- This was corrected in commit `7038ec90269c0868a66a9d812c55de903c8136dc` by using an explicit suspend-safe loop for final result materialization.
+- No claim is made that the current post-v3 CI has completed until its dedicated GitHub Actions run is verified.
+
+### Important re-indexing requirement
+
+Because the classical engine version changed from `CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V2` to `CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V3`, the existing classical fingerprints are intentionally considered stale. The next device test must perform a full reverse-image index rebuild for the 999-image corpus before accuracy measurements are trusted.
+
+### Accuracy status
+
+The v3 changes are **algorithmic improvements based on source-level correctness and retrieval architecture**, not measured accuracy claims. No precision/recall or top-10 improvement percentage is being claimed yet.
+
+The mandatory controlled benchmark remains:
+
+1. exact same image
+2. JPEG recompression
+3. resize
+4. screenshot with borders/UI chrome
+5. mild crop
+6. larger crop
+7. brightness/color change
+8. burst/near-duplicate
+9. unrelated image
+10. same subject/object from a different viewpoint
+11. perspective change
+12. screenshot containing the source image as a region
+
+For every case, record top-10 rankings and every component score. Weight changes after this phase must be driven by those measurements rather than visual inspection.
+
 ## 2026-08-25 — Classical reverse-image stack expansion
 
 ### Verified repository state
@@ -99,7 +170,7 @@ The current fusion is intentionally conservative: Haar contributes 55% and the c
 - Exact compiler error: `ReverseImageSearchService.kt:330:17 Suspend function 'upsert' should be called only from a coroutine or another suspend function`.
 - Root cause: the lazy durable-copy helper `ensurePrivateCopy()` called the Room DAO `upsert()` from a non-suspend function.
 - Fixed in commit `92af21f802f064ba9772b6b0bac0646e1254457c` by making `ensurePrivateCopy()` suspend. Its callers are already inside suspend/coroutine contexts, so the DAO write is now correctly awaited without `runBlocking` or blocking the thread.
-- The next GitHub Actions run is expected to validate this exact correction. No new APK is claimed until that run succeeds.
+- GitHub Actions run #30 subsequently succeeded, producing the debug APK artifact recorded above.
 
 ### Runtime bug being addressed
 
@@ -107,25 +178,6 @@ The user-observed crash was traced to `ReverseImageResultAdapter` calling `Image
 
 ### Verification status
 
-- The expanded classical stack previously built successfully and the user tested the earlier Haar implementation on 999 images.
-- The current integration-repair branch is not yet device-verified after the durable-copy changes.
-- Accuracy weights remain provisional until the controlled benchmark in the next section is completed.
-
-### Required device benchmark
-
-Use a controlled corpus containing:
-
-1. exact same image
-2. JPEG recompression
-3. resize
-4. screenshot with borders/UI chrome
-5. mild crop
-6. larger crop
-7. brightness/color change
-8. burst/near-duplicate
-9. unrelated image
-10. same subject/object from a different viewpoint
-11. perspective change
-12. screenshot containing the source image as a region
-
-For every case record the top-10 rankings and the component scores. The next optimization decisions must be based on these measured results, not on visual inspection alone.
+- The earlier Haar implementation was exercised by the user with the 999-image corpus.
+- The durable-copy integration repair has not been device-verified yet.
+- Accuracy weights remain provisional until the controlled benchmark is completed.
