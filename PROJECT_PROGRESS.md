@@ -1,73 +1,77 @@
 # Personal Memory AI — Project Progress Log
 
-## 2026-08-25 — Persistent context + standalone local reverse-image search
+## 2026-08-25 — Reverse-image integration, user test, and digiKam algorithm correction
 
 ### Repository state verified
 
 - Repository: `CybersecurityRahbar/ai_`.
 - Existing stack includes OCR/Arabic OCR, YOLO objects, face analysis/embeddings/clustering, diagnostics, Room, and a MobileCLIP-S2 visual embedding path.
 - MobileCLIP-S2 is intentionally imported locally as a TFLite model; the code requires a built visual index before semantic image search can work.
+- GitHub Actions now builds `:app:assembleDebug`; the first CI build succeeded and produced the debug APK.
 
-### digiKam research
+### User integration feedback
 
-- digiKam Similarity View provides Find Duplicates, Find Similar Image, and Find by Sketch.
-- Its fingerprint engine uses Wavelets/Haar based on Jacobs, Finkelstein and Salesin's `Fast Multi-Resolution Image Querying` (SIGGRAPH 1995).
-- Fingerprints are calculated in the background and stored separately for similarity search.
-- Historical digiKam developer material describes serialized `Haar::SignatureData` in `ImageHaarMatrix` and a search metric based on agreement of significant signed wavelet coefficients.
-- Current 2026 digiKam reports still reference `similarity.db` and `ImageHaarMatrix`, so the Haar fingerprint architecture remains relevant.
+- The first installed build opened the modern `IntelligenceHomeActivity`, but the reverse-image screen was not reachable from that existing command center because no navigation action had been added there.
+- Existing older activities were not deleted; they remain registered in the manifest. The fix is to integrate Reverse Image Search into the existing command-center navigation, not replace or isolate the application shell.
+- The reverse-image screen is now styled with the same `bg_intelligence`, `panel_intelligence`, and `bg_intel_button` visual system used by the current command center.
 
-### Architecture decision
+### User test result of first reverse-image implementation
 
-The reverse-image feature is intentionally **independent from the previous indexing/semantic system**.
+- Corpus import and fingerprint indexing worked.
+- An exact duplicate/query image was found correctly.
+- Screenshot/near-duplicate/other visually similar variants were not found reliably.
 
-It now has:
+### Root cause found
 
-- `reverseimage/HaarFingerprintEngine.kt`
-- `reverseimage/ReverseImageSearchService.kt`
-- `reverseimage/ReverseImageItemEntity.kt`
-- `reverseimage/ReverseImageItemDao.kt`
-- `reverseimage/HaarFingerprintEntity.kt`
-- `reverseimage/HaarFingerprintDao.kt`
-- dedicated Room tables for the reverse-image corpus and fingerprints
-- dedicated `ReverseImageSearchActivity.kt`
-- dedicated result adapter/layouts
-- dedicated launcher alias (`Reverse Image Search`)
+The first Android Haar engine was only an approximation of digiKam, not a source-level implementation of its scoring method. It used 60 coefficients, normalized YIQ values, and a custom coefficient-count score, and it did not retain the Y/I/Q averages used by digiKam.
 
-The feature does not depend on MobileCLIP, OCR, face indexing, or the legacy `images` table for its corpus/search.
+Direct digiKam source inspection confirmed the actual core:
 
-### Current behavior implemented
+- 128x128 image with aspect ratio ignored.
+- RGB values in 0..255.
+- RGB -> YIQ conversion with digiKam's exact coefficients.
+- Separable 2-D Haar transform using the same 0.7071 scaling progression and DC adjustment.
+- 40 strongest coefficients per channel, encoded as signed indices.
+- `SignatureData` stores three Y/I/Q averages plus the 3x40 signed coefficient indices.
+- Scoring first adds weighted absolute distance between the Y/I/Q averages, then subtracts the exact per-channel weight for every significant signed coefficient present in both query and target.
+- `WeightBin` uses the coefficient's `(row,column)` position and `min(max(row,column), 5)` to select one of the six weight rows.
+- The final similarity is derived from digiKam's best/worst possible score range.
 
-1. User opens the separate Reverse Image Search entry.
-2. User adds multiple local images to the feature's own corpus using persistable document URIs.
-3. The feature builds/rebuilds persistent Haar/YIQ fingerprints.
-4. User selects a separate query image.
-5. The query gets a new fingerprint locally.
-6. Stored fingerprints are compared and ranked by coefficient agreement.
-7. Results show the image, name/path, similarity percentage, and matched coefficient count.
-8. A similarity threshold can filter results.
+These findings are directly supported by digiKam's `haar.cpp`, `haar.h`, and `haariface.cpp` sources in the KDE/digikam repository.
 
-### Algorithm implementation note
+### Current implementation after correction
 
-The Android implementation follows the documented digiKam-style/Fast-Multi-Resolution recipe: 128x128 representation, YIQ channels, standard 2-D Haar decomposition, strongest 60 signed coefficients per channel, sparse serialization, and coefficient-agreement ranking. The serialized fingerprint is an app-owned format; it is **not claimed to be byte-for-byte compatible with digiKam's `ImageHaarMatrix` blob** without direct source-level verification.
+- `HaarFingerprintEngine.kt` now uses the digiKam 128/40/YIQ/Haar/sign/weight/scoring core and has engine version `DIGIKAM-HAAR-128-40-YIQ-V2`.
+- The app-owned fingerprint BLOB is deliberately not claimed to be byte-for-byte compatible with digiKam's `ImageHaarMatrix` Qt serialization.
+- `ReverseImageSearchService.kt` now evaluates the original query plus centered 92%, 82%, and 72% crop variants and keeps the best score. This multi-crop query robustness is an application extension; it is not claimed to be digiKam's core algorithm.
+- Minimum reverse-search threshold is now 35% by default.
+- `IntelligenceHomeActivity.kt` now exposes `LOCAL REVERSE IMAGE SEARCH` using the same command-center action styling and keeps all previous application screens reachable.
+- `activity_reverse_image_search.xml` and `item_reverse_image_result.xml` were restyled to match the current application intelligence UI.
+
+### Important capability boundary
+
+Classic digiKam Haar similarity is not a guarantee of viewpoint-invariant object recognition. A substantially different camera angle, different scene composition, or a different photograph of the same object can still score poorly. The goal of this phase is to reproduce digiKam's actual classical similarity behavior and improve screenshot/crop robustness; viewpoint-invariant retrieval may require a separate local-feature stage later.
 
 ### Verification status
 
-- Code and database integration committed to the default branch; latest feature commit: `28ea4c8431181c560b4f8e56589b58eb9fa22c2d`.
-- Persistent project plan committed as `PROJECT_PLAN.md`.
-- Persistent progress log committed as this file.
-- Temporary test files created during editing were removed.
-- **Android build/runtime verification has not yet been completed in this environment.** Do not claim the feature is production-ready until `assembleDebug`/release build and device tests pass.
+- Previous CI build succeeded before the current algorithm/UI correction.
+- A new CI build is required after the correction commits.
+- Device runtime retest is required after the new APK is available.
+- Do not claim the new algorithm works better until the new APK is tested.
 
 ### Required next verification set
 
-Test the standalone engine with:
+Test the corrected standalone engine with:
 
-- identical image
-- same image after JPEG recompression
-- resize
-- mild crop
-- mild brightness/color change
-- unrelated image
-- burst/near-duplicate images
+1. exact same image
+2. JPEG recompression
+3. resize
+4. screenshot with borders/UI chrome
+5. mild crop
+6. centered crop
+7. brightness/color change
+8. burst/near-duplicate
+9. unrelated image
+10. same object/scene from a noticeably different camera angle
 
-Record actual scores and ranking behavior here before changing thresholds or claiming accuracy.
+Record the actual similarity scores and rankings here before making any claim about accuracy.
