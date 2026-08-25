@@ -14,53 +14,67 @@ Build a local-first Android Personal Memory / Evidence Intelligence system that 
 - `vision/`: face detection/landmarks/quality/pose/embeddings/matching/clustering.
 - `intelligence/`: evidence and multi-signal analysis components.
 - `diagnostics/`: stage health and model/pipeline diagnostics.
-- `ui/`: Android screens for data, evidence, faces, objects, OCR, intelligence, and image viewing.
+- `ui/`: Android screens for data, evidence, faces, objects, OCR, intelligence, image viewing, and reverse-image search.
+- `reverseimage/`: standalone classical visual-search subsystem. It intentionally does not depend on MobileCLIP, OCR, face AI, or the legacy `images` search path.
 
 ## 3. Important truth about the current system
 
 The codebase contains a complete MobileCLIP-S2 integration path, but the actual MobileCLIP-S2 FP16 TFLite model is intentionally not committed to Git. The user must import the validated model locally and build the visual index before semantic image search can return results. Do not claim that MobileCLIP search is working unless model readiness and persisted compatible image embeddings have been verified.
 
-## 4. New feature: standalone local reverse-image search
+## 4. Standalone local reverse-image search
 
-This feature is intentionally **separate from the existing semantic search system**.
+This feature is intentionally **separate from the existing semantic search system**, but it remains a first-class screen inside the existing application shell and command center.
 
 ### User experience
 
-1. Open a dedicated Reverse Image Search screen.
-2. Build/rebuild a dedicated local visual fingerprint index for selected/all indexed images.
-3. Pick or share/drop a query image into the screen.
-4. Compute a query fingerprint locally.
-5. Search only the dedicated fingerprint index.
-6. Return exact/nearly identical and visually similar local images ranked by similarity.
-7. Show thumbnail, file name, path/URI, date, and similarity score.
+1. Open `LOCAL REVERSE IMAGE SEARCH` from the existing Intelligence Command Center.
+2. Add local images to the dedicated reverse-image corpus.
+3. Build/rebuild the dedicated fingerprint index.
+4. Pick a query image from the device.
+5. Compute its classical visual fingerprints locally.
+6. Search only the dedicated fingerprint index.
+7. Return ranked local matches with a transparent score breakdown.
 
-### Algorithm target
+### Classical algorithm stack
 
-Implement the digiKam-style Wavelets/Haar approach as documented by digiKam:
+The reverse-image engine is a deliberately non-neural computer-vision subsystem:
 
-- Each image receives a persistent visual fingerprint/signature.
-- The fingerprint is based on Haar wavelet processing derived from Jacobs, Finkelstein and Salesin, `Fast Multi-Resolution Image Querying` (SIGGRAPH 1995).
-- The classic method resizes to a fixed square representation, converts color channels, applies Haar wavelet decomposition, keeps the strongest coefficients and quantizes/signs them for efficient comparison.
-- digiKam stores the fingerprint separately from the main image database and uses it for similar-image, duplicate, and sketch searches.
-- Do not mix this fingerprint with MobileCLIP embeddings. They are independent engines.
+- **DigiKam-style Haar/Wavelet fingerprint**: 128x128, RGB->YIQ, separable 2-D Haar, 40 strongest signed coefficients per channel, stored Y/I/Q averages, `WeightBin`, and best/worst score normalization.
+- **pHash**: explicit low-frequency DCT perceptual hash.
+- **dHash**: luminance gradient/difference hash.
+- **Color fingerprint**: compact HSV distribution histogram.
+- **Shape/edge fingerprint**: spatial Sobel gradient magnitude/direction signature.
+- **AKAZE local features**: classical binary local descriptors, persisted for each corpus image when OpenCV is available.
+- **RANSAC geometric verification**: ratio-tested AKAZE matches are checked through homography/inlier geometry to reduce accidental local matches and improve crop/perspective robustness.
+
+OpenCV is used only for classical local-feature operations; no neural network inference is introduced by this subsystem. The current Maven artifact is `org.opencv:opencv:4.13.0` (Apache-2.0). Do not confuse this dependency with the existing TFLite/ML systems.
+
+### Search fusion policy
+
+- Haar remains the primary anchor because it has been directly validated by the user for exact/near visual matches.
+- pHash/dHash/color/edge provide independent global evidence.
+- AKAZE/RANSAC provides local structural evidence when available.
+- Current fusion is intentionally explicit and non-learned: Haar 55% + classical composite 45%.
+- These weights are provisional and must be adjusted only after measured benchmark results.
+- Never hide the component scores; the UI should expose enough telemetry to understand why a result ranked highly.
 
 ### Engineering constraints
 
-- Keep the reverse-image feature in its own package/service and its own Room table/DAO.
-- Do not replace the existing MobileCLIP system.
-- Do not make the main text-search code depend on this feature.
-- Keep the UI as a dedicated screen.
-- Index incrementally by image ID plus a source/version/configuration marker so the index can be rebuilt safely.
-- Treat the implementation as digiKam-inspired/compatible unless exact digiKam source behavior has been verified; never claim byte-for-byte compatibility without evidence.
-- Keep diagnostics for index build, invalid images, query failures, and result counts.
+- Keep the reverse-image feature in its own package/service and dedicated Room tables/DAOs.
+- Do not replace or modify the existing MobileCLIP search path in this phase.
+- Do not make main text search depend on reverse-image search.
+- Keep the UI inside the existing application shell but visually consistent with the Intelligence Command Center.
+- Index incrementally using item ID plus engine-version/configuration markers.
+- Keep diagnostics for index build, OpenCV/local-feature availability, invalid images, query failures, and result counts.
+- The fingerprint BLOB format is app-owned. Do not claim byte-for-byte compatibility with digiKam's `ImageHaarMatrix` without direct binary conformance testing.
 
-## 5. Planned evolution after the standalone Haar engine
+## 5. Future evolution of the classical subsystem
 
-- Add robust perceptual hashes as a second exact/fuzzy duplicate layer.
-- Improve local vector retrieval for MobileCLIP at large scale instead of scanning every embedding.
-- Add stronger on-device image encoders after the current baseline is validated.
-- Implement a production text encoder only after the model and retrieval contract are verified.
-- Optionally fuse independent signals only in a later ranking layer; the standalone reverse-image screen must remain understandable and independently testable.
+- Benchmark the current stack before changing weights.
+- Add more robust multi-region/local matching if screenshots or large crops still fail.
+- Add face/person search as a separate identity-evidence mode using the existing face subsystem; do not force Haar to solve identity recognition.
+- Consider additional classical descriptors only when a benchmark demonstrates a gap: e.g. multi-scale local regions, line/contour signatures, or stronger geometric verification.
+- Only after the classical baseline is measured should we revisit MobileCLIP or stronger neural encoders.
 
 ## 6. Verification policy
 
@@ -69,16 +83,21 @@ A feature is not considered complete merely because code compiles. For every vis
 - identical file/content
 - resized image
 - recompressed image
+- screenshot with UI/borders
 - mild crop
-- mild brightness/color change
+- larger crop
+- brightness/color change
+- burst/near-duplicate images
+- same object/scene from a different viewpoint
+- perspective change
 - unrelated image
-- several near-duplicate burst images
 
-Record the observed ranking/threshold behavior in the progress document.
+Record actual top-10 rankings and component scores in `PROJECT_PROGRESS.md` before claiming accuracy.
 
-## 7. Do not forget
+## 7. Persistent context rule
 
 - Read this file and `PROJECT_PROGRESS.md` before continuing work.
 - Update `PROJECT_PROGRESS.md` after meaningful implementation or verification.
-- Keep architectural decisions in this file.
+- Keep architectural decisions and constraints in this file.
 - Keep chronological implementation/testing facts in `PROJECT_PROGRESS.md`.
+- Never infer runtime quality from source existence or build success alone.
