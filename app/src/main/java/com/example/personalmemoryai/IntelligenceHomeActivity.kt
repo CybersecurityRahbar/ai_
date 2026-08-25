@@ -67,7 +67,7 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         })
 
         content.addView(title("SEARCH / EVIDENCE RETRIEVAL", cyan))
-        content.addView(action("LOCAL REVERSE IMAGE SEARCH", "DigiKam Haar • independent corpus • query-image retrieval • crop tolerant", cyan) {
+        content.addView(action("LOCAL REVERSE IMAGE SEARCH", "Haar • pHash • dHash • color • shape • AKAZE • RANSAC", cyan) {
             startActivity(Intent(this, ReverseImageSearchActivity::class.java))
         })
         content.addView(action("EVIDENCE SEARCH CONSOLE", "Image-to-image similarity • OCR • object retrieval • no Text Encoder dependency", cyan) { startActivity(Intent(this, EvidenceSearchActivity::class.java)) })
