@@ -10,23 +10,21 @@ import android.provider.OpenableColumns
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 
-/**
- * First-class local reverse-image search subsystem.
- *
- * The source URI is metadata only. A durable private copy is created for every corpus image,
- * so indexing/search/result rendering never depend on transient DocumentsProvider permissions.
- */
+/** First-class local reverse-image search subsystem. */
 class ReverseImageSearchService(context: Context) : AutoCloseable {
     companion object {
         private const val HAAR_WEIGHT = 0.55f
         private const val CLASSICAL_WEIGHT = 0.45f
-        private const val LOCAL_SHORTLIST_MIN = 48
-        private const val LOCAL_SHORTLIST_MAX = 192
+        private const val GLOBAL_SHORTLIST_MIN = 32
+        private const val GLOBAL_SHORTLIST_MAX = 64
+        private const val SIFT_RERANK_LIMIT = 16
     }
 
     private val appContext = context.applicationContext
@@ -52,6 +50,15 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         val localFeatureIndexed: Int
     )
 
+    data class SearchProgress(
+        val stage: String,
+        val processed: Int,
+        val total: Int,
+        val shortlist: Int = 0,
+        val localVerified: Int = 0,
+        val siftVerified: Int = 0
+    )
+
     data class Result(
         val item: ReverseImageItemEntity,
         val similarity: Float,
@@ -68,11 +75,16 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
 
     private data class Candidate(
         val item: ReverseImageItemEntity,
-        val haar: HaarFingerprintEngine.Fingerprint,
-        val classical: ClassicalVisualFingerprintEntity?,
         val haarScore: HaarFingerprintEngine.Score,
-        val globalClassicalScore: ClassicalVisualFingerprintEngine.Score?,
-        val preliminarySimilarity: Float
+        val classical: ClassicalVisualFingerprintEntity?,
+        val preliminarySimilarity: Float,
+        val bestClassicalQueryIndex: Int
+    )
+
+    private data class RankedCandidate(
+        val candidate: Candidate,
+        val similarity: Float,
+        val classical: ClassicalVisualFingerprintEngine.Score?
     )
 
     suspend fun itemCount(): Long = withContext(Dispatchers.IO) { itemDao.count() }
@@ -82,6 +94,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
     suspend fun addImages(uris: List<Uri>): Int = withContext(Dispatchers.IO) {
         var added = 0
         for (uri in uris.distinct()) {
+            coroutineContext.ensureActive()
             if (itemDao.findByUri(uri.toString()) != null) continue
             val localFile = copyToPrivateLibrary(uri)
                 ?: throw IllegalStateException("تعذر حفظ الصورة محليًا: $uri")
@@ -131,6 +144,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         var localFeatureIndexed = 0
 
         for ((index, originalItem) in items.withIndex()) {
+            coroutineContext.ensureActive()
             try {
                 val item = withContext(Dispatchers.IO) { ensurePrivateCopy(originalItem) }
                 val oldHaar = withContext(Dispatchers.IO) { fingerprintDao.getForItem(item.id) }
@@ -138,7 +152,6 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 val unchanged = !rebuild &&
                     oldHaar?.engineVersion == HaarFingerprintEngine.ENGINE_VERSION &&
                     oldClassical?.engineVersion == ClassicalVisualFingerprintEngine.ENGINE_VERSION
-
                 if (unchanged) {
                     skipped++
                 } else {
@@ -185,19 +198,11 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                     }
                 }
             } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
                 failed++
                 run.failure("ITEM_${originalItem.id}", t)
             } finally {
-                onProgress(
-                    IndexProgress(
-                        processed = index + 1,
-                        total = items.size,
-                        indexed = indexed,
-                        skipped = skipped,
-                        failed = failed,
-                        localFeatureIndexed = localFeatureIndexed
-                    )
-                )
+                onProgress(IndexProgress(index + 1, items.size, indexed, skipped, failed, localFeatureIndexed))
             }
         }
 
@@ -217,7 +222,8 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
     suspend fun search(
         queryUri: Uri,
         limit: Int = 50,
-        minimumSimilarity: Float = 0.35f
+        minimumSimilarity: Float = 0.35f,
+        onProgress: (SearchProgress) -> Unit = {}
     ): List<Result> = withContext(Dispatchers.Default) {
         val run = diagnostics.begin(
             "REVERSE_IMAGE_SEARCH",
@@ -226,13 +232,18 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 "minimum" to minimumSimilarity.toString(),
                 "haar" to HaarFingerprintEngine.ENGINE_VERSION,
                 "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION,
-                "strategy" to "global-shortlist-akaze-sift-ransac-rerank"
+                "strategy" to "global-shortlist-64-akaze-ransac-sift-16"
             )
         )
         val queryBitmap = resolver.openInputStream(queryUri).use { input ->
-            requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة صورة البحث العكسي: $queryUri" }
+            requireNotNull(BitmapFactory.decodeStream(input)) {
+                "تعذر قراءة صورة البحث العكسي: $queryUri"
+            }
         }
         try {
+            coroutineContext.ensureActive()
+            onProgress(SearchProgress("تحضير صورة البحث", 0, 1))
+
             val haarQueries = buildHaarQueryVariants(queryBitmap)
             val classicalQueries = buildClassicalQueryVariants(queryBitmap)
             val fingerprints = withContext(Dispatchers.IO) { fingerprintDao.getAll() }
@@ -243,18 +254,21 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                     .associateBy { it.itemId }
             }
             if (fingerprints.isEmpty()) {
-                throw IllegalStateException("لا توجد بصمات في فهرس البحث العكسي. أضف الصور ثم ابنِ الفهرس.")
+                throw IllegalStateException("لا توجد بصمات في الفهرس. أضف الصور ثم ابنِ الفهرس.")
             }
             val items = withContext(Dispatchers.IO) {
                 itemDao.getByIds(fingerprints.map { it.itemId }.distinct()).associateBy { it.id }
             }
 
-            // Stage 1: cheap high-recall global retrieval over the entire corpus.
+            // Stage 1: global retrieval over the entire corpus. No local OpenCV here.
             val candidates = ArrayList<Candidate>(fingerprints.size)
-            for (fp in fingerprints) {
+            onProgress(SearchProgress("البحث العالمي", 0, fingerprints.size))
+            for ((processed, fp) in fingerprints.withIndex()) {
+                coroutineContext.ensureActive()
                 if (fp.engineVersion != HaarFingerprintEngine.ENGINE_VERSION) continue
                 val item = items[fp.itemId] ?: continue
                 val targetHaar = HaarFingerprintEngine.Fingerprint(fp.width, fp.height, fp.channels, fp.signature)
+
                 var bestHaar = HaarFingerprintEngine.Score(0f, 0)
                 for (query in haarQueries) {
                     val score = haarEngine.compare(query, targetHaar)
@@ -262,103 +276,178 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 }
 
                 val classicalEntity = classicalFingerprints[fp.itemId]
-                val globalScore = classicalEntity?.let { entity ->
-                    classicalEngine.compareBest(classicalQueries, entity.toFingerprint(), runLocal = false)
+                var bestGlobalClassical: ClassicalVisualFingerprintEngine.Score? = null
+                var bestQueryIndex = 0
+                if (classicalEntity != null) {
+                    val targetClassical = classicalEntity.toFingerprint()
+                    for (index in classicalQueries.indices) {
+                        coroutineContext.ensureActive()
+                        val score = classicalEngine.compare(
+                            classicalQueries[index], targetClassical, runLocal = false
+                        )
+                        if (bestGlobalClassical == null || score.similarity > bestGlobalClassical!!.similarity) {
+                            bestGlobalClassical = score
+                            bestQueryIndex = index
+                        }
+                    }
                 }
-                val preliminary = if (globalScore != null) {
-                    (bestHaar.similarity * HAAR_WEIGHT + globalScore.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
+
+                val preliminary = if (bestGlobalClassical != null) {
+                    (bestHaar.similarity * HAAR_WEIGHT +
+                        bestGlobalClassical.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
                 } else {
                     bestHaar.similarity
                 }
-                candidates += Candidate(item, targetHaar, classicalEntity, bestHaar, globalScore, preliminary)
+                candidates += Candidate(
+                    item = item,
+                    haarScore = bestHaar,
+                    classical = classicalEntity,
+                    preliminarySimilarity = preliminary,
+                    bestClassicalQueryIndex = bestQueryIndex
+                )
+
+                if ((processed + 1) % 16 == 0 || processed + 1 == fingerprints.size) {
+                    onProgress(SearchProgress("البحث العالمي", processed + 1, fingerprints.size))
+                }
             }
 
+            // Keep the expensive stages small enough for an Android device.
             val shortlistSize = maxOf(
-                LOCAL_SHORTLIST_MIN,
-                minOf(LOCAL_SHORTLIST_MAX, maxOf(limit * 4, limit + 32))
+                GLOBAL_SHORTLIST_MIN,
+                minOf(GLOBAL_SHORTLIST_MAX, maxOf(limit + 14, 48))
             )
             val shortlist = candidates
-                .sortedWith(compareByDescending<Candidate> { it.preliminarySimilarity }
-                    .thenByDescending { it.haarScore.matchedCoefficients })
+                .sortedWith(
+                    compareByDescending<Candidate> { it.preliminarySimilarity }
+                        .thenByDescending { it.haarScore.matchedCoefficients }
+                )
                 .take(shortlistSize)
 
-            // Stage 2: expensive local geometric verification only on the shortlist.
-            val rankedCandidates = ArrayList<Pair<Candidate, Pair<Float, ClassicalVisualFingerprintEngine.Score?>>>(shortlist.size)
+            // Stage 2: one AKAZE/RANSAC verification per candidate, using only its best global query variant.
+            val reranked = ArrayList<RankedCandidate>(shortlist.size)
+            var localVerified = 0
+            onProgress(SearchProgress("التحقق الهندسي AKAZE/RANSAC", 0, shortlist.size, shortlist.size))
+            for ((index, candidate) in shortlist.withIndex()) {
+                coroutineContext.ensureActive()
+                val finalClassical = candidate.classical?.let { entity ->
+                    classicalEngine.compare(
+                        classicalQueries[candidate.bestClassicalQueryIndex],
+                        entity.toFingerprint(),
+                        runLocal = true
+                    )
+                }
+                if (finalClassical?.ransacInliers ?: 0 >= 4) localVerified++
+                val finalSimilarity = if (finalClassical != null) {
+                    (candidate.haarScore.similarity * HAAR_WEIGHT +
+                        finalClassical.similarity * CLASSICAL_WEIGHT).coerceIn(0f, 1f)
+                } else {
+                    candidate.haarScore.similarity
+                }
+                if (finalSimilarity >= minimumSimilarity) {
+                    reranked += RankedCandidate(candidate, finalSimilarity, finalClassical)
+                }
+                onProgress(
+                    SearchProgress(
+                        "التحقق الهندسي AKAZE/RANSAC",
+                        index + 1,
+                        shortlist.size,
+                        shortlist.size,
+                        localVerified
+                    )
+                )
+            }
+
+            reranked.sortWith(
+                compareByDescending<RankedCandidate> { it.similarity }
+                    .thenByDescending { it.candidate.haarScore.matchedCoefficients }
+                    .thenByDescending { it.classical?.ransacInliers ?: 0 }
+                    .thenByDescending { it.classical?.localMatches ?: 0 }
+            )
+
+            // Stage 3: SIFT only for the top 16 after AKAZE has already reduced the set.
+            val siftPool = reranked.take(minOf(SIFT_RERANK_LIMIT, reranked.size))
             var siftVerified = 0
             var siftStrong = 0
-            for (candidate in shortlist) {
-                val finalClassical = candidate.classical?.let { entity ->
-                    classicalEngine.compareBest(classicalQueries, entity.toFingerprint(), runLocal = true)
-                }
+            onProgress(SearchProgress("التحقق الإضافي SIFT/RANSAC", 0, siftPool.size, shortlist.size, localVerified, 0))
 
-                val targetBitmap = candidate.item.filePath?.let { path -> BitmapFactory.decodeFile(path) }
-                val siftScore = if (targetBitmap != null) {
+            for ((index, ranked) in siftPool.withIndex()) {
+                coroutineContext.ensureActive()
+                val targetPath = ranked.candidate.item.filePath
+                val targetBitmap = targetPath?.let { BitmapFactory.decodeFile(it) }
+                if (targetBitmap != null) {
                     try {
                         val result = siftVerifier.compare(queryBitmap, targetBitmap)
                         siftVerified++
-                        if (result.inliers >= 4) siftStrong++
-                        result
+                        if (result.inliers >= 4) {
+                            siftStrong++
+                            ranked.classical?.let { base ->
+                                val improvedLocal = maxOf(base.localSimilarity, result.similarity)
+                                val improvedClassical = base.copy(
+                                    similarity = maxOf(
+                                        base.similarity,
+                                        (base.similarity * 0.75f + improvedLocal * 0.25f).coerceIn(0f, 1f)
+                                    ),
+                                    localSimilarity = improvedLocal,
+                                    localMatches = maxOf(base.localMatches, result.goodMatches),
+                                    ransacInliers = maxOf(base.ransacInliers, result.inliers)
+                                )
+                                val improvedOverall = (
+                                    ranked.candidate.haarScore.similarity * HAAR_WEIGHT +
+                                        improvedClassical.similarity * CLASSICAL_WEIGHT
+                                    ).coerceIn(0f, 1f)
+                                val replacement = RankedCandidate(
+                                    ranked.candidate,
+                                    maxOf(ranked.similarity, improvedOverall),
+                                    improvedClassical
+                                )
+                                for (r in reranked.indices) {
+                                    if (reranked[r].candidate.item.id == ranked.candidate.item.id) {
+                                        reranked[r] = replacement
+                                        break
+                                    }
+                                }
+                            }
+                        }
                     } finally {
                         targetBitmap.recycle()
                     }
-                } else null
-
-                val enhancedClassical = finalClassical?.let { base ->
-                    val globalOnly = (base.phashSimilarity * 0.30f +
-                        base.dhashSimilarity * 0.20f +
-                        base.colorSimilarity * 0.25f +
-                        base.edgeSimilarity * 0.25f).coerceIn(0f, 1f)
-                    val bestLocal = maxOf(base.localSimilarity, siftScore?.similarity ?: 0f)
-                    val enhancedSimilarity = if ((siftScore?.inliers ?: 0) >= 4) {
-                        (globalOnly * 0.75f + bestLocal * 0.25f).coerceIn(0f, 1f)
-                    } else {
-                        base.similarity
-                    }
-                    ClassicalVisualFingerprintEngine.Score(
-                        similarity = maxOf(base.similarity, enhancedSimilarity),
-                        phashSimilarity = base.phashSimilarity,
-                        dhashSimilarity = base.dhashSimilarity,
-                        colorSimilarity = base.colorSimilarity,
-                        edgeSimilarity = base.edgeSimilarity,
-                        localSimilarity = bestLocal,
-                        localMatches = maxOf(base.localMatches, siftScore?.goodMatches ?: 0),
-                        ransacInliers = maxOf(base.ransacInliers, siftScore?.inliers ?: 0)
+                }
+                onProgress(
+                    SearchProgress(
+                        "التحقق الإضافي SIFT/RANSAC",
+                        index + 1,
+                        siftPool.size,
+                        shortlist.size,
+                        localVerified,
+                        siftVerified
                     )
-                }
-
-                val finalSimilarity = if (enhancedClassical != null) {
-                    (candidate.haarScore.similarity * HAAR_WEIGHT + enhancedClassical.similarity * CLASSICAL_WEIGHT)
-                        .coerceIn(0f, 1f)
-                } else candidate.haarScore.similarity
-
-                if (finalSimilarity >= minimumSimilarity) {
-                    rankedCandidates += candidate to Pair(finalSimilarity, enhancedClassical)
-                }
+                )
             }
 
-            rankedCandidates.sortWith(
-                compareByDescending<Pair<Candidate, Pair<Float, ClassicalVisualFingerprintEngine.Score?>>> { it.second.first }
-                    .thenByDescending { it.first.haarScore.matchedCoefficients }
-                    .thenByDescending { it.second.second?.ransacInliers ?: 0 }
-                    .thenByDescending { it.second.second?.localMatches ?: 0 }
+            reranked.sortWith(
+                compareByDescending<RankedCandidate> { it.similarity }
+                    .thenByDescending { it.candidate.haarScore.matchedCoefficients }
+                    .thenByDescending { it.classical?.ransacInliers ?: 0 }
+                    .thenByDescending { it.classical?.localMatches ?: 0 }
             )
 
-            val ranked = ArrayList<Result>(minOf(limit, rankedCandidates.size))
-            for ((candidate, pair) in rankedCandidates.take(limit)) {
-                val durableItem = withContext(Dispatchers.IO) { ensurePrivateCopy(candidate.item) }
-                val finalClassical = pair.second
+            val ranked = ArrayList<Result>(minOf(limit, reranked.size))
+            for (entry in reranked.take(limit)) {
+                coroutineContext.ensureActive()
+                val durableItem = withContext(Dispatchers.IO) { ensurePrivateCopy(entry.candidate.item) }
+                val c = entry.classical
                 ranked += Result(
                     item = durableItem,
-                    similarity = pair.first,
-                    percent = (pair.first * 100f).toInt().coerceIn(0, 100),
-                    matchedCoefficients = candidate.haarScore.matchedCoefficients,
-                    phashPercent = ((finalClassical?.phashSimilarity ?: 0f) * 100f).toInt(),
-                    dhashPercent = ((finalClassical?.dhashSimilarity ?: 0f) * 100f).toInt(),
-                    colorPercent = ((finalClassical?.colorSimilarity ?: 0f) * 100f).toInt(),
-                    edgePercent = ((finalClassical?.edgeSimilarity ?: 0f) * 100f).toInt(),
-                    localPercent = ((finalClassical?.localSimilarity ?: 0f) * 100f).toInt(),
-                    localMatches = finalClassical?.localMatches ?: 0,
-                    ransacInliers = finalClassical?.ransacInliers ?: 0
+                    similarity = entry.similarity,
+                    percent = (entry.similarity * 100f).toInt().coerceIn(0, 100),
+                    matchedCoefficients = entry.candidate.haarScore.matchedCoefficients,
+                    phashPercent = ((c?.phashSimilarity ?: 0f) * 100f).toInt(),
+                    dhashPercent = ((c?.dhashSimilarity ?: 0f) * 100f).toInt(),
+                    colorPercent = ((c?.colorSimilarity ?: 0f) * 100f).toInt(),
+                    edgePercent = ((c?.edgeSimilarity ?: 0f) * 100f).toInt(),
+                    localPercent = ((c?.localSimilarity ?: 0f) * 100f).toInt(),
+                    localMatches = c?.localMatches ?: 0,
+                    ransacInliers = c?.ransacInliers ?: 0
                 )
             }
 
@@ -369,11 +458,10 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                     "candidates" to candidates.size.toString(),
                     "shortlist" to shortlist.size.toString(),
                     "results" to ranked.size.toString(),
-                    "localVerified" to shortlist.count { it.classical?.localKeypoints != null && it.classical.localDescriptors != null }.toString(),
+                    "localVerified" to localVerified.toString(),
                     "siftVerified" to siftVerified.toString(),
                     "siftStrong" to siftStrong.toString(),
-                    "signals" to "haar,phash,dhash,color,edge,akaze-mutual,sift,ransac",
-                    "localVariants" to classicalQueries.size.toString()
+                    "signals" to "haar,phash,dhash,hsv256,shape,akaze-mutual,sift,ransac"
                 )
             )
             ranked
@@ -382,48 +470,30 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         }
     }
 
-    /** Haar uses the original plus centered crops and rotations for higher global recall. */
     private fun buildHaarQueryVariants(bitmap: Bitmap): List<HaarFingerprintEngine.Fingerprint> {
         val result = ArrayList<HaarFingerprintEngine.Fingerprint>(7)
         result += haarEngine.fingerprint(bitmap)
         for (degrees in intArrayOf(90, 180, 270)) {
             val rotated = rotate(bitmap, degrees)
-            try {
-                result += haarEngine.fingerprint(rotated)
-            } finally {
-                rotated.recycle()
-            }
+            try { result += haarEngine.fingerprint(rotated) } finally { rotated.recycle() }
         }
         for (fraction in floatArrayOf(0.92f, 0.82f, 0.72f)) {
             val crop = haarEngine.cropCentered(bitmap, fraction)
-            try {
-                result += haarEngine.fingerprint(crop)
-            } finally {
-                crop.recycle()
-            }
+            try { result += haarEngine.fingerprint(crop) } finally { crop.recycle() }
         }
         return result
     }
 
-    /** Classical global fingerprints reuse the same crop/rotation query strategy, without local matching. */
     private fun buildClassicalQueryVariants(bitmap: Bitmap): List<ClassicalVisualFingerprintEngine.Fingerprint> {
         val result = ArrayList<ClassicalVisualFingerprintEngine.Fingerprint>(7)
         result += classicalEngine.fingerprint(bitmap)
         for (degrees in intArrayOf(90, 180, 270)) {
             val rotated = rotate(bitmap, degrees)
-            try {
-                result += classicalEngine.fingerprint(rotated)
-            } finally {
-                rotated.recycle()
-            }
+            try { result += classicalEngine.fingerprint(rotated) } finally { rotated.recycle() }
         }
         for (fraction in floatArrayOf(0.92f, 0.82f, 0.72f)) {
             val crop = haarEngine.cropCentered(bitmap, fraction)
-            try {
-                result += classicalEngine.fingerprint(crop)
-            } finally {
-                crop.recycle()
-            }
+            try { result += classicalEngine.fingerprint(crop) } finally { crop.recycle() }
         }
         return result
     }
@@ -449,55 +519,33 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
     private suspend fun ensurePrivateCopy(item: ReverseImageItemEntity): ReverseImageItemEntity {
         val existing = item.filePath?.let(::File)
         if (existing?.isFile == true && existing.length() > 0L) return item
-
-        val source = Uri.parse(item.uri)
-        val copied = copyToPrivateLibrary(source)
+        val copied = copyToPrivateLibrary(Uri.parse(item.uri))
             ?: throw IllegalStateException("تعذر استعادة النسخة المحلية: ${item.displayName}")
         val updated = item.copy(filePath = copied.absolutePath, fileSize = copied.length())
         itemDao.upsert(updated)
         return updated
     }
 
-    private fun copyToPrivateLibrary(source: Uri): File? {
-        return try {
-            val safeName = displayName(source)
-                .replace(Regex("[^A-Za-z0-9._-]"), "_")
-                .take(100)
-                .ifBlank { "image" }
-            val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
-            resolver.openInputStream(source)?.use { input ->
-                FileOutputStream(target).use { output ->
-                    input.copyTo(output, 1024 * 1024)
-                }
-            } ?: return null
-            if (target.length() <= 0L) {
-                target.delete()
-                null
-            } else target
-        } catch (_: Throwable) {
-            null
-        }
-    }
+    private fun copyToPrivateLibrary(source: Uri): File? = try {
+        val safeName = displayName(source)
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .take(100)
+            .ifBlank { "image" }
+        val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
+        resolver.openInputStream(source)?.use { input ->
+            FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) }
+        } ?: return null
+        if (target.length() <= 0L) { target.delete(); null } else target
+    } catch (_: Throwable) { null }
 
     private fun displayName(uri: Uri): String = resolver.query(
-        uri,
-        arrayOf(OpenableColumns.DISPLAY_NAME),
-        null,
-        null,
-        null
-    )?.use {
-        if (it.moveToFirst()) it.getString(0) else null
-    } ?: uri.lastPathSegment ?: "image"
+        uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+    )?.use { if (it.moveToFirst()) it.getString(0) else null }
+        ?: uri.lastPathSegment ?: "image"
 
     private fun fileSize(uri: Uri): Long = resolver.query(
-        uri,
-        arrayOf(OpenableColumns.SIZE),
-        null,
-        null,
-        null
-    )?.use {
-        if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else 0L
-    } ?: 0L
+        uri, arrayOf(OpenableColumns.SIZE), null, null, null
+    )?.use { if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else 0L } ?: 0L
 
     override fun close() = Unit
 }
