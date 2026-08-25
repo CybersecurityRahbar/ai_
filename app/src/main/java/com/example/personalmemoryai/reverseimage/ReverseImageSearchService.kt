@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.example.personalmemoryai.database.AppDatabase
@@ -35,6 +36,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
     private val classicalDao = database.classicalVisualFingerprintDao()
     private val haarEngine = HaarFingerprintEngine()
     private val classicalEngine = ClassicalVisualFingerprintEngine()
+    private val siftVerifier = SiftLocalVerifier()
     private val diagnostics = DiagnosticsManager.get(appContext)
     private val resolver: ContentResolver = appContext.contentResolver
 
@@ -224,7 +226,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 "minimum" to minimumSimilarity.toString(),
                 "haar" to HaarFingerprintEngine.ENGINE_VERSION,
                 "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION,
-                "strategy" to "global-shortlist-local-rerank"
+                "strategy" to "global-shortlist-akaze-sift-ransac-rerank"
             )
         )
         val queryBitmap = resolver.openInputStream(queryUri).use { input ->
@@ -282,18 +284,55 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
 
             // Stage 2: expensive local geometric verification only on the shortlist.
             val rankedCandidates = ArrayList<Pair<Candidate, Pair<Float, ClassicalVisualFingerprintEngine.Score?>>>(shortlist.size)
+            var siftVerified = 0
+            var siftStrong = 0
             for (candidate in shortlist) {
                 val finalClassical = candidate.classical?.let { entity ->
-                    // IMPORTANT: local verification now evaluates all query variants.
-                    // This lets a crop/screenshot variant win instead of forcing the full query.
                     classicalEngine.compareBest(classicalQueries, entity.toFingerprint(), runLocal = true)
                 }
-                val finalSimilarity = if (finalClassical != null) {
-                    (candidate.haarScore.similarity * HAAR_WEIGHT + finalClassical.similarity * CLASSICAL_WEIGHT)
+
+                val targetBitmap = candidate.item.filePath?.let { path -> BitmapFactory.decodeFile(path) }
+                val siftScore = if (targetBitmap != null) {
+                    try {
+                        val result = siftVerifier.compare(queryBitmap, targetBitmap)
+                        siftVerified++
+                        if (result.inliers >= 4) siftStrong++
+                        result
+                    } finally {
+                        targetBitmap.recycle()
+                    }
+                } else null
+
+                val enhancedClassical = finalClassical?.let { base ->
+                    val globalOnly = (base.phashSimilarity * 0.30f +
+                        base.dhashSimilarity * 0.20f +
+                        base.colorSimilarity * 0.25f +
+                        base.edgeSimilarity * 0.25f).coerceIn(0f, 1f)
+                    val bestLocal = maxOf(base.localSimilarity, siftScore?.similarity ?: 0f)
+                    val enhancedSimilarity = if ((siftScore?.inliers ?: 0) >= 4) {
+                        (globalOnly * 0.75f + bestLocal * 0.25f).coerceIn(0f, 1f)
+                    } else {
+                        base.similarity
+                    }
+                    ClassicalVisualFingerprintEngine.Score(
+                        similarity = maxOf(base.similarity, enhancedSimilarity),
+                        phashSimilarity = base.phashSimilarity,
+                        dhashSimilarity = base.dhashSimilarity,
+                        colorSimilarity = base.colorSimilarity,
+                        edgeSimilarity = base.edgeSimilarity,
+                        localSimilarity = bestLocal,
+                        localMatches = maxOf(base.localMatches, siftScore?.goodMatches ?: 0),
+                        ransacInliers = maxOf(base.ransacInliers, siftScore?.inliers ?: 0)
+                    )
+                }
+
+                val finalSimilarity = if (enhancedClassical != null) {
+                    (candidate.haarScore.similarity * HAAR_WEIGHT + enhancedClassical.similarity * CLASSICAL_WEIGHT)
                         .coerceIn(0f, 1f)
                 } else candidate.haarScore.similarity
+
                 if (finalSimilarity >= minimumSimilarity) {
-                    rankedCandidates += candidate to Pair(finalSimilarity, finalClassical)
+                    rankedCandidates += candidate to Pair(finalSimilarity, enhancedClassical)
                 }
             }
 
@@ -331,7 +370,9 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                     "shortlist" to shortlist.size.toString(),
                     "results" to ranked.size.toString(),
                     "localVerified" to shortlist.count { it.classical?.localKeypoints != null && it.classical.localDescriptors != null }.toString(),
-                    "signals" to "haar,phash,dhash,color,edge,akaze-mutual,ransac",
+                    "siftVerified" to siftVerified.toString(),
+                    "siftStrong" to siftStrong.toString(),
+                    "signals" to "haar,phash,dhash,color,edge,akaze-mutual,sift,ransac",
                     "localVariants" to classicalQueries.size.toString()
                 )
             )
@@ -341,10 +382,18 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         }
     }
 
-    /** Haar uses the original plus center crops for moderate crop/screenshot robustness. */
+    /** Haar uses the original plus centered crops and rotations for higher global recall. */
     private fun buildHaarQueryVariants(bitmap: Bitmap): List<HaarFingerprintEngine.Fingerprint> {
-        val result = ArrayList<HaarFingerprintEngine.Fingerprint>(4)
+        val result = ArrayList<HaarFingerprintEngine.Fingerprint>(7)
         result += haarEngine.fingerprint(bitmap)
+        for (degrees in intArrayOf(90, 180, 270)) {
+            val rotated = rotate(bitmap, degrees)
+            try {
+                result += haarEngine.fingerprint(rotated)
+            } finally {
+                rotated.recycle()
+            }
+        }
         for (fraction in floatArrayOf(0.92f, 0.82f, 0.72f)) {
             val crop = haarEngine.cropCentered(bitmap, fraction)
             try {
@@ -356,10 +405,18 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         return result
     }
 
-    /** Classical global fingerprints reuse the same multi-region query strategy, without local matching. */
+    /** Classical global fingerprints reuse the same crop/rotation query strategy, without local matching. */
     private fun buildClassicalQueryVariants(bitmap: Bitmap): List<ClassicalVisualFingerprintEngine.Fingerprint> {
-        val result = ArrayList<ClassicalVisualFingerprintEngine.Fingerprint>(4)
+        val result = ArrayList<ClassicalVisualFingerprintEngine.Fingerprint>(7)
         result += classicalEngine.fingerprint(bitmap)
+        for (degrees in intArrayOf(90, 180, 270)) {
+            val rotated = rotate(bitmap, degrees)
+            try {
+                result += classicalEngine.fingerprint(rotated)
+            } finally {
+                rotated.recycle()
+            }
+        }
         for (fraction in floatArrayOf(0.92f, 0.82f, 0.72f)) {
             val crop = haarEngine.cropCentered(bitmap, fraction)
             try {
@@ -369,6 +426,11 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
             }
         }
         return result
+    }
+
+    private fun rotate(bitmap: Bitmap, degrees: Int): Bitmap {
+        val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
 
     private fun ClassicalVisualFingerprintEntity.toFingerprint(): ClassicalVisualFingerprintEngine.Fingerprint =
