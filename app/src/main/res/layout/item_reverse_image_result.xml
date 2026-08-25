@@ -2,8 +2,11 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:layout_margin="4dp"
     android:orientation="vertical"
-    android:padding="8dp">
+    android:padding="7dp"
+    android:background="@drawable/panel_intelligence"
+    android:elevation="2dp">
 
     <ImageView
         android:id="@+id/resultImage"
@@ -16,26 +19,27 @@
         android:id="@+id/fileNameText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:textColor="@android:color/white"
-        android:textStyle="bold" />
+        android:layout_marginTop="6dp"
+        android:textColor="#E5F4FA"
+        android:textStyle="bold"
+        android:textSize="11sp" />
 
     <TextView
         android:id="@+id/scoreText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
-        android:textColor="@android:color/holo_green_light" />
+        android:layout_marginTop="3dp"
+        android:textColor="#7DFF19"
+        android:textStyle="bold"
+        android:textSize="10sp" />
 
     <TextView
         android:id="@+id/pathText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
+        android:layout_marginTop="3dp"
         android:maxLines="2"
         android:ellipsize="middle"
-        android:textColor="@android:color/white"
-        android:alpha="0.65"
-        android:textSize="11sp" />
-
+        android:textColor="#71A0B8"
+        android:textSize="9sp" />
 </LinearLayout>
