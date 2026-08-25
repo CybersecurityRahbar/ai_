@@ -24,6 +24,7 @@ import com.example.personalmemoryai.ui.InvestigationActivity
 import com.example.personalmemoryai.ui.ObjectIntelligenceActivity
 import com.example.personalmemoryai.ui.OcrEvidenceActivity
 import com.example.personalmemoryai.ui.PeopleIntelligenceActivity
+import com.example.personalmemoryai.ui.ReverseImageSearchActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -66,6 +67,9 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         })
 
         content.addView(title("SEARCH / EVIDENCE RETRIEVAL", cyan))
+        content.addView(action("LOCAL REVERSE IMAGE SEARCH", "DigiKam Haar • independent corpus • query-image retrieval • crop tolerant", cyan) {
+            startActivity(Intent(this, ReverseImageSearchActivity::class.java))
+        })
         content.addView(action("EVIDENCE SEARCH CONSOLE", "Image-to-image similarity • OCR • object retrieval • no Text Encoder dependency", cyan) { startActivity(Intent(this, EvidenceSearchActivity::class.java)) })
         content.addView(action("COMPOSITE INVESTIGATION", "Face • body • pose • appearance • scene • visual • OCR • objects", violet) { startActivity(Intent(this, InvestigationActivity::class.java)) })
         content.addView(action("EVIDENCE RELATIONSHIPS", "Subject graph • shared images • linked subjects • object evidence", green) {
