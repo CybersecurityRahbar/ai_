@@ -1,13 +1,11 @@
 package com.example.personalmemoryai.reverseimage
 
 import android.graphics.Bitmap
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.sin
-import kotlin.math.sqrt
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.sqrt
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.calib3d.Calib3d
@@ -17,30 +15,18 @@ import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfKeyPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
-import org.opencv.core.Size
 import org.opencv.features2d.AKAZE
 import org.opencv.features2d.BFMatcher
 import org.opencv.imgproc.Imgproc
 
-/**
- * Classical, non-neural visual fingerprint stack for the standalone reverse-image engine.
- *
- * Layers:
- * - pHash + dHash for perceptual/near-duplicate evidence.
- * - HSV histogram for color distribution.
- * - Sobel edge-direction/density signature for shape/structure.
- * - AKAZE local descriptors + ratio test + RANSAC homography for crop/perspective/overlay robustness.
- *
- * This engine never calls MobileCLIP or any neural network.
- */
+/** Classical, non-neural visual fingerprint stack for local reverse-image search. */
 class ClassicalVisualFingerprintEngine {
-
     companion object {
-        const val ENGINE_VERSION = "CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V1"
+        const val ENGINE_VERSION = "CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V2"
         private const val HASH_SIZE = 32
         private const val PHASH_LOW = 8
         private const val COLOR_BINS = 48
-        private const val EDGE_BINS = 32
+        private const val EDGE_BINS = 128
         private const val MAX_KEYPOINTS = 300
         private const val RATIO_TEST = 0.78f
         private const val RANSAC_REPROJECTION = 5.0
@@ -75,6 +61,7 @@ class ClassicalVisualFingerprintEngine {
     )
 
     fun fingerprint(bitmap: Bitmap): Fingerprint {
+        require(!bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0)
         val gray = Bitmap.createScaledBitmap(bitmap, HASH_SIZE, HASH_SIZE, true)
         return try {
             val pixels = IntArray(HASH_SIZE * HASH_SIZE)
@@ -86,16 +73,12 @@ class ClassicalVisualFingerprintEngine {
                 val b = (pixels[index] and 0xFF).toDouble()
                 luminance[index] = 0.299 * r + 0.587 * g + 0.114 * b
             }
-            val phash = perceptualHash(luminance)
-            val dhash = differenceHash(luminance)
-            val color = colorHistogram(bitmap)
-            val edges = edgeHistogram(luminance)
             val local = extractLocalFeatures(bitmap)
             Fingerprint(
-                phash = phash,
-                dhash = dhash,
-                colorHistogram = color,
-                edgeHistogram = edges,
+                phash = perceptualHash(luminance),
+                dhash = differenceHash(luminance),
+                colorHistogram = colorHistogram(bitmap),
+                edgeHistogram = edgeHistogram(luminance),
                 keypoints = local?.let(::serializeKeypoints),
                 descriptors = local?.descriptors?.let(::serializeMatBytes),
                 descriptorRows = local?.descriptors?.rows() ?: 0,
@@ -116,57 +99,41 @@ class ClassicalVisualFingerprintEngine {
         var local = 0f
         var localMatches = 0
         var ransacInliers = 0
-        if (query.keypoints != null && query.descriptors != null && target.keypoints != null && target.descriptors != null && target.descriptorRows > 0) {
+        if (query.keypoints != null && query.descriptors != null &&
+            target.keypoints != null && target.descriptors != null &&
+            query.descriptorRows > 0 && target.descriptorRows > 0) {
             val localResult = localMatch(query, target)
             local = localResult.first
             localMatches = localResult.second
             ransacInliers = localResult.third
         }
 
-        // Evidence weights intentionally favor structural fingerprints and verified local geometry.
-        val localWeight = if (query.keypoints != null && target.keypoints != null) 0.25f else 0f
-        val remaining = 1f - localWeight
-        val global = (
-            phash * 0.25f +
-                dhash * 0.15f +
-                color * 0.35f +
-                edge * 0.25f
-            )
-        val similarity = if (localWeight > 0f) {
-            global * remaining + local * localWeight
-        } else {
-            global
-        }
-        return Score(similarity.coerceIn(0f, 1f), phash, dhash, color, edge, local, localMatches, ransacInliers)
+        val global = phash * 0.25f + dhash * 0.15f + color * 0.35f + edge * 0.25f
+        val localWeight = if (localMatches > 0 || ransacInliers > 0) 0.25f else 0f
+        val similarity = (global * (1f - localWeight) + local * localWeight).coerceIn(0f, 1f)
+        return Score(similarity, phash, dhash, color, edge, local, localMatches, ransacInliers)
     }
 
     private fun perceptualHash(data: DoubleArray): Long {
-        val dct = DoubleArray(PHASH_LOW * PHASH_LOW)
         val n = HASH_SIZE
-        val c = DoubleArray(n) { u -> if (u == 0) 1.0 / sqrt(n.toDouble()) else sqrt(2.0 / n) }
+        val dct = DoubleArray(PHASH_LOW * PHASH_LOW)
+        val norm = DoubleArray(PHASH_LOW) { u -> if (u == 0) 1.0 / sqrt(n.toDouble()) else sqrt(2.0 / n) }
         for (u in 0 until PHASH_LOW) {
             for (v in 0 until PHASH_LOW) {
                 var sum = 0.0
                 for (x in 0 until n) {
+                    val ux = ((2 * x + 1) * u * Math.PI) / (2 * n)
                     for (y in 0 until n) {
-                        sum += data[x * n + y] *
-                            cos(((2 * x + 1) * u * Math.PI) / (2 * n)) *
-                            cos(((2 * y + 1) * v * Math.PI) / (2 * n))
+                        val vy = ((2 * y + 1) * v * Math.PI) / (2 * n)
+                        sum += data[x * n + y] * cos(ux) * cos(vy)
                     }
                 }
-                dct[u * PHASH_LOW + v] = c[u] * c[v] * sum
+                dct[u * PHASH_LOW + v] = norm[u] * norm[v] * sum
             }
         }
-        val values = dct.drop(1)
-        val sorted = values.sorted()
-        val median = sorted[sorted.size / 2]
+        val median = dct.drop(1).sorted()[((dct.size - 1) / 2).coerceAtLeast(0)]
         var hash = 0L
-        var bit = 0
-        for (value in dct) {
-            if (value > median) hash = hash or (1L shl bit)
-            bit++
-            if (bit == 64) break
-        }
+        for (i in 0 until minOf(64, dct.size)) if (dct[i] > median) hash = hash or (1L shl i)
         return hash
     }
 
@@ -176,8 +143,7 @@ class ClassicalVisualFingerprintEngine {
         for (row in 0 until HASH_SIZE) {
             for (col in 0 until HASH_SIZE - 1) {
                 if (data[row * HASH_SIZE + col] > data[row * HASH_SIZE + col + 1]) hash = hash or (1L shl bit)
-                bit++
-                if (bit == 64) return hash
+                if (++bit == 64) return hash
             }
         }
         return hash
@@ -196,24 +162,21 @@ class ClassicalVisualFingerprintEngine {
                 val maxC = max(r, max(g, b))
                 val minC = minOf(r, g, b)
                 val delta = maxC - minC
-                var hue = 0f
-                if (delta > 1e-6f) {
-                    hue = when (maxC) {
+                val hue = if (delta <= 1e-6f) 0f else {
+                    val raw = when (maxC) {
                         r -> ((g - b) / delta) % 6f
                         g -> (b - r) / delta + 2f
                         else -> (r - g) / delta + 4f
                     } / 6f
-                    if (hue < 0f) hue += 1f
+                    if (raw < 0f) raw + 1f else raw
                 }
                 val saturation = if (maxC <= 1e-6f) 0f else delta / maxC
-                val value = maxC
-                val hBin = (hue * 16).toInt().coerceIn(0, 15)
-                val sBin = (saturation * 3).toInt().coerceIn(0, 2)
-                val vBin = (value * 1).toInt().coerceIn(0, 0)
-                bins[hBin * 3 + sBin] += 1f
+                val h = (hue * 16f).toInt().coerceIn(0, 15)
+                val s = (saturation * 3f).toInt().coerceIn(0, 2)
+                bins[h * 3 + s] += 1f
             }
             val maxValue = bins.maxOrNull()?.coerceAtLeast(1f) ?: 1f
-            ByteArray(COLOR_BINS) { i -> (bins[i] / maxValue * 255f).roundToByte() }
+            ByteArray(COLOR_BINS) { i -> ((bins[i] / maxValue) * 255f).toInt().coerceIn(0, 255).toByte() }
         } finally {
             scaled.recycle()
         }
@@ -221,22 +184,24 @@ class ClassicalVisualFingerprintEngine {
 
     private fun edgeHistogram(data: DoubleArray): ByteArray {
         val bins = FloatArray(EDGE_BINS)
-        val cell = 8
+        val cellSize = 8
         for (y in 1 until HASH_SIZE - 1) {
             for (x in 1 until HASH_SIZE - 1) {
-                val gx = data[y * HASH_SIZE + (x + 1)] - data[y * HASH_SIZE + (x - 1)]
+                val gx = data[y * HASH_SIZE + x + 1] - data[y * HASH_SIZE + x - 1]
                 val gy = data[(y + 1) * HASH_SIZE + x] - data[(y - 1) * HASH_SIZE + x]
-                val mag = sqrt(gx * gx + gy * gy)
-                if (mag < 18.0) continue
-                var angle = Math.atan2(gy, gx)
+                val magnitude = sqrt(gx * gx + gy * gy)
+                if (magnitude < 18.0) continue
+                var angle = kotlin.math.atan2(gy, gx)
                 if (angle < 0) angle += Math.PI
-                val direction = ((angle / Math.PI) * 8).toInt().coerceIn(0, 7)
-                val cellIndex = ((y / cell) * 4 + (x / cell)).coerceIn(0, 15)
-                bins[cellIndex * 2 + (direction and 1)] += mag.toFloat()
+                val direction = ((angle / Math.PI) * 8.0).toInt().coerceIn(0, 7)
+                val cellX = (x / cellSize).coerceIn(0, 3)
+                val cellY = (y / cellSize).coerceIn(0, 3)
+                val index = (cellY * 4 + cellX) * 8 + direction
+                bins[index] += magnitude.toFloat()
             }
         }
         val maxValue = bins.maxOrNull()?.coerceAtLeast(1f) ?: 1f
-        return ByteArray(EDGE_BINS) { i -> (bins[i] / maxValue * 255f).roundToByte() }
+        return ByteArray(EDGE_BINS) { i -> ((bins[i] / maxValue) * 255f).toInt().coerceIn(0, 255).toByte() }
     }
 
     private fun extractLocalFeatures(bitmap: Bitmap): LocalData? {
@@ -250,31 +215,43 @@ class ClassicalVisualFingerprintEngine {
             Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
             val detector = AKAZE.create()
             detector.detectAndCompute(gray, Mat(), keypoints, descriptors)
-            if (descriptors.empty() || keypoints.empty()) return null
-            val keyArray = keypoints.toArray()
-                .sortedByDescending { it.response }
+            if (keypoints.empty() || descriptors.empty()) return null
+
+            val all = keypoints.toArray()
+            val selectedIndices = all.indices
+                .sortedByDescending { all[it].response }
                 .take(MAX_KEYPOINTS)
-            val allowed = keyArray.toSet()
-            val selected = MatOfKeyPoint()
-            selected.fromList(keyArray.toList())
-            val selectedDescriptors = Mat()
-            detector.compute(gray, selected, selectedDescriptors)
-            if (selectedDescriptors.empty() || selected.empty() || !selectedDescriptors.isContinuous) return null
-            LocalData(keyArray, selectedDescriptors.clone())
+            if (selectedIndices.size < 4) return null
+
+            val selectedKeypoints = Array(selectedIndices.size) { all[selectedIndices[it]] }
+            val selectedDescriptors = Mat(selectedIndices.size, descriptors.cols(), descriptors.type())
+            for (row in selectedIndices.indices) {
+                descriptors.row(selectedIndices[row]).copyTo(selectedDescriptors.row(row))
+            }
+            LocalData(selectedKeypoints, selectedDescriptors)
         } catch (_: Throwable) {
             null
         } finally {
-            rgba.release(); gray.release(); keypoints.release(); descriptors.release()
+            rgba.release()
+            gray.release()
+            keypoints.release()
+            descriptors.release()
         }
     }
 
     private fun localMatch(query: Fingerprint, target: Fingerprint): Triple<Float, Int, Int> {
-        if (query.keypoints == null || target.keypoints == null || query.descriptors == null || target.descriptors == null) return Triple(0f, 0, 0)
+        if (query.keypoints == null || query.descriptors == null || target.keypoints == null || target.descriptors == null) return Triple(0f, 0, 0)
+        var qDesc: Mat? = null
+        var tDesc: Mat? = null
+        var srcMat: MatOfPoint2f? = null
+        var dstMat: MatOfPoint2f? = null
+        var mask: Mat? = null
         return try {
             if (!OpenCVLoader.initLocal()) return Triple(0f, 0, 0)
-            val qDesc = deserializeMat(query.descriptors, queryDescriptorRows(query), queryDescriptorCols(query), CvType.CV_8U)
-            val tDesc = deserializeMat(target.descriptors, targetDescriptorRows(target), targetDescriptorCols(target), target.descriptorType)
-            if (qDesc.empty() || tDesc.empty()) return Triple(0f, 0, 0)
+            qDesc = deserializeMat(query.descriptors, query.descriptorRows, query.descriptorCols, query.descriptorType)
+            tDesc = deserializeMat(target.descriptors, target.descriptorRows, target.descriptorCols, target.descriptorType)
+            if (qDesc!!.empty() || tDesc!!.empty()) return Triple(0f, 0, 0)
+
             val matcher = BFMatcher.create(org.opencv.core.Core.NORM_HAMMING, false)
             val knn = ArrayList<MatOfDMatch>()
             matcher.knnMatch(qDesc, tDesc, knn, 2)
@@ -297,23 +274,23 @@ class ClassicalVisualFingerprintEngine {
                 }
             }
             if (src.size < 4) return Triple((good.size / 30f).coerceIn(0f, 1f), good.size, 0)
-            val srcMat = MatOfPoint2f(*src.toTypedArray())
-            val dstMat = MatOfPoint2f(*dst.toTypedArray())
-            val mask = Mat()
+
+            srcMat = MatOfPoint2f(*src.toTypedArray())
+            dstMat = MatOfPoint2f(*dst.toTypedArray())
+            mask = Mat()
             Calib3d.findHomography(srcMat, dstMat, Calib3d.RANSAC, RANSAC_REPROJECTION, mask)
             val inliers = if (!mask.empty()) org.opencv.core.Core.countNonZero(mask) else 0
-            val similarity = (inliers / 25f).coerceIn(0f, 1f)
-            srcMat.release(); dstMat.release(); mask.release(); qDesc.release(); tDesc.release()
-            Triple(similarity, good.size, inliers)
+            Triple((inliers / 25f).coerceIn(0f, 1f), good.size, inliers)
         } catch (_: Throwable) {
             Triple(0f, 0, 0)
+        } finally {
+            qDesc?.release()
+            tDesc?.release()
+            srcMat?.release()
+            dstMat?.release()
+            mask?.release()
         }
     }
-
-    private fun queryDescriptorRows(fp: Fingerprint): Int = fp.descriptorRows
-    private fun queryDescriptorCols(fp: Fingerprint): Int = fp.descriptorCols
-    private fun targetDescriptorRows(fp: Fingerprint): Int = fp.descriptorRows
-    private fun targetDescriptorCols(fp: Fingerprint): Int = fp.descriptorCols
 
     private fun deserializeMat(bytes: ByteArray, rows: Int, cols: Int, type: Int): Mat {
         val mat = Mat(rows, cols, type)
@@ -322,21 +299,26 @@ class ClassicalVisualFingerprintEngine {
     }
 
     private fun serializeMatBytes(mat: Mat): ByteArray {
-        val buffer = ByteArray(mat.total().toInt() * mat.elemSize().toInt())
-        mat.get(0, 0, buffer)
-        return buffer
+        val bytes = ByteArray(mat.total().toInt() * mat.elemSize().toInt())
+        mat.get(0, 0, bytes)
+        return bytes
     }
 
     private fun serializeKeypoints(keypoints: LocalData): ByteArray {
         val buffer = ByteBuffer.allocate(4 + keypoints.keypoints.size * 8).order(ByteOrder.BIG_ENDIAN)
         buffer.putInt(keypoints.keypoints.size)
-        keypoints.keypoints.forEach { buffer.putFloat(it.pt.x.toFloat()); buffer.putFloat(it.pt.y.toFloat()) }
+        for (keypoint in keypoints.keypoints) {
+            buffer.putFloat(keypoint.pt.x.toFloat())
+            buffer.putFloat(keypoint.pt.y.toFloat())
+        }
         return buffer.array()
     }
 
     private fun deserializeKeypoints(bytes: ByteArray): Array<Point> {
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
-        val count = buffer.int.coerceAtLeast(0)
+        if (buffer.remaining() < 4) return emptyArray()
+        val count = buffer.int.coerceAtLeast(0).coerceAtMost(10000)
+        if (buffer.remaining() < count * 8) return emptyArray()
         return Array(count) { Point(buffer.float.toDouble(), buffer.float.toDouble()) }
     }
 
@@ -344,15 +326,13 @@ class ClassicalVisualFingerprintEngine {
         val count = minOf(a.size, b.size)
         if (count == 0) return 0f
         var numerator = 0.0
-        var denom = 0.0
+        var denominator = 0.0
         for (i in 0 until count) {
             val av = (a[i].toInt() and 0xFF) / 255.0
             val bv = (b[i].toInt() and 0xFF) / 255.0
             numerator += minOf(av, bv)
-            denom += maxOf(av, bv)
+            denominator += max(av, bv)
         }
-        return if (denom == 0.0) 1f else (numerator / denom).toFloat().coerceIn(0f, 1f)
+        return if (denominator == 0.0) 1f else (numerator / denominator).toFloat().coerceIn(0f, 1f)
     }
-
-    private fun Float.roundToByte(): Byte = kotlin.math.round(this).toInt().coerceIn(0, 255).toByte()
 }
