@@ -38,7 +38,7 @@ The feature does not depend on MobileCLIP, OCR, face indexing, or the legacy `im
 ### Current behavior implemented
 
 1. User opens the separate Reverse Image Search entry.
-2. User adds multiple local images to the feature's own corpus.
+2. User adds multiple local images to the feature's own corpus using persistable document URIs.
 3. The feature builds/rebuilds persistent Haar/YIQ fingerprints.
 4. User selects a separate query image.
 5. The query gets a new fingerprint locally.
@@ -52,7 +52,7 @@ The Android implementation follows the documented digiKam-style/Fast-Multi-Resol
 
 ### Verification status
 
-- Code and database integration committed to the default branch.
+- Code and database integration committed to the default branch; latest feature commit: `28ea4c8431181c560b4f8e56589b58eb9fa22c2d`.
 - Persistent project plan committed as `PROJECT_PLAN.md`.
 - Persistent progress log committed as this file.
 - Temporary test files created during editing were removed.
