@@ -1,77 +1,100 @@
 # Personal Memory AI — Project Progress Log
 
-## 2026-08-25 — Reverse-image integration, user test, and digiKam algorithm correction
+## 2026-08-25 — Classical reverse-image stack expansion
 
-### Repository state verified
+### Verified repository state
 
 - Repository: `CybersecurityRahbar/ai_`.
-- Existing stack includes OCR/Arabic OCR, YOLO objects, face analysis/embeddings/clustering, diagnostics, Room, and a MobileCLIP-S2 visual embedding path.
-- MobileCLIP-S2 is intentionally imported locally as a TFLite model; the code requires a built visual index before semantic image search can work.
-- GitHub Actions now builds `:app:assembleDebug`; the first CI build succeeded and produced the debug APK.
+- Existing application stack remains intact: OCR/Arabic OCR, YOLO objects, face analysis/embeddings/clustering, diagnostics, Room, and a MobileCLIP-S2 path.
+- MobileCLIP is intentionally out of scope for this phase and has not been modified.
+- GitHub Actions builds `:app:assembleDebug` and uploads the debug APK artifact.
 
-### User integration feedback
+### Reverse-image architecture
 
-- The first installed build opened the modern `IntelligenceHomeActivity`, but the reverse-image screen was not reachable from that existing command center because no navigation action had been added there.
-- Existing older activities were not deleted; they remain registered in the manifest. The fix is to integrate Reverse Image Search into the existing command-center navigation, not replace or isolate the application shell.
-- The reverse-image screen is now styled with the same `bg_intelligence`, `panel_intelligence`, and `bg_intel_button` visual system used by the current command center.
+The reverse-image feature remains a separate search/indexing capability inside the existing application shell. It is reachable from `IntelligenceHomeActivity` and uses the modern command-center visual language. Its corpus and fingerprint tables are separate from the legacy `images`/semantic pipeline.
 
-### User test result of first reverse-image implementation
+### Classical visual technologies added
 
-- Corpus import and fingerprint indexing worked.
-- An exact duplicate/query image was found correctly.
-- Screenshot/near-duplicate/other visually similar variants were not found reliably.
+1. **DigiKam-style Haar/Wavelet fingerprint**
+   - 128x128 fixed representation.
+   - Exact digiKam-style RGB -> YIQ conversion.
+   - Separable 2-D Haar transform.
+   - 40 strongest signed coefficients per channel.
+   - Y/I/Q average values retained.
+   - digiKam weight rows and `WeightBin` position weighting.
+   - digiKam-style best/worst normalization for similarity.
+   - Engine version: `DIGIKAM-HAAR-128-40-YIQ-V2`.
 
-### Root cause found
+2. **Perceptual hashes**
+   - 64-bit pHash using an explicit low-frequency DCT.
+   - 64-bit dHash based on luminance gradients.
 
-The first Android Haar engine was only an approximation of digiKam, not a source-level implementation of its scoring method. It used 60 coefficients, normalized YIQ values, and a custom coefficient-count score, and it did not retain the Y/I/Q averages used by digiKam.
+3. **Color fingerprint**
+   - HSV-derived spatially/global color distribution stored as a compact histogram.
+   - Used as independent evidence, not as a replacement for Haar.
 
-Direct digiKam source inspection confirmed the actual core:
+4. **Shape / edge fingerprint**
+   - Sobel-derived gradient magnitude and orientation statistics over a spatial grid.
+   - Used to capture structural changes that color-only evidence misses.
 
-- 128x128 image with aspect ratio ignored.
-- RGB values in 0..255.
-- RGB -> YIQ conversion with digiKam's exact coefficients.
-- Separable 2-D Haar transform using the same 0.7071 scaling progression and DC adjustment.
-- 40 strongest coefficients per channel, encoded as signed indices.
-- `SignatureData` stores three Y/I/Q averages plus the 3x40 signed coefficient indices.
-- Scoring first adds weighted absolute distance between the Y/I/Q averages, then subtracts the exact per-channel weight for every significant signed coefficient present in both query and target.
-- `WeightBin` uses the coefficient's `(row,column)` position and `min(max(row,column), 5)` to select one of the six weight rows.
-- The final similarity is derived from digiKam's best/worst possible score range.
+5. **AKAZE local features**
+   - OpenCV 4.13.0 Android AAR added for classical local feature extraction only.
+   - No neural model is involved.
+   - Keypoints and binary descriptors are persisted in the reverse-image database.
 
-These findings are directly supported by digiKam's `haar.cpp`, `haar.h`, and `haariface.cpp` sources in the KDE/digikam repository.
+6. **RANSAC geometric verification**
+   - AKAZE matches use a ratio test.
+   - Good matches are passed to homography estimation with RANSAC.
+   - Inlier count is retained as geometric evidence, helping distinguish real local correspondence from accidental descriptor matches.
 
-### Current implementation after correction
+### New persistence
 
-- `HaarFingerprintEngine.kt` now uses the digiKam 128/40/YIQ/Haar/sign/weight/scoring core and has engine version `DIGIKAM-HAAR-128-40-YIQ-V2`.
-- The app-owned fingerprint BLOB is deliberately not claimed to be byte-for-byte compatible with digiKam's `ImageHaarMatrix` Qt serialization.
-- `ReverseImageSearchService.kt` now evaluates the original query plus centered 92%, 82%, and 72% crop variants and keeps the best score. This multi-crop query robustness is an application extension; it is not claimed to be digiKam's core algorithm.
-- Minimum reverse-search threshold is now 35% by default.
-- `IntelligenceHomeActivity.kt` now exposes `LOCAL REVERSE IMAGE SEARCH` using the same command-center action styling and keeps all previous application screens reachable.
-- `activity_reverse_image_search.xml` and `item_reverse_image_result.xml` were restyled to match the current application intelligence UI.
+- `ClassicalVisualFingerprintEntity.kt`
+- `ClassicalVisualFingerprintDao.kt`
+- Room database version 9.
+- `MIGRATION_8_9` creates `classical_visual_fingerprints` with pHash, dHash, color/edge histograms, and optional AKAZE keypoints/descriptors.
 
-### Important capability boundary
+### Search fusion
 
-Classic digiKam Haar similarity is not a guarantee of viewpoint-invariant object recognition. A substantially different camera angle, different scene composition, or a different photograph of the same object can still score poorly. The goal of this phase is to reproduce digiKam's actual classical similarity behavior and improve screenshot/crop robustness; viewpoint-invariant retrieval may require a separate local-feature stage later.
+`ReverseImageSearchService.kt` now builds and queries both fingerprint families.
+
+The ranking uses:
+
+- Haar as the primary anchor signal.
+- Classical pHash/dHash/color/edge evidence as global refinement.
+- AKAZE + RANSAC as local geometric evidence when available.
+- Results expose a total similarity plus per-signal telemetry so accuracy can be inspected instead of hiding everything behind one opaque score.
+
+The current fusion is intentionally conservative: Haar contributes 55% and the classical composite contributes 45%. This weighting must be validated experimentally; it is not presented as an optimal learned weight.
+
+### UI
+
+- Reverse Image Search remains reachable from the existing `IntelligenceHomeActivity`.
+- The result card now exposes Haar coefficient agreement, pHash, dHash, color, shape, AKAZE similarity, local-match count, and RANSAC inliers.
+- Index status now reports both Haar and classical fingerprint coverage.
 
 ### Verification status
 
-- Previous CI build succeeded before the current algorithm/UI correction.
-- A new CI build is required after the correction commits.
-- Device runtime retest is required after the new APK is available.
-- Do not claim the new algorithm works better until the new APK is tested.
+- The earlier debug APK was successfully built and tested by the user for the original Haar implementation.
+- The expanded classical stack has triggered a new GitHub Actions build; the build must finish successfully before this phase can be considered build-verified.
+- The new APK has not yet been runtime-tested on the phone.
+- Do not claim that the classical stack improves retrieval until actual device measurements are recorded.
 
-### Required next verification set
+### Required device benchmark
 
-Test the corrected standalone engine with:
+Use a controlled corpus containing:
 
 1. exact same image
 2. JPEG recompression
 3. resize
 4. screenshot with borders/UI chrome
 5. mild crop
-6. centered crop
+6. larger crop
 7. brightness/color change
 8. burst/near-duplicate
 9. unrelated image
-10. same object/scene from a noticeably different camera angle
+10. same subject/object from a different viewpoint
+11. perspective change
+12. screenshot containing the source image as a region
 
-Record the actual similarity scores and rankings here before making any claim about accuracy.
+For every case record the top-10 rankings and the component scores. The next optimization decisions must be based on these measured results, not on visual inspection alone.
