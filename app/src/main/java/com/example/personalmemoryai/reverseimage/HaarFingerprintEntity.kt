@@ -8,14 +8,14 @@ import androidx.room.PrimaryKey
 @Entity(
     tableName = "image_fingerprints",
     indices = [
-        Index(value = ["imageId"], unique = true),
+        Index(value = ["itemId"], unique = true),
         Index(value = ["engineVersion"]),
         Index(value = ["sourceModifiedAt"])
     ]
 )
 data class HaarFingerprintEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val imageId: Long,
+    val itemId: Long,
     val engineVersion: String,
     val sourceModifiedAt: Long?,
     val width: Int,
