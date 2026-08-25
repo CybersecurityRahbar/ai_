@@ -40,21 +40,36 @@ This feature is intentionally **separate from the existing semantic search syste
 The reverse-image engine is a deliberately non-neural computer-vision subsystem:
 
 - **DigiKam-style Haar/Wavelet fingerprint**: 128x128, RGB->YIQ, separable 2-D Haar, 40 strongest signed coefficients per channel, stored Y/I/Q averages, `WeightBin`, and best/worst score normalization.
-- **pHash**: explicit low-frequency DCT perceptual hash.
-- **dHash**: luminance gradient/difference hash.
-- **Color fingerprint**: compact HSV distribution histogram.
-- **Shape/edge fingerprint**: spatial Sobel gradient magnitude/direction signature.
+- **pHash**: explicit low-frequency DCT with the DC term excluded from the hash comparison.
+- **dHash**: full 64-bit horizontal luminance difference hash over a 9x8 sample grid.
+- **Color fingerprint**: HSV distribution histogram with L1/total normalization, preserving distribution instead of peak-bin dominance.
+- **Shape/edge fingerprint**: spatial gradient magnitude/direction signature with L1 normalization.
 - **AKAZE local features**: classical binary local descriptors, persisted for each corpus image when OpenCV is available.
-- **RANSAC geometric verification**: ratio-tested AKAZE matches are checked through homography/inlier geometry to reduce accidental local matches and improve crop/perspective robustness.
+- **Mutual local matching**: ratio-tested AKAZE matches must agree in both query->target and target->query directions.
+- **RANSAC geometric verification**: mutual matches are checked through homography estimation; local evidence is valid only when geometric inliers exist.
 
 OpenCV is used only for classical local-feature operations; no neural network inference is introduced by this subsystem. The current Maven artifact is `org.opencv:opencv:4.13.0` (Apache-2.0). Do not confuse this dependency with the existing TFLite/ML systems.
+
+The current classical engine version is `CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V3`. The BLOB schema is unchanged; the version marker deliberately invalidates older classical fingerprints and causes re-indexing.
+
+### Search architecture
+
+Reverse-image search is now explicitly staged:
+
+1. Build multi-region query fingerprints (original plus centered 0.92/0.82/0.72 crops) for both Haar and classical global signals.
+2. Run cheap global retrieval across the entire corpus using Haar + pHash/dHash/color/edge.
+3. Keep a bounded high-recall shortlist (currently 96–192 candidates depending on requested result count).
+4. Run expensive AKAZE mutual matching and RANSAC geometry only on the shortlist.
+5. Rerank using local geometric evidence while retaining transparent component telemetry.
+
+This architecture is intended to preserve recall while preventing `N × local-feature matching` from becoming the normal path. The exact shortlist bounds remain tunable after device benchmarking.
 
 ### Search fusion policy
 
 - Haar remains the primary anchor because it has been directly validated by the user for exact/near visual matches.
 - pHash/dHash/color/edge provide independent global evidence.
 - AKAZE/RANSAC provides local structural evidence when available.
-- Current fusion is intentionally explicit and non-learned: Haar 55% + classical composite 45%.
+- Current top-level fusion is explicit and non-learned: Haar 55% + classical composite 45%.
 - These weights are provisional and must be adjusted only after measured benchmark results.
 - Never hide the component scores; the UI should expose enough telemetry to understand why a result ranked highly.
 
@@ -65,15 +80,17 @@ OpenCV is used only for classical local-feature operations; no neural network in
 - Do not make main text search depend on reverse-image search.
 - Keep the UI inside the existing application shell but visually consistent with the Intelligence Command Center.
 - Index incrementally using item ID plus engine-version/configuration markers.
-- Keep diagnostics for index build, OpenCV/local-feature availability, invalid images, query failures, and result counts.
+- Keep diagnostics for index build, OpenCV/local-feature availability, invalid images, query failures, result counts, shortlist size, and local verification coverage.
+- Keep durable private image copies independent of transient `DocumentsProvider` permissions.
 - The fingerprint BLOB format is app-owned. Do not claim byte-for-byte compatibility with digiKam's `ImageHaarMatrix` without direct binary conformance testing.
 
 ## 5. Future evolution of the classical subsystem
 
-- Benchmark the current stack before changing weights.
-- Add more robust multi-region/local matching if screenshots or large crops still fail.
+- **First priority: benchmark V3 on the existing 999-image corpus** before changing top-level weights.
+- Add stronger **multi-region local verification** for screenshots and large crops if the benchmark shows global recall is insufficient.
+- Consider multiple local crops/tiling or adaptive region proposals rather than simply increasing descriptor counts globally.
 - Add face/person search as a separate identity-evidence mode using the existing face subsystem; do not force Haar to solve identity recognition.
-- Consider additional classical descriptors only when a benchmark demonstrates a gap: e.g. multi-scale local regions, line/contour signatures, or stronger geometric verification.
+- Consider additional classical descriptors only when a benchmark demonstrates a specific gap: multi-scale local regions, line/contour signatures, improved spatial-color descriptors, or stronger geometric verification.
 - Only after the classical baseline is measured should we revisit MobileCLIP or stronger neural encoders.
 
 ## 6. Verification policy
@@ -87,12 +104,13 @@ A feature is not considered complete merely because code compiles. For every vis
 - mild crop
 - larger crop
 - brightness/color change
-- burst/near-duplicate images
+- burst/near-duplicate
+- unrelated image
 - same object/scene from a different viewpoint
 - perspective change
-- unrelated image
+- screenshot containing the source image as a region
 
-Record actual top-10 rankings and component scores in `PROJECT_PROGRESS.md` before claiming accuracy.
+Record actual top-10 rankings and component scores in `PROJECT_PROGRESS.md` before claiming accuracy. The next algorithmic weight changes must be evidence-driven from this benchmark.
 
 ## 7. Persistent context rule
 
