@@ -22,12 +22,15 @@ import org.opencv.imgproc.Imgproc
 /** Classical, non-neural visual fingerprint stack for local reverse-image search. */
 class ClassicalVisualFingerprintEngine {
     companion object {
-        const val ENGINE_VERSION = "CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V3"
+        const val ENGINE_VERSION = "CLASSICAL-PHASH-DHASH-HSV256-SOBEL-AKAZE-V4"
         private const val PHASH_SIZE = 32
         private const val PHASH_LOW = 8
         private const val DHASH_WIDTH = 9
         private const val DHASH_HEIGHT = 8
-        private const val COLOR_BINS = 48
+        private const val H_BINS = 16
+        private const val S_BINS = 4
+        private const val V_BINS = 4
+        private const val COLOR_BINS = H_BINS * S_BINS * V_BINS
         private const val EDGE_BINS = 128
         private const val MAX_KEYPOINTS = 300
         private const val RATIO_TEST = 0.74f
@@ -93,7 +96,6 @@ class ClassicalVisualFingerprintEngine {
         }
     }
 
-    /** Full comparison; local geometric verification can be disabled for cheap global retrieval. */
     fun compare(query: Fingerprint, target: Fingerprint, runLocal: Boolean = true): Score {
         val phash = 1f - java.lang.Long.bitCount(query.phash xor target.phash) / 63f
         val dhash = 1f - java.lang.Long.bitCount(query.dhash xor target.dhash) / 64f
@@ -177,6 +179,7 @@ class ClassicalVisualFingerprintEngine {
         }
     }
 
+    /** L1-normalized full HSV distribution: 16 hue × 4 saturation × 4 value bins. */
     private fun colorHistogram(bitmap: Bitmap): ByteArray {
         val scaled = Bitmap.createScaledBitmap(bitmap, 32, 32, true)
         return try {
@@ -199,9 +202,10 @@ class ClassicalVisualFingerprintEngine {
                     if (raw < 0f) raw + 1f else raw
                 }
                 val saturation = if (maxC <= 1e-6f) 0f else delta / maxC
-                val h = (hue * 16f).toInt().coerceIn(0, 15)
-                val s = (saturation * 3f).toInt().coerceIn(0, 2)
-                bins[h * 3 + s] += 1f
+                val h = (hue * H_BINS).toInt().coerceIn(0, H_BINS - 1)
+                val s = (saturation * S_BINS).toInt().coerceIn(0, S_BINS - 1)
+                val v = (maxC * V_BINS).toInt().coerceIn(0, V_BINS - 1)
+                bins[(h * S_BINS + s) * V_BINS + v] += 1f
             }
             normalizeHistogram(bins)
         } finally {
@@ -294,7 +298,6 @@ class ClassicalVisualFingerprintEngine {
             }
             val good = forwardBest.values.filter { reverseBest[it.trainIdx] == it.queryIdx }
             if (good.size < MIN_GEOMETRIC_INLIERS) return Triple(0f, good.size, 0)
-
             val qPoints = deserializeKeypoints(query.keypoints)
             val tPoints = deserializeKeypoints(target.keypoints)
             val src = ArrayList<Point>(good.size)
