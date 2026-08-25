@@ -68,7 +68,7 @@
                 android:id="@+id/indexCountText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="CORPUS: 0  •  HAAR FINGERPRINTS: 0"
+                android:text="CORPUS: 0  •  HAAR FINGERPRINTS: 0  •  CLASSICAL: 0"
                 android:textColor="#E5F4FA"
                 android:textSize="12sp"
                 android:textStyle="bold" />
@@ -115,6 +115,62 @@
             </LinearLayout>
         </LinearLayout>
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:background="@drawable/panel_intelligence">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="INDEXING PROGRESS"
+                android:textColor="#49D9FF"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.10" />
+
+            <ProgressBar
+                android:id="@+id/progressBar"
+                android:layout_width="match_parent"
+                android:layout_height="8dp"
+                android:layout_marginTop="7dp"
+                android:visibility="gone"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:progressTint="#7DFF19" />
+
+            <TextView
+                android:id="@+id/progressPercentText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="0%  •  0/0"
+                android:textColor="#7DFF19"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/counterText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Ready"
+                android:textColor="#71A0B8"
+                android:textSize="9sp" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="● READY / LOCAL HAAR SEARCH"
+                android:textColor="#E5F4FA"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -158,34 +214,7 @@
                 android:layout_height="wrap_content"
                 android:max="100"
                 android:progress="35" />
-
-            <TextView
-                android:id="@+id/statusText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="5dp"
-                android:text="● READY / LOCAL HAAR SEARCH"
-                android:textColor="#7DFF19"
-                android:textSize="10sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/counterText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:textColor="#71A0B8"
-                android:textSize="9sp" />
         </LinearLayout>
-
-        <ProgressBar
-            android:id="@+id/progressBar"
-            android:layout_width="match_parent"
-            android:layout_height="7dp"
-            android:layout_marginTop="10dp"
-            android:visibility="gone"
-            style="?android:attr/progressBarStyleHorizontal"
-            android:progressTint="#7DFF19" />
 
         <TextView
             android:layout_width="match_parent"
