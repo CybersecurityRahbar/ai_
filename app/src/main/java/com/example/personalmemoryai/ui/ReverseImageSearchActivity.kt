@@ -27,7 +27,6 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         if (uri != null) runSearch(uri)
     }
 
-    // Keep the same multi-image Android picker family as the main image-ingestion console.
     private val corpusPicker = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         if (uris.isNullOrEmpty()) {
             showStatus("لم يتم اختيار أي صورة لإضافتها إلى Corpus البحث العكسي.")
@@ -50,7 +49,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
 
         binding.queryImageButton.setOnClickListener {
             adapter.clear()
-            binding.queryImageButton.let { queryPicker.launch("image/*") }
+            queryPicker.launch("image/*")
         }
         binding.addImagesButton.setOnClickListener {
             adapter.clear()
@@ -106,17 +105,11 @@ class ReverseImageSearchActivity : AppCompatActivity() {
                         val rate = processed.toDouble() / elapsedSec.toDouble()
                         val remaining = (total - processed).coerceAtLeast(0)
                         val etaSec = if (rate > 0.0) (remaining / rate).toLong() else 0L
-
                         binding.progressBar.max = total
                         binding.progressBar.progress = processed
                         binding.progressPercentText.text = String.format(
-                            Locale.US,
-                            "%d%%  •  %d/%d  •  %.1f صورة/ث  •  ETA %s",
-                            percent,
-                            processed,
-                            total,
-                            rate,
-                            formatDuration(etaSec)
+                            Locale.US, "%d%%  •  %d/%d  •  %.1f صورة/ث  •  ETA %s",
+                            percent, processed, total, rate, formatDuration(etaSec)
                         )
                         binding.counterText.text = "نجح ${progress.indexed}  •  تخطي ${progress.skipped}  •  Local features ${progress.localFeatureIndexed}  •  فشل ${progress.failed}"
                         binding.statusText.text = "فهرسة الصورة $processed من $total"
@@ -124,7 +117,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
                 }
                 binding.progressBar.progress = binding.progressBar.max
                 binding.progressPercentText.text = "100%  •  ${binding.progressBar.max}/${binding.progressBar.max}  •  اكتمل"
-                binding.statusText.text = "اكتمل الفهرس • Haar + pHash + dHash + Color + Shape + AKAZE/RANSAC."
+                binding.statusText.text = "اكتمل الفهرس • Haar + pHash + dHash + HSV256 + Shape + AKAZE/RANSAC + SIFT."
                 refreshCount()
             } catch (t: Throwable) {
                 showError("فشل بناء الفهرس: ${t.message}")
@@ -138,26 +131,50 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         searchJob?.cancel()
         adapter.clear()
         binding.resultsRecyclerView.scrollToPosition(0)
-        val threshold = binding.thresholdSeek.progress / 100f
+        val threshold = (binding.thresholdSeek.progress / 100f).coerceIn(0f, 1f)
 
         searchJob = lifecycleScope.launch {
             setBusy(true)
             binding.progressBar.visibility = View.VISIBLE
-            binding.progressBar.isIndeterminate = true
-            binding.progressPercentText.text = "جاري تحليل صورة البحث…"
+            binding.progressBar.isIndeterminate = false
+            binding.progressBar.progress = 0
+            binding.progressPercentText.text = "تحضير صورة البحث…"
             binding.counterText.text = "البحث السابق تم مسحه • بدء بحث جديد"
-            binding.statusText.text = "تحليل صورة البحث: Haar + hashes + color + shape + AKAZE/RANSAC…"
+            binding.statusText.text = "بدء البحث المحلي…"
             try {
-                val results = withContext(Dispatchers.Default) {
-                    service.search(uri, limit = 50, minimumSimilarity = threshold)
+                val results = service.search(
+                    uri,
+                    limit = 50,
+                    minimumSimilarity = threshold
+                ) { progress ->
+                    runOnUiThread {
+                        val total = progress.total.coerceAtLeast(1)
+                        val processed = progress.processed.coerceIn(0, total)
+                        binding.progressBar.max = total
+                        binding.progressBar.progress = processed
+                        val percent = ((processed * 100L) / total).toInt().coerceIn(0, 100)
+                        binding.progressPercentText.text = String.format(
+                            Locale.US,
+                            "%d%%  •  %d/%d",
+                            percent, processed, total
+                        )
+                        binding.counterText.text = when (progress.stage) {
+                            "البحث العالمي" -> "فحص Corpus • ${progress.processed}/${progress.total}"
+                            "التحقق الهندسي AKAZE/RANSAC" -> "التحقق المحلي • ${progress.processed}/${progress.total} • نتائج مؤكدة ${progress.localVerified}"
+                            "التحقق الإضافي SIFT/RANSAC" -> "SIFT • ${progress.processed}/${progress.total} • اكتمل ${progress.siftVerified}"
+                            else -> progress.stage
+                        }
+                        binding.statusText.text = progress.stage
+                    }
                 }
                 adapter.submitList(results)
-                binding.progressPercentText.text = "اكتمل البحث"
+                binding.progressBar.progress = binding.progressBar.max
+                binding.progressPercentText.text = "100%  •  اكتمل البحث"
                 binding.counterText.text = "${results.size} نتيجة • الحد الأدنى ${String.format(Locale.US, "%.0f", threshold * 100)}%"
                 binding.statusText.text = if (results.isEmpty()) {
-                    "لا توجد صور ضمن العتبة الحالية."
+                    "اكتمل البحث • لا توجد صور ضمن العتبة الحالية."
                 } else {
-                    "${results.size} نتيجة • الترتيب يجمع Haar مع الأدلة الكلاسيكية المحلية."
+                    "اكتمل البحث • ${results.size} نتيجة مرتبة بالأدلة البصرية."
                 }
             } catch (t: Throwable) {
                 if (t !is kotlinx.coroutines.CancellationException) {
@@ -165,7 +182,6 @@ class ReverseImageSearchActivity : AppCompatActivity() {
                 }
             } finally {
                 if (!isFinishing && !isDestroyed) {
-                    binding.progressBar.isIndeterminate = false
                     setBusy(false)
                 }
             }
