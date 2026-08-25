@@ -1,210 +1,64 @@
 # Personal Memory AI — Project Progress Log
 
-## 2026-08-25 — Reverse-image algorithm v3: global retrieval + geometric reranking
+## 2026-08-25 — Reverse-image classical stack v4: SIFT verification + rotation-aware retrieval
 
-### Latest hardening after staged-retrieval build
+### New classical verification layer
 
-- Commit `f2c8f0d04861abd364fc5c9a96f2f47a2c4c8f28` fixes an important retrieval/reranking inconsistency in `ReverseImageSearchService.kt`.
-- The search already generated four classical query variants (original + centered 0.92/0.82/0.72 crops) for high-recall global retrieval, but the local geometric stage previously checked only the original query variant.
-- Local verification now evaluates **all classical query variants** with `compareBest(..., runLocal = true)` and keeps the best complete classical score. Therefore a crop/screenshot variant can win during the expensive geometric reranking stage instead of being discarded because the full query had weaker local correspondence.
-- The expensive local stage remains bounded to the shortlist, so this accuracy improvement does not revert the architecture to `N × AKAZE` over the full corpus.
-- Search diagnostics now record the number of local query variants used.
+- Added `SiftLocalVerifier.kt`.
+- Uses OpenCV 4.13 SIFT on the staged shortlist only; SIFT is not persisted per image, so the Room fingerprint database does not grow with a second large floating-point descriptor family.
+- Uses BFMatcher with L2 distance, Lowe-style ratio filtering, mutual consistency, and homography RANSAC.
+- SIFT evidence is accepted only when geometric inliers are present.
+- This layer is complementary to persisted AKAZE: AKAZE supplies the cheap durable local evidence; SIFT supplies a stronger scale/rotation-sensitive verification pass on shortlisted candidates.
+- OpenCV 4.13 provides the `org.opencv.features2d.SIFT` Java API and BFMatcher L2 is the documented matching norm for SIFT descriptors. citeturn486311search0turn486311search3
 
-### Baseline CI confirmation
+### Rotation-aware global retrieval
 
-- GitHub Actions `Android Build` run #30 (`32888857312`) succeeded for the post-compile-fix project state.
-- The debug APK artifact was successfully uploaded as `personal-memory-ai-debug-apk.zip` (artifact ID `9578699472`).
-- The user explicitly chose **not** to install that APK yet; runtime/device verification is deferred until the algorithmic development pass is complete.
+- Reverse-image query generation now includes 0°, 90°, 180°, and 270° Haar/classical global variants in addition to the original and center-crop variants.
+- This makes the cheap global stage much less likely to discard a rotated copy before local geometric verification.
+- SIFT/AKAZE remain responsible for fine local geometry; rotation variants are mainly a recall improvement for Haar/pHash/color/edge retrieval.
 
-### Classical fingerprint hardening
+### Search pipeline now
 
-`ClassicalVisualFingerprintEngine.kt` was upgraded from `V2` to `V3` in commit `a7b6903a92b87d288515939518473b339353cd4d`.
+1. Global Haar + pHash + dHash + color + edge retrieval over the complete corpus.
+2. Query variants: original, three centered crop levels, and three right-angle rotations for the global stage.
+3. High-recall shortlist capped at 48–192 candidates depending on requested result count.
+4. Persisted AKAZE mutual matching + RANSAC on the shortlist.
+5. SIFT + mutual L2 matching + RANSAC on the same shortlist.
+6. Classical local evidence is fused conservatively with global evidence only when geometric verification succeeds.
+7. Haar remains the 55% primary anchor and classical evidence remains 45%; no learned weight has been introduced.
 
-Verified source-level corrections:
+### Important design decision
 
-- **dHash correctness:** replaced the previous early-return implementation that consumed only the first ~64 comparisons of a 32x32 image with a proper 9x8 luminance grid producing exactly 64 horizontal comparisons across the whole image.
-- **pHash correctness:** the DC coefficient is excluded from the hash population; the meaningful low-frequency coefficients produce the 63-bit comparison space, avoiding the strong brightness/DC term dominating the hash.
-- **Histogram normalization:** color and edge histograms now use L1/total-mass normalization rather than max-bin normalization. Relative distribution between bins is therefore retained.
-- **Edge robustness:** lower gradient threshold from 18 to 12 to retain more weak structural evidence while still using spatial orientation bins.
-- **Local matching:** AKAZE matching now uses a stricter 0.74 ratio test plus mutual/cross-check consistency in both directions.
-- **Geometric verification:** homography RANSAC reprojection threshold reduced to 4.0 pixels. Local evidence is considered valid only when at least 4 geometric inliers exist.
-- **Local score:** combines inlier count, inlier ratio, and good-match coverage rather than using inlier count alone.
-- **Safety against false positives:** local evidence no longer boosts the score when geometric verification fails.
-- Fingerprint BLOB schema remains unchanged; engine-version migration triggers re-indexing automatically.
-
-### Search architecture hardening
-
-`ReverseImageSearchService.kt` was upgraded to staged retrieval in commits `ed41fafc17e51224f69783e829432f1ba01ac9b8` and `7038ec90269c0868a66a9d812c55de903c8136dc`.
-
-The search pipeline is now:
-
-1. Compute multi-region Haar query variants (original + centered 0.92/0.82/0.72 crops).
-2. Compute the same multi-region set for the classical global fingerprints.
-3. Perform **cheap global retrieval over the full corpus** using Haar + pHash/dHash/color/edge, with the existing explicit 55% Haar / 45% classical fusion.
-4. Keep a high-recall shortlist of 96–192 candidates depending on requested result count.
-5. Run the expensive AKAZE + mutual matching + RANSAC geometry only on that shortlist.
-6. Rerank using the validated geometric local evidence while retaining transparent component telemetry.
-7. Create/restore durable local image copies only for final returned results, avoiding unnecessary I/O across the full corpus.
-
-This changes the computational pattern from `N × expensive local verification` to `N × cheap global retrieval + K × expensive local verification`, where `K` is the shortlist and is bounded to 96–192.
-
-### Compile-safety repair during v3 integration
-
-- The first staged-search implementation attempted to call suspend work from a `Sequence.map` lambda while materializing final results.
-- This was corrected in commit `7038ec90269c0868a66a9d812c55de903c8136dc` by using an explicit suspend-safe loop for final result materialization.
-- No claim is made that the current post-v3 CI has completed until its dedicated GitHub Actions run is verified.
-
-### Important re-indexing requirement
-
-Because the classical engine version changed from `CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V2` to `CLASSICAL-PHASH-DHASH-HSV-SOBEL-AKAZE-V3`, the existing classical fingerprints are intentionally considered stale. The next device test must perform a full reverse-image index rebuild for the 999-image corpus before accuracy measurements are trusted.
-
-### Accuracy status
-
-The v3 changes are **algorithmic improvements based on source-level correctness and retrieval architecture**, not measured accuracy claims. No precision/recall or top-10 improvement percentage is being claimed yet.
-
-The mandatory controlled benchmark remains:
-
-1. exact same image
-2. JPEG recompression
-3. resize
-4. screenshot with borders/UI chrome
-5. mild crop
-6. larger crop
-7. brightness/color change
-8. burst/near-duplicate
-9. unrelated image
-10. same subject/object from a different viewpoint
-11. perspective change
-12. screenshot containing the source image as a region
-
-For every case, record top-10 rankings and every component score. Weight changes after this phase must be driven by those measurements rather than visual inspection.
-
-## 2026-08-25 — Classical reverse-image stack expansion
-
-### Verified repository state
-
-- Repository: `CybersecurityRahbar/ai_`.
-- Existing application stack remains intact: OCR/Arabic OCR, YOLO objects, face analysis/embeddings/clustering, diagnostics, Room, and a MobileCLIP-S2 path.
-- MobileCLIP is intentionally out of scope for this phase and has not been modified.
-- GitHub Actions builds `:app:assembleDebug` and uploads the debug APK artifact.
-
-### Reverse-image architecture
-
-The reverse-image feature remains a separate search/indexing capability inside the existing application shell. It is reachable from `IntelligenceHomeActivity` and uses the modern command-center visual language. Its corpus and fingerprint tables are separate from the legacy `images`/semantic pipeline.
-
-### Classical visual technologies added
-
-1. **DigiKam-style Haar/Wavelet fingerprint**
-   - 128x128 fixed representation.
-   - Exact digiKam-style RGB -> YIQ conversion.
-   - Separable 2-D Haar transform.
-   - 40 strongest signed coefficients per channel.
-   - Y/I/Q average values retained.
-   - digiKam weight rows and `WeightBin` position weighting.
-   - digiKam-style best/worst normalization for similarity.
-   - Engine version: `DIGIKAM-HAAR-128-40-YIQ-V2`.
-
-2. **Perceptual hashes**
-   - 64-bit pHash using an explicit low-frequency DCT.
-   - 64-bit dHash based on luminance gradients.
-
-3. **Color fingerprint**
-   - HSV-derived color distribution stored as a compact histogram.
-   - Used as independent evidence, not as a replacement for Haar.
-
-4. **Shape / edge fingerprint**
-   - Sobel-derived gradient magnitude and orientation statistics over a spatial grid.
-   - Used to capture structural changes that color-only evidence misses.
-
-5. **AKAZE local features**
-   - OpenCV Android AAR added for classical local feature extraction only.
-   - No neural model is involved.
-   - Keypoints and binary descriptors are persisted in the reverse-image database.
-
-6. **RANSAC geometric verification**
-   - AKAZE matches use a ratio test.
-   - Good matches are passed to homography estimation with RANSAC.
-   - Inlier count is retained as geometric evidence, helping distinguish real local correspondence from accidental descriptor matches.
-
-### New persistence
-
-- `ClassicalVisualFingerprintEntity.kt`
-- `ClassicalVisualFingerprintDao.kt`
-- Room database version 9.
-- `MIGRATION_8_9` creates `classical_visual_fingerprints` with pHash, dHash, color/edge histograms, and optional AKAZE keypoints/descriptors.
-
-### Search fusion
-
-`ReverseImageSearchService.kt` now builds and queries both fingerprint families.
-
-The ranking uses:
-
-- Haar as the primary anchor signal.
-- Classical pHash/dHash/color/edge evidence as global refinement.
-- AKAZE + RANSAC as local geometric evidence when available.
-- Results expose a total similarity plus per-signal telemetry so accuracy can be inspected instead of hiding everything behind one opaque score.
-
-The current fusion is intentionally conservative: Haar contributes 55% and the classical composite contributes 45%. This weighting must be validated experimentally; it is not presented as an optimal learned weight.
-
-### UI
-
-- Reverse Image Search remains reachable from the existing `IntelligenceHomeActivity`.
-- The result card exposes Haar coefficient agreement, pHash, dHash, color, shape, AKAZE similarity, local-match count, and RANSAC inliers.
-- Index status reports both Haar and classical fingerprint coverage.
-
-## 2026-08-25 — Reverse-image integration repair pass
-
-### Confirmed user test size
-
-- The user indexed **999 images** in the reverse-image corpus. `999` is intentional and is not considered an indexing defect.
-
-### Integration fixes applied
-
-- Removed the independent `ReverseImageSearchLauncher` `MAIN/LAUNCHER` entry from `AndroidManifest.xml`. `IntelligenceHomeActivity` is now the single application launcher, so Android should no longer expose a second `Reverse Image Search` application icon/name.
-- Reverse-image corpus selection now uses `GetMultipleContents`, matching the existing main image-ingestion picker family instead of `OpenMultipleDocuments`.
-- Reverse-image corpus images are copied into app-private durable storage under `filesDir/reverse_image/library` at ingestion time.
-- `ReverseImageItemEntity.filePath` now points to the durable local image copy while `uri` remains the original source/provenance URI.
-- Existing legacy reverse-image rows are migrated lazily at build/search time by recreating a private local copy when `filePath` is not an existing file.
-- Search result rendering now prefers durable local files and therefore no longer depends on `MediaDocumentsProvider` URI grants after the picker closes.
-- Reverse-image result adapter now has an explicit `clear()` operation.
-- Starting a new query clears the previous result list and cancels the previous search job before executing the next search.
-- Added a dedicated visible indexing telemetry panel showing percentage, `processed/total`, processing rate, ETA, success count, skipped count, local-feature count, and failure count.
-- The same progress panel is reused for image-copy preparation and query execution state.
-
-### CI verification and exact failure record
-
-- GitHub Actions `Android Build` run #28 (`32887831504`) failed during `:app:compileDebugKotlin`.
-- Android SDK setup, resource processing, Room/KAPT, dex/native packaging, and OpenCV native library packaging all completed successfully before the Kotlin compiler failure.
-- Exact compiler error: `ReverseImageSearchService.kt:330:17 Suspend function 'upsert' should be called only from a coroutine or another suspend function`.
-- Root cause: the lazy durable-copy helper `ensurePrivateCopy()` called the Room DAO `upsert()` from a non-suspend function.
-- Fixed in commit `92af21f802f064ba9772b6b0bac0646e1254457c` by making `ensurePrivateCopy()` suspend. Its callers are already inside suspend/coroutine contexts, so the DAO write is now correctly awaited without `runBlocking` or blocking the thread.
-- GitHub Actions run #30 subsequently succeeded, producing the debug APK artifact recorded above.
-
-### Runtime bug being addressed
-
-The user-observed crash was traced to `ReverseImageResultAdapter` calling `ImageView.setImageURI()` with a `content://com.android.providers.media.MediaDocumentsProvider/...` URI after its permission was no longer valid. The repair removes that long-lived dependency by displaying durable private files instead.
+SIFT is intentionally **not indexed/persisted** yet. Persisting SIFT for every image would significantly expand storage because standard SIFT descriptors are floating-point vectors. The shortlist architecture gives us the accuracy benefit without paying that storage cost across the entire corpus. The trade-off is extra CPU on shortlisted candidates, which is acceptable at the current 999-image scale and will be benchmarked on-device.
 
 ### Verification status
 
-- The expanded classical stack previously built successfully and the user tested the earlier Haar implementation on 999 images.
-- The current integration-repair branch is not yet device-verified after the durable-copy changes.
-- Accuracy weights remain provisional until the controlled benchmark in the next section is completed.
+- User confirmed GitHub Actions run #37 succeeded for the all-variant local geometric reranking version.
+- User has intentionally not installed the current APK yet; device verification remains deferred until the current algorithmic pass is complete.
+- The current SIFT/rotation changes require a new CI result before they are considered build-verified.
+- No accuracy gain percentage is claimed until the controlled benchmark is run.
 
-### Required device benchmark
+### Required benchmark
 
-Use a controlled corpus containing:
+Test at minimum:
 
 1. exact same image
 2. JPEG recompression
 3. resize
 4. screenshot with borders/UI chrome
 5. mild crop
-6. larger crop
+6. large crop
 7. brightness/color change
 8. burst/near-duplicate
 9. unrelated image
-10. same subject/object from a different viewpoint
+10. same object/scene from a different viewpoint
 11. perspective change
-12. screenshot containing the source image as a region
+12. rotated image (90°, 180°, 270°)
+13. source image embedded inside a screenshot
+14. source image embedded inside a larger unrelated image
 
-For every case record the top-10 rankings and the component scores. The next optimization decisions must be based on these measured results, not on visual inspection alone.
+For every case record top-10 ranking, overall score, Haar agreement, pHash, dHash, color, edge, AKAZE local score/matches/inliers, and SIFT matches/inliers. Future tuning decisions should be based on these measurements.
+
+## Earlier 2026-08-25 entries
+
+The reverse-image feature remains a first-class screen inside the existing application shell, with its own corpus and Room fingerprint tables. MobileCLIP and the legacy semantic pipeline remain deliberately untouched during this classical-search phase. The previously confirmed 999-image test corpus is intentional and is not an indexing defect.
