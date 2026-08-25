@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-/** Standalone digiKam-style local reverse-image search screen. */
+/** Standalone local reverse-image search screen using classical visual evidence. */
 class ReverseImageSearchActivity : AppCompatActivity() {
     private lateinit var binding: ActivityReverseImageSearchBinding
     private lateinit var service: ReverseImageSearchService
@@ -30,9 +30,10 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         binding = ActivityReverseImageSearchBinding.inflate(layoutInflater)
         setContentView(binding.root)
         service = ReverseImageSearchService(applicationContext)
-        adapter = ReverseImageResultAdapter { result -> openUri(result.item.uri) }
+        adapter = ReverseImageResultAdapter { result -> ImageViewerActivity.start(this, result.item.uri) }
         binding.resultsRecyclerView.layoutManager = GridLayoutManager(this, 2)
         binding.resultsRecyclerView.adapter = adapter
+
         binding.queryImageButton.setOnClickListener { queryPicker.launch("image/*") }
         binding.addImagesButton.setOnClickListener { corpusPicker.launch(arrayOf("image/*")) }
         binding.buildIndexButton.setOnClickListener { buildIndex(false) }
@@ -45,15 +46,16 @@ class ReverseImageSearchActivity : AppCompatActivity() {
             setBusy(true)
             try {
                 for (uri in uris) {
-                    runCatching {
-                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
+                    runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 }
                 val added = withContext(Dispatchers.IO) { service.addImages(uris) }
-                binding.statusText.text = "تمت إضافة $added صورة إلى Corpus البحث العكسي المستقل. ابنِ الفهرس الآن."
+                binding.statusText.text = "تمت إضافة $added صورة. أعد بناء الفهرس بعد إضافة الصور الجديدة."
                 refreshCount()
-            } catch (t: Throwable) { showError("فشل إضافة الصور: ${t.message}") }
-            finally { setBusy(false) }
+            } catch (t: Throwable) {
+                showError("فشل إضافة الصور: ${t.message}")
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
@@ -61,48 +63,59 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         lifecycleScope.launch {
             setBusy(true)
             binding.progressBar.progress = 0
-            binding.statusText.text = if (rebuild) "إعادة بناء فهرس Haar..." else "بناء فهرس Haar..."
+            binding.statusText.text = if (rebuild) "إعادة بناء Haar + Classical Visual Index..." else "بناء Haar + Classical Visual Index..."
             try {
                 val result = withContext(Dispatchers.Default) {
                     service.buildIndex(rebuild) { progress ->
                         runOnUiThread {
                             binding.progressBar.max = progress.total.coerceAtLeast(1)
                             binding.progressBar.progress = progress.processed
-                            binding.counterText.text = "${progress.processed}/${progress.total} • جديد ${progress.indexed} • متخطى ${progress.skipped} • فشل ${progress.failed}"
+                            binding.counterText.text = "${progress.processed}/${progress.total} • جديد ${progress.indexed} • Local features ${progress.localFeatureIndexed} • فشل ${progress.failed}"
                         }
                     }
                 }
-                binding.statusText.text = "اكتمل الفهرس • جديد ${result.indexed} • موجود ${result.skipped} • فشل ${result.failed}"
+                binding.statusText.text = "اكتمل الفهرس • Haar + pHash + dHash + Color + Shape + AKAZE/RANSAC."
                 refreshCount()
-            } catch (t: Throwable) { showError("فشل بناء الفهرس: ${t.message}") }
-            finally { setBusy(false) }
+            } catch (t: Throwable) {
+                showError("فشل بناء الفهرس: ${t.message}")
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
     private fun runSearch(uri: Uri) {
         lifecycleScope.launch {
             setBusy(true)
-            binding.statusText.text = "حساب بصمة صورة البحث ثم المقارنة محليًا..."
+            binding.statusText.text = "تحليل صورة البحث: Haar + hashes + color + shape + AKAZE/RANSAC..."
             try {
                 val threshold = binding.thresholdSeek.progress / 100f
-                val results = withContext(Dispatchers.Default) { service.search(uri, limit = 50, minimumSimilarity = threshold) }
+                val results = withContext(Dispatchers.Default) {
+                    service.search(uri, limit = 50, minimumSimilarity = threshold)
+                }
                 adapter.submitList(results)
                 binding.counterText.text = "${results.size} نتيجة • الحد الأدنى ${String.format(Locale.US, "%.0f", threshold * 100)}%"
-                binding.statusText.text = if (results.isEmpty()) "لا توجد صور ضمن العتبة الحالية." else "تم العثور على ${results.size} صورة مرتبة حسب التشابه البصري."
-            } catch (t: Throwable) { showError("تعذر تنفيذ البحث العكسي: ${t.message}") }
-            finally { setBusy(false) }
+                binding.statusText.text = if (results.isEmpty()) {
+                    "لا توجد صور ضمن العتبة الحالية. جرّب خفضها بعد التأكد من بناء الفهرس الجديد."
+                } else {
+                    "${results.size} نتيجة • الترتيب يجمع Haar مع الأدلة الكلاسيكية المحلية."
+                }
+            } catch (t: Throwable) {
+                showError("تعذر تنفيذ البحث العكسي: ${t.message}")
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
     private fun refreshCount() {
         lifecycleScope.launch {
             val items = withContext(Dispatchers.IO) { service.itemCount() }
-            val fingerprints = withContext(Dispatchers.IO) { service.fingerprintCount() }
-            binding.indexCountText.text = "Corpus: $items صورة • بصمات Haar: $fingerprints"
+            val haar = withContext(Dispatchers.IO) { service.fingerprintCount() }
+            val classical = withContext(Dispatchers.IO) { service.classicalFingerprintCount() }
+            binding.indexCountText.text = "Corpus: $items صورة • Haar: $haar • Classical: $classical"
         }
     }
-
-    private fun openUri(uri: String) { ImageViewerActivity.start(this, uri) }
 
     private fun setBusy(value: Boolean) {
         binding.progressBar.visibility = if (value) View.VISIBLE else View.GONE
@@ -118,5 +131,8 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
-    override fun onDestroy() { service.close(); super.onDestroy() }
+    override fun onDestroy() {
+        service.close()
+        super.onDestroy()
+    }
 }
