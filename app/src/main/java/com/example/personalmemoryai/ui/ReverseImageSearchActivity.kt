@@ -17,28 +17,38 @@ import java.util.Locale
 
 /** Standalone digiKam-style local reverse-image search screen. */
 class ReverseImageSearchActivity : AppCompatActivity() {
-
     private lateinit var binding: ActivityReverseImageSearchBinding
     private lateinit var service: ReverseImageSearchService
     private lateinit var adapter: ReverseImageResultAdapter
 
-    private val queryPicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) runSearch(uri)
-    }
+    private val queryPicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) runSearch(uri) }
+    private val corpusPicker = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris -> if (!uris.isNullOrEmpty()) addImages(uris) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityReverseImageSearchBinding.inflate(layoutInflater)
         setContentView(binding.root)
         service = ReverseImageSearchService(applicationContext)
-        adapter = ReverseImageResultAdapter { result -> ImageViewerActivity.start(this, result.image.uri) }
+        adapter = ReverseImageResultAdapter { result -> openUri(result.item.uri) }
         binding.resultsRecyclerView.layoutManager = GridLayoutManager(this, 2)
         binding.resultsRecyclerView.adapter = adapter
-
         binding.queryImageButton.setOnClickListener { queryPicker.launch("image/*") }
+        binding.addImagesButton.setOnClickListener { corpusPicker.launch("image/*") }
         binding.buildIndexButton.setOnClickListener { buildIndex(false) }
         binding.rebuildIndexButton.setOnClickListener { buildIndex(true) }
         refreshCount()
+    }
+
+    private fun addImages(uris: List<Uri>) {
+        lifecycleScope.launch {
+            setBusy(true)
+            try {
+                val added = withContext(Dispatchers.IO) { service.addImages(uris) }
+                binding.statusText.text = "تمت إضافة $added صورة إلى Corpus البحث العكسي المستقل. ابنِ الفهرس الآن."
+                refreshCount()
+            } catch (t: Throwable) { showError("فشل إضافة الصور: ${t.message}") }
+            finally { setBusy(false) }
+        }
     }
 
     private fun buildIndex(rebuild: Boolean) {
@@ -56,13 +66,10 @@ class ReverseImageSearchActivity : AppCompatActivity() {
                         }
                     }
                 }
-                binding.statusText.text = "اكتمل الفهرس العكسي • ${result.indexed} صورة مفهرسة • ${result.skipped} موجودة مسبقًا • ${result.failed} فشلت"
+                binding.statusText.text = "اكتمل الفهرس • جديد ${result.indexed} • موجود ${result.skipped} • فشل ${result.failed}"
                 refreshCount()
-            } catch (t: Throwable) {
-                showError("فشل بناء فهرس الصور: ${t.message}")
-            } finally {
-                setBusy(false)
-            }
+            } catch (t: Throwable) { showError("فشل بناء الفهرس: ${t.message}") }
+            finally { setBusy(false) }
         }
     }
 
@@ -72,34 +79,31 @@ class ReverseImageSearchActivity : AppCompatActivity() {
             binding.statusText.text = "حساب بصمة صورة البحث ثم المقارنة محليًا..."
             try {
                 val threshold = binding.thresholdSeek.progress / 100f
-                val results = withContext(Dispatchers.Default) {
-                    service.search(uri, limit = 50, minimumSimilarity = threshold)
-                }
+                val results = withContext(Dispatchers.Default) { service.search(uri, limit = 50, minimumSimilarity = threshold) }
                 adapter.submitList(results)
                 binding.counterText.text = "${results.size} نتيجة • الحد الأدنى ${String.format(Locale.US, "%.0f", threshold * 100)}%"
-                binding.statusText.text = if (results.isEmpty()) {
-                    "لا توجد صور ضمن العتبة الحالية. جرّب خفض العتبة أو إعادة بناء الفهرس."
-                } else {
-                    "تم العثور على ${results.size} صورة مرتبة حسب التشابه البصري."
-                }
-            } catch (t: Throwable) {
-                showError("تعذر تنفيذ البحث العكسي: ${t.message}")
-            } finally {
-                setBusy(false)
-            }
+                binding.statusText.text = if (results.isEmpty()) "لا توجد صور ضمن العتبة الحالية." else "تم العثور على ${results.size} صورة مرتبة حسب التشابه البصري."
+            } catch (t: Throwable) { showError("تعذر تنفيذ البحث العكسي: ${t.message}") }
+            finally { setBusy(false) }
         }
     }
 
     private fun refreshCount() {
         lifecycleScope.launch {
-            val count = withContext(Dispatchers.IO) { service.fingerprintCount() }
-            binding.indexCountText.text = "بصمات محلية: $count"
+            val items = withContext(Dispatchers.IO) { service.itemCount() }
+            val fingerprints = withContext(Dispatchers.IO) { service.fingerprintCount() }
+            binding.indexCountText.text = "Corpus: $items صورة • بصمات Haar: $fingerprints"
         }
+    }
+
+    private fun openUri(uri: String) {
+        ImageViewerActivity.start(this, uri)
     }
 
     private fun setBusy(value: Boolean) {
         binding.progressBar.visibility = if (value) View.VISIBLE else View.GONE
         binding.queryImageButton.isEnabled = !value
+        binding.addImagesButton.isEnabled = !value
         binding.buildIndexButton.isEnabled = !value
         binding.rebuildIndexButton.isEnabled = !value
         binding.thresholdSeek.isEnabled = !value
@@ -110,8 +114,5 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
-    override fun onDestroy() {
-        service.close()
-        super.onDestroy()
-    }
+    override fun onDestroy() { service.close(); super.onDestroy() }
 }
