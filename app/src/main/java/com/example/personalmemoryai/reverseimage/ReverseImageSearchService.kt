@@ -11,7 +11,6 @@ import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.UUID
 
@@ -125,7 +124,10 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 if (unchanged) {
                     skipped++
                 } else {
-                    val bitmap = BitmapFactory.decodeFile(item.filePath)
+                    val localPath = item.filePath ?: throw IllegalStateException(
+                        "لا يوجد مسار محلي محفوظ للصورة: ${item.displayName}"
+                    )
+                    val bitmap = BitmapFactory.decodeFile(localPath)
                         ?: throw IllegalStateException("تعذر قراءة النسخة المحلية: ${item.displayName}")
                     try {
                         val haar = haarEngine.fingerprint(bitmap)
@@ -231,7 +233,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 val item = items[fp.itemId] ?: continue
                 val durableItem = withContext(Dispatchers.IO) { ensurePrivateCopy(item) }
                 val targetHaar = HaarFingerprintEngine.Fingerprint(
-                    durableItem.let { fp.width },
+                    fp.width,
                     fp.height,
                     fp.channels,
                     fp.signature
