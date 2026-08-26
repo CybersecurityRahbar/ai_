@@ -1,5 +1,44 @@
 # Personal Memory AI — Project Progress Log
 
+## 2026-08-27 — Native system file/gallery picker added without removing bulk gallery
+
+### User-requested picker architecture
+
+The existing paged MediaStore bulk picker is retained. It is NOT replaced.
+
+A second source is now available from the same `BulkImagePickerActivity`:
+
+- `OPEN SYSTEM FILES / GALLERY`
+- Uses Android `ActivityResultContracts.OpenMultipleDocuments()` with `image/*`.
+- Opens the native system document experience so users can choose from Gallery, Files, folders, and other document providers exposed by Android.
+- No application-defined 500/1000 selection cap is imposed by this route.
+- Provider/UI limits, if any, remain platform/provider limits.
+- Selected document URIs are deduplicated and converted into the same app-private `.uris` queue used by the existing ingestion pipeline.
+- Persistent read permission is attempted with `takePersistableUriPermission`; providers that do not support it are handled without crashing.
+- Reverse Image and Advanced both continue to use the same `BulkImagePickerActivity`, so the new route is automatically available to both top-level sections.
+
+### Implementation commits
+
+- `f396a51c2563b627f62c8c8c16a0c1ebc234bf50` — system multi-document picker implementation.
+- `367756339658898f9ae39ae4f5f27b13a58466c2` — picker UI button/subtitle.
+- `34726b69b80bac0f81dbf8ef2c8b4c8aecf6ddc4` — persistent context ledger update.
+
+### Existing picker retained
+
+`BulkImagePickerActivity` still provides:
+
+- paged MediaStore browsing at 100 items per page;
+- `SELECT ALL`;
+- `LOAD NEXT 100`;
+- `ADD SELECTED`;
+- the explicit Activity component fix for `launchIntent()` that resolved the prior `ActivityNotFoundException`.
+
+### Shared ingestion remains unchanged
+
+Both picker sources ultimately produce the same `RESULT_QUEUE_FILE` and feed `ImageCorpusImportWorker`.
+
+No duplicate image decode or second indexing architecture is introduced.
+
 ## 2026-08-26 — Advanced Visual Intelligence feature-complete candidate
 
 ### Architecture locked by user
@@ -165,22 +204,27 @@ A controlled device benchmark is stored at:
 
 It covers accuracy, false positives, performance, large-scale indexing, lifecycle, and release acceptance. It explicitly forbids claiming calibration or improvement without measurements.
 
-### Current CI status
+### Runtime correction previously found
 
-CI #140 succeeded for the regional/structural/parallel baseline.
+The first comprehensive device installation exposed an `ActivityNotFoundException` on the Add Images path because `BulkImagePickerActivity.launchIntent()` returned a bare `Intent()` with extras only. That was fixed by explicit component routing, and a regression test was added.
 
-A newer commit containing the final expandable UX and latest warning cleanup has generated a fresh Android Build run. That exact commit must pass before the feature-complete build is considered testable.
+## Current CI status
 
-## Next phase — one coherent device validation
+CI #149 successfully built and uploaded a debug APK after the explicit bulk-picker Intent fix. The newer system-picker commits above require their own CI validation. A green build proves compilation/package correctness but does not prove runtime integration.
 
-1. Verify the latest CI run for the final Advanced UX/warning cleanup commit.
-2. Freeze Advanced scope after static architecture review.
-3. Install one final coherent APK only after CI is green.
-4. Validate 999 images first.
-5. Validate 5,000–6,000 images.
-6. Validate rotation, background, screen-off, process recreation/resume.
-7. Run the full accuracy matrix from the benchmark document.
-8. Use measured evidence to decide any threshold/performance/calibration refinements.
+## Next phase — device validation after system-picker CI
+
+1. Verify the CI run for the system-picker commits.
+2. Install one exact green APK.
+3. Test `ADD IMAGES` from both Reverse Image and Advanced.
+4. Inside the picker, test both:
+   - existing paged local gallery;
+   - new `OPEN SYSTEM FILES / GALLERY` route.
+5. Select images from Gallery and Files/folders and verify queue/import.
+6. Test large multi-select without an app-defined 500/1000 cap.
+7. Test shared indexing, rotation, backgrounding, screen-off, process recreation and resume.
+8. Test repeated searches and Advanced `WHY THIS RESULT` explanations.
+9. Run the full controlled accuracy/performance benchmark.
 
 ## Permanent constraints
 
