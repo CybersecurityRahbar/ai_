@@ -1,7 +1,9 @@
 package com.example.personalmemoryai.ui
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Parcelable
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,8 +31,12 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
     private var searchJob: Job? = null
     private var observedWorkId: UUID? = null
 
-    private val corpusPicker = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-        if (uris.isNullOrEmpty()) {
+    private val corpusPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val uris = result.data?.getParcelableArrayListExtra<Parcelable>(BulkImagePickerActivity.RESULT_URIS)
+            ?.mapNotNull { it as? Uri }
+            .orEmpty()
+        if (uris.isEmpty()) {
             binding.statusText.text = "لم يتم اختيار صور لإضافتها إلى Corpus المشترك."
             return@registerForActivityResult
         }
@@ -64,7 +70,9 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
         binding.resultsRecyclerView.layoutManager = GridLayoutManager(this, 1)
         binding.resultsRecyclerView.adapter = adapter
 
-        binding.addImagesButton.setOnClickListener { corpusPicker.launch("image/*") }
+        binding.addImagesButton.setOnClickListener {
+            corpusPicker.launch(BulkImagePickerActivity.launchIntent("ADVANCED VISUAL / SHARED CORPUS"))
+        }
         binding.buildIndexButton.setOnClickListener { startSharedIndex(false) }
         binding.rebuildIndexButton.setOnClickListener { startSharedIndex(true) }
         binding.queryImageButton.setOnClickListener {
@@ -116,15 +124,11 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
 
     private fun pollSharedIndex() {
         lifecycleScope.launch {
-            while (!isFinishing && !isDestroyed) {
-                val infos = withContext(Dispatchers.IO) {
-                    WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(UnifiedVisualIndexWorker.WORK_NAME).get()
-                }
-                val running = infos.firstOrNull { !it.state.isFinished }
-                if (running != null) observeWork(running.id)
-                delay(2000)
-                if (running != null) break
+            val infos = withContext(Dispatchers.IO) {
+                WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(UnifiedVisualIndexWorker.WORK_NAME).get()
             }
+            val running = infos.firstOrNull { !it.state.isFinished }
+            if (running != null) observeWork(running.id)
         }
     }
 
