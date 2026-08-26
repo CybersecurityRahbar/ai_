@@ -29,6 +29,23 @@
             android:textColor="#7DFF19"
             android:textSize="9sp"
             android:textStyle="bold" />
+        <Button
+            android:id="@+id/openSystemImagesButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="9dp"
+            android:text="OPEN SYSTEM FILES / GALLERY"
+            android:textColor="#49D9FF"
+            android:textStyle="bold"
+            android:allCaps="false"
+            android:background="@drawable/bg_intel_button" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:text="Files • Gallery • folders • document providers • multi-select"
+            android:textColor="#7DAEA2"
+            android:textSize="8sp" />
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
