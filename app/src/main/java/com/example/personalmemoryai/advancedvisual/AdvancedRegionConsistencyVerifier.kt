@@ -4,10 +4,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-/**
- * Deterministic, model-free spatial verifier for Advanced Visual Intelligence.
- * It checks whether multiple independent spatial signatures agree in corresponding regions.
- */
+/** Deterministic, model-free spatial verifier for Advanced Visual Intelligence. */
 class AdvancedRegionConsistencyVerifier {
     data class Score(
         val similarity: Float,
@@ -24,33 +21,27 @@ class AdvancedRegionConsistencyVerifier {
         a: AdvancedVisualFingerprintEngine.Fingerprint,
         b: AdvancedVisualFingerprintEngine.Fingerprint
     ): Score {
-        val structure = spatialByteSimilarity(a.grayPyramid, b.grayPyramid)
+        val structure = spatialByteSimilarity(to8x8(a.grayPyramid), to8x8(b.grayPyramid))
         val spatialColor = spatialByteSimilarity(a.spatialColor, b.spatialColor)
         val spatialTexture = spatialByteSimilarity(a.spatialLbp, b.spatialLbp)
         val layout = spatialByteSimilarity(a.layoutSignature, b.layoutSignature)
 
-        val cells = minOf(
-            a.grayPyramid.size,
-            b.grayPyramid.size,
-            a.layoutSignature.size,
-            b.layoutSignature.size
-        ).coerceAtLeast(1)
+        val aGray = to8x8(a.grayPyramid)
+        val bGray = to8x8(b.grayPyramid)
+        val aLayout = a.layoutSignature
+        val bLayout = b.layoutSignature
+        val cells = minOf(64, aGray.size, bGray.size, aLayout.size, bLayout.size).coerceAtLeast(1)
         var stable = 0
-        var total = 0
         for (i in 0 until cells) {
-            val ds = normalizedByteDistance(a.grayPyramid[i], b.grayPyramid[i])
-            val dl = normalizedByteDistance(a.layoutSignature[i], b.layoutSignature[i])
+            val ds = normalizedByteDistance(aGray[i], bGray[i])
+            val dl = normalizedByteDistance(aLayout[i], bLayout[i])
             if (ds <= 0.22f && dl <= 0.28f) stable++
-            total++
         }
-        val stableRatio = stable.toFloat() / total.coerceAtLeast(1)
+        val stableRatio = stable.toFloat() / cells.toFloat()
 
         val disagreement = max(
-            0f,
-            max(
-                abs(structure - spatialColor),
-                max(abs(structure - spatialTexture), abs(layout - structure))
-            )
+            abs(structure - spatialColor),
+            max(abs(structure - spatialTexture), abs(layout - structure))
         ).coerceIn(0f, 1f)
 
         var similarity = (
@@ -85,13 +76,27 @@ class AdvancedRegionConsistencyVerifier {
         )
     }
 
+    private fun to8x8(source: ByteArray): ByteArray {
+        if (source.size == 64) return source
+        if (source.size != 256) return source
+        val out = ByteArray(64)
+        for (gy in 0 until 8) for (gx in 0 until 8) {
+            var sum = 0
+            for (dy in 0 until 2) for (dx in 0 until 2) {
+                val i = (gy * 2 + dy) * 16 + (gx * 2 + dx)
+                sum += source[i].toInt() and 0xFF
+            }
+            out[gy * 8 + gx] = (sum / 4).coerceIn(0, 255).toByte()
+        }
+        return out
+    }
+
     private fun spatialByteSimilarity(a: ByteArray, b: ByteArray): Float {
         val n = minOf(a.size, b.size)
         if (n == 0) return 0f
         var distance = 0.0
         for (i in 0 until n) distance += abs((a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF)) / 255.0
-        val mean = distance / n
-        return (1.0 - mean).toFloat().coerceIn(0f, 1f)
+        return (1.0 - distance / n).toFloat().coerceIn(0f, 1f)
     }
 
     private fun normalizedByteDistance(a: Byte, b: Byte): Float =
