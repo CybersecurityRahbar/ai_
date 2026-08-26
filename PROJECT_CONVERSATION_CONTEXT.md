@@ -70,7 +70,7 @@ The optimized service:
 - one decode per image per indexing pass;
 - up to 4 CPU workers;
 - feature batch size 16;
-- Haar + Classical V4 + Advanced from the same bitmap;
+- Haar + Classical + Advanced from the same bitmap;
 - one Room transaction per batch through `VisualIndexBatchDao`;
 - per-image failure isolation;
 - durable `VisualIndexOperationEntity` state after each committed batch;
@@ -106,104 +106,88 @@ Persistent signals:
 - entropy;
 - aspect ratio.
 
-V2 includes consensus and contradiction penalties. Strong color or texture alone cannot freely inflate a result when structure disagrees.
+V2 applies consensus and contradiction penalties. Strong color or texture alone cannot freely inflate a result when structural evidence disagrees.
 
 ### Advanced candidate recall/fusion
 
-Advanced search computes V2 evidence, selects its top 64, obtains up to 64 existing Reverse Image candidates, unions the IDs, then performs final fusion. Thus neither engine can erase a strong candidate from the other merely due to different global ranking.
+Advanced computes its own top 64 V2 candidates and unions them with the existing Reverse Image top 64 before fusion. This prevents either family from suppressing a strong candidate from the other.
 
 ### Advanced query variants
 
-Advanced evaluates:
-- original;
-- rotation 90°;
-- rotation 180°;
-- rotation 270°;
-- center crop 92%;
-- center crop 82%;
-- center crop 72%.
+Advanced evaluates original, 90°, 180°, 270°, and center crops 92%, 82%, 72%. The best query variant is retained and shown in result evidence.
 
-The winning variant is retained in each result and shown to the user.
+### Advanced Regional Consistency layer
 
-### Advanced Regional Consistency layer — NEW
+`AdvancedRegionConsistencyVerifier.kt` adds a deterministic spatial cross-check using already persisted V2 data:
 
-`AdvancedRegionConsistencyVerifier.kt` adds a deterministic spatial cross-check using the already stored V2 signatures:
-
-- pooled 8×8 structure from the stored 16×16 grayscale signature;
+- pooled 8×8 structure derived from 16×16 grayscale;
 - 4×4 spatial color;
 - 4×4 spatial texture;
 - 8×8 layout;
 - stable-region ratio;
 - inter-signal disagreement.
 
-It adds no database image copies and no second decode. It is intended to suppress false positives where global color/texture looks similar but the spatial arrangement does not.
+It adds no database image copies and no additional persistent index. It is designed to suppress false positives caused by global color/texture agreement with incompatible spatial arrangement.
 
-### Advanced Multiscale Structural Consensus layer — NEW
+### Advanced Multiscale Structural Consensus layer
 
-`AdvancedStructuralConsensusEngine.kt` reuses existing V2 grayscale/layout features and checks coarse + fine structural agreement plus layout. No additional stored fingerprint is required.
+`AdvancedStructuralConsensusEngine.kt` checks coarse and fine structural agreement plus layout using the existing stored V2 signatures. No additional stored fingerprint is required.
 
-### Advanced evidence gate/fusion — NEW
+### Advanced Evidence Gate
 
-The final Advanced score now combines:
+The final Advanced score combines:
 
-`existing Classical/Haar evidence + Advanced V2 + Regional Consistency + Multiscale Structural Consensus`
+`existing Classical/Haar evidence + Advanced V2 + Regional Consistency + Multiscale Structural Consensus`.
 
-with explicit penalties for weak region coverage, strong-coarse/weak-fine conflict, and spatial evidence disagreement.
+It applies explicit penalties for weak region alignment, strong coarse/weak fine structure, and spatial evidence disagreement.
 
-`confidencePercent` is separate from `finalPercent`. It is an evidence-strength heuristic based on cross-signal consensus, regional stability, structural consensus, and existing geometric evidence. It is NOT a statistically calibrated probability and must not be presented as one before benchmark data.
+`confidencePercent` is separate from `finalPercent`; it is an evidence-strength heuristic, NOT a statistical probability. Do not call it statistically calibrated before benchmark data.
 
-### Explainability
+### Advanced retrieval performance
 
-Each result can show:
+Advanced V2 variant comparisons are parallelized with bounded four-way CPU concurrency while retaining all corpus items and all 7 variants. Indexed target fingerprints are mapped by `itemId` once to avoid repeated O(N) lookups.
+
+## Explainability
+
+Advanced result evidence exposes:
 
 - final similarity;
 - evidence confidence;
-- classical/Haar evidence;
+- Classical/Haar evidence;
 - Advanced V2 component evidence;
 - regional consistency;
-- stable region coverage;
+- stable-region coverage;
 - spatial disagreement;
 - structural consensus;
 - coarse/fine structure;
-- winning query variant;
-- reason codes and contradiction evidence.
+- best query variant;
+- reason/contradiction codes.
 
 The aggregate score is never mislabeled as Haar.
 
-## Database schema
-
-Advanced V2 fields:
-
-- `spatialColor BLOB`
-- `spatialLbp BLOB`
-- `gradientMagnitude BLOB`
-- `illuminationRobustStructure BLOB`
-
-Database version 12 includes migration `11→12` for the V2 feature table.
-
 ## Current user instruction
 
-The user does **not** want to install or test intermediate builds. Complete the important Advanced Visual Intelligence work first, then produce one coherent build for comprehensive testing of the whole system.
+The user explicitly does **not** want to install or test intermediate builds. Complete the important Advanced Visual Intelligence work first, then create one coherent build for comprehensive testing of the whole system.
 
-## Latest completed changes
+## Latest completed changes in this conversation
 
-- CI #128 succeeded after V2 entity compatibility fixes.
-- Added `AdvancedRegionConsistencyVerifier`.
+- Confirmed CI #128 succeeded for the prior Advanced V2 compile-safe baseline.
+- Added `AdvancedRegionConsistencyVerifier` and corrected its 8×8 structural alignment.
 - Added `AdvancedStructuralConsensusEngine`.
 - Integrated both into `AdvancedVisualIntelligenceService`.
-- Added regional and structural evidence fields to `Evidence`.
-- Added separate confidence percentage.
-- Expanded result UI to display regional/structural evidence.
-- Updated `PROJECT_PROGRESS.md` with this analytical layer.
-- Fixed a potential O(N²) stored-fingerprint lookup by creating an itemId→Fingerprint map once.
+- Added regional, structural, and confidence evidence fields.
+- Updated `AdvancedVisualResultAdapter` to display the new evidence.
+- Parallelized all Advanced query-variant/global-corpus comparisons with bounded four-way concurrency without reducing recall.
+- Fixed potential O(N²) indexed-fingerprint lookup by prebuilding an `itemId -> Fingerprint` map.
+- Updated `PROJECT_PROGRESS.md` and this ledger with the new analytical layers and invariants.
 
 ## Next work sequence
 
-1. Verify fresh CI for the newest Advanced regional/structural commits.
-2. Complete expandable “Why this result?” UX if the current result card does not provide sufficient detail.
-3. Hardening of scale/durable background behavior.
-4. On-device benchmark at 1k → 5k → 6k images.
-5. Accuracy benchmark covering exact duplicate, recompression, resize, screenshot/UI frame, crops, illumination/color changes, burst near-duplicates, unrelated images, rotations, perspective/viewpoint, and image-inside-screenshot.
+1. Verify fresh CI for the latest Advanced region/structural/parallel changes.
+2. Complete expandable `Why this result?` UI if the current card remains too dense.
+3. Finish scale/durable background validation only after Advanced is considered feature-complete.
+4. Run 1k → 5k → 6k indexing benchmarks.
+5. Run accuracy benchmarks: exact duplicate, recompression, resize, screenshot/UI frame, crops, illumination/color changes, burst near-duplicates, unrelated images, rotations, perspective/viewpoint, image-inside-screenshot.
 6. Only after benchmark data, calibrate score/confidence bands.
 
 ## Permanent rules
@@ -217,6 +201,6 @@ The user does **not** want to install or test intermediate builds. Complete the 
 - Never put thousands of URIs into an Intent.
 - Never let one bad media item abort a large batch.
 - Never let Activity destruction cancel durable indexing.
-- Never call an aggregate score Haar.
+- Never call the aggregate score Haar.
 - Never claim accuracy/performance improvement without measured evidence.
 - Never add algorithms merely for novelty; every engine must have a defined role, representation, metric, cost, and benchmark value.
