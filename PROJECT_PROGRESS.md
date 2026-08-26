@@ -1,5 +1,33 @@
 # Personal Memory AI — Project Progress Log
 
+## 2026-08-27 — Advanced results now show images inline
+
+### User-requested result UX
+
+Advanced Visual Intelligence result cards now mirror the existing Local Reverse Image Search presentation:
+
+- The matched image is visible immediately in every result card.
+- Compact metadata appears directly under the thumbnail: filename, final similarity, confidence, Advanced score, regional consistency, structural consensus, and winning query variant.
+- Tapping the result card continues to open the full image/details through `ImageViewerActivity`.
+- `WHY THIS RESULT` remains a separate expandable control for the detailed evidence report.
+- RecyclerView recycling explicitly clears the image, listeners, bound path, and expanded state to prevent stale content from appearing in another result row.
+- Thumbnail decoding happens on a small background executor instead of the main/UI thread, with a bound-path check before posting the bitmap back to the row.
+
+### Files changed
+
+- `app/src/main/res/layout/item_advanced_visual_result.xml`
+  - Added the inline result thumbnail and compact metadata fields while retaining the explainable-details section.
+- `app/src/main/java/com/example/personalmemoryai/ui/AdvancedVisualResultAdapter.kt`
+  - Added asynchronous local thumbnail loading.
+  - Added recycled-view cleanup and bound-path protection.
+  - Kept card click → full image behavior and `WHY THIS RESULT` expansion.
+
+### Design invariant
+
+Advanced uses the same visual-result interaction model requested for Local Reverse Image Search: **see the image immediately; tap for the full image/details; expand Why for the evidence breakdown.** No search algorithm, score, index, candidate count, or retrieval stage was changed by this UI update.
+
+## Previous progress follows
+
 ## 2026-08-27 — Native system file/gallery picker added without removing bulk gallery
 
 ### User-requested picker architecture
@@ -175,6 +203,7 @@ Penalties cover weak consensus, color/structure conflict, texture/structure conf
 `AdvancedVisualResultAdapter` now has:
 
 - compact result summary;
+- visible result thumbnail;
 - expandable `WHY THIS RESULT ▸` control;
 - detailed component breakdown;
 - actual Haar/pHash/dHash/classical evidence;
@@ -210,21 +239,16 @@ The first comprehensive device installation exposed an `ActivityNotFoundExceptio
 
 ## Current CI status
 
-CI #149 successfully built and uploaded a debug APK after the explicit bulk-picker Intent fix. The newer system-picker commits above require their own CI validation. A green build proves compilation/package correctness but does not prove runtime integration.
+The latest green build before the inline-thumbnail UI change was CI #149. The inline-thumbnail UI commits require their own CI validation before installation.
 
-## Next phase — device validation after system-picker CI
+## Next phase — UI regression validation
 
-1. Verify the CI run for the system-picker commits.
+1. Verify the latest CI after the inline-thumbnail UI change.
 2. Install one exact green APK.
-3. Test `ADD IMAGES` from both Reverse Image and Advanced.
-4. Inside the picker, test both:
-   - existing paged local gallery;
-   - new `OPEN SYSTEM FILES / GALLERY` route.
-5. Select images from Gallery and Files/folders and verify queue/import.
-6. Test large multi-select without an app-defined 500/1000 cap.
-7. Test shared indexing, rotation, backgrounding, screen-off, process recreation and resume.
-8. Test repeated searches and Advanced `WHY THIS RESULT` explanations.
-9. Run the full controlled accuracy/performance benchmark.
+3. Test Advanced result thumbnails are visible without tapping.
+4. Tap a result to verify full-image/details opening.
+5. Expand `WHY THIS RESULT` and verify evidence consistency.
+6. Then resume the full controlled accuracy/performance benchmark.
 
 ## Permanent constraints
 
