@@ -9,6 +9,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualFingerprintDao
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualFingerprintEntity
+import com.example.personalmemoryai.indexing.VisualIndexBatchDao
 import com.example.personalmemoryai.reverseimage.ClassicalVisualFingerprintDao
 import com.example.personalmemoryai.reverseimage.ClassicalVisualFingerprintEntity
 import com.example.personalmemoryai.reverseimage.HaarFingerprintDao
@@ -32,6 +33,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reverseImageItemDao(): ReverseImageItemDao
     abstract fun classicalVisualFingerprintDao(): ClassicalVisualFingerprintDao
     abstract fun advancedVisualFingerprintDao(): AdvancedVisualFingerprintDao
+    abstract fun visualIndexBatchDao(): VisualIndexBatchDao
 
     companion object {
         private const val DATABASE_NAME = "personal_memory.db"
