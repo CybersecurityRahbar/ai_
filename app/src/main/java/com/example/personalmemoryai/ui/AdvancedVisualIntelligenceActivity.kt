@@ -16,11 +16,12 @@ import com.example.personalmemoryai.indexing.ImageCorpusImportScheduler
 import com.example.personalmemoryai.indexing.ImageCorpusImportWorker
 import com.example.personalmemoryai.indexing.UnifiedVisualIndexWorker
 import com.example.personalmemoryai.indexing.VisualIndexWorkScheduler
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -30,7 +31,6 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
     private lateinit var adapter: AdvancedVisualResultAdapter
     private var searchJob: Job? = null
     private var observedWorkId: UUID? = null
-    private var importObservationJob: Job? = null
 
     private val corpusPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != RESULT_OK) return@registerForActivityResult
@@ -39,9 +39,19 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
             binding.statusText.text = "لم يتم إنشاء قائمة الصور المختارة."
             return@registerForActivityResult
         }
-        val id = ImageCorpusImportScheduler.enqueue(applicationContext, queuePath)
-        binding.statusText.text = "تمت إضافة مهمة استيراد الصور إلى الخلفية: $id"
-        observeImport(id)
+        lifecycleScope.launch {
+            setBusy(true)
+            try {
+                val id = withContext(Dispatchers.IO) {
+                    ImageCorpusImportScheduler.enqueue(applicationContext, queuePath)
+                }
+                binding.statusText.text = "بدأ استيراد الصور في الخلفية • العملية: ${id.toString().take(8)}"
+                observeImport(id)
+            } catch (t: Throwable) {
+                showError("تعذر بدء استيراد الصور: ${t.message}")
+                setBusy(false)
+            }
+        }
     }
 
     private val queryPicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -95,42 +105,12 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
                 binding.progressBar.max = total.coerceAtLeast(1)
                 binding.progressBar.progress = processed.coerceIn(0, binding.progressBar.max)
                 binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
-                binding.counterText.text = "Indexed ${p.getInt(UnifiedVisualIndexWorker.KEY_INDEXED, 0)} • Skipped ${p.getInt(UnifiedVisualIndexWorker.KEY_SKIPPED, 0)} • Failed ${p.getInt(UnifiedVisualIndexWorker.KEY_FAILED, 0)}"
+                binding.counterText.text = "نجح ${p.getInt(UnifiedVisualIndexWorker.KEY_INDEXED, 0)} • تخطي ${p.getInt(UnifiedVisualIndexWorker.KEY_SKIPPED, 0)} • فشل ${p.getInt(UnifiedVisualIndexWorker.KEY_FAILED, 0)}"
                 binding.statusText.text = when (info.state) {
-                    WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> "Shared visual indexing in progress…"
-                    WorkInfo.State.SUCCEEDED -> "اكتملت الفهرسة المشتركة لجميع المحركات."
-                    WorkInfo.State.FAILED -> "فشلت الفهرسة: ${info.outputData.getString("error") ?: "خطأ غير محدد"}"
+                    WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> "الفهرسة المشتركة في الخلفية • Haar + Classical V4 + Advanced Visual"
+                    WorkInfo.State.SUCCEEDED -> "اكتمل الفهرس المشترك لجميع المحركات."
+                    WorkInfo.State.FAILED -> "فشل الفهرس: ${info.outputData.getString("error") ?: "خطأ غير محدد"}"
                     WorkInfo.State.CANCELLED -> "تم إلغاء الفهرسة."
-                    else -> info.state.name
-                }
-                if (info.state.isFinished) break
-                delay(700)
-            }
-            setBusy(false)
-            refreshCounts()
-        }
-    }
-
-    private fun observeImport(id: UUID) {
-        importObservationJob?.cancel()
-        importObservationJob = lifecycleScope.launch {
-            setBusy(true)
-            while (true) {
-                val info = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfoById(id).get() } ?: break
-                val p = info.progress
-                val processed = p.getInt(ImageCorpusImportWorker.KEY_PROCESSED, 0)
-                val total = p.getInt(ImageCorpusImportWorker.KEY_TOTAL, 0)
-                val percent = p.getInt(ImageCorpusImportWorker.KEY_PERCENT, 0)
-                binding.progressBar.visibility = View.VISIBLE
-                binding.progressBar.max = total.coerceAtLeast(1)
-                binding.progressBar.progress = processed.coerceIn(0, binding.progressBar.max)
-                binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
-                binding.counterText.text = "Added ${p.getInt(ImageCorpusImportWorker.KEY_ADDED, 0)} • Skipped ${p.getInt(ImageCorpusImportWorker.KEY_SKIPPED, 0)} • Failed ${p.getInt(ImageCorpusImportWorker.KEY_FAILED, 0)}"
-                binding.statusText.text = when (info.state) {
-                    WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> "استيراد الصور في الخلفية…"
-                    WorkInfo.State.SUCCEEDED -> "اكتمل استيراد الصور إلى Corpus المشترك."
-                    WorkInfo.State.FAILED -> "فشل استيراد الصور: ${info.outputData.getString("error") ?: "خطأ غير محدد"}"
-                    WorkInfo.State.CANCELLED -> "تم إلغاء استيراد الصور."
                     else -> info.state.name
                 }
                 if (info.state.isFinished) break
@@ -144,14 +124,43 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
     private fun pollSharedIndex() {
         lifecycleScope.launch {
             val infos = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(UnifiedVisualIndexWorker.WORK_NAME).get() }
-            infos.firstOrNull { !it.state.isFinished }?.let(::observeWork)
+            infos.firstOrNull { !it.state.isFinished }?.let { observeWork(it.id) }
+        }
+    }
+
+    private fun observeImport(id: UUID) {
+        lifecycleScope.launch {
+            setBusy(true)
+            while (true) {
+                val info = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfoById(id).get() } ?: break
+                val p = info.progress
+                val processed = p.getInt(ImageCorpusImportWorker.KEY_PROCESSED, 0)
+                val total = p.getInt(ImageCorpusImportWorker.KEY_TOTAL, 0)
+                val percent = p.getInt(ImageCorpusImportWorker.KEY_PERCENT, 0)
+                binding.progressBar.visibility = if (info.state.isFinished) View.GONE else View.VISIBLE
+                binding.progressBar.max = total.coerceAtLeast(1)
+                binding.progressBar.progress = processed.coerceIn(0, binding.progressBar.max)
+                binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
+                binding.counterText.text = "مضاف ${p.getInt(ImageCorpusImportWorker.KEY_ADDED, 0)} • تخطي ${p.getInt(ImageCorpusImportWorker.KEY_SKIPPED, 0)} • فشل ${p.getInt(ImageCorpusImportWorker.KEY_FAILED, 0)}"
+                binding.statusText.text = when (info.state) {
+                    WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> "استيراد الصور في الخلفية • لا حاجة لإبقاء الشاشة مفتوحة"
+                    WorkInfo.State.SUCCEEDED -> "اكتمل استيراد الصور. يمكنك الآن بناء الفهرس المشترك."
+                    WorkInfo.State.FAILED -> "فشل استيراد الصور: ${info.outputData.getString("error") ?: "خطأ غير محدد"}"
+                    WorkInfo.State.CANCELLED -> "تم إلغاء استيراد الصور."
+                    else -> info.state.name
+                }
+                if (info.state.isFinished) break
+                delay(600)
+            }
+            setBusy(false)
+            refreshCounts()
         }
     }
 
     private fun pollImport() {
         lifecycleScope.launch {
             val infos = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(ImageCorpusImportWorker.WORK_NAME).get() }
-            infos.firstOrNull { !it.state.isFinished }?.let(::observeImport)
+            infos.firstOrNull { !it.state.isFinished }?.let { observeImport(it.id) }
         }
     }
 
@@ -212,7 +221,6 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         searchJob?.cancel()
-        importObservationJob?.cancel()
         observedWorkId = null
         service.close()
         super.onDestroy()
