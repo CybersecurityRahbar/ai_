@@ -25,11 +25,7 @@ import java.io.FileOutputStream
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
-/**
- * Background-only index runner. It preserves all existing feature engines and
- * descriptor strength while batching persistence to one Room transaction per
- * bounded image batch.
- */
+/** Background index runner with zero-recall-loss parallel feature extraction and batched Room persistence. */
 class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
     companion object {
         const val BATCH_SIZE = 16
@@ -49,8 +45,22 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
     private val classicalEngine = ClassicalVisualFingerprintEngine()
     private val advancedEngine = AdvancedVisualFingerprintEngine()
     private val libraryDirectory = File(appContext.filesDir, "reverse_image/library").also { it.mkdirs() }
+    private val cpuDispatcher = Dispatchers.Default.limitedParallelism(PARALLELISM)
 
-    data class Progress(val processed: Int, val total: Int, val indexed: Int, val skipped: Int, val failed: Int, val localFeatures: Int)
+    data class Progress(
+        val processed: Int,
+        val total: Int,
+        val indexed: Int,
+        val skipped: Int,
+        val failed: Int,
+        val localFeatures: Int
+    )
+
+    private sealed interface ItemResult {
+        data object Skipped : ItemResult
+        data class Ready(val prepared: Prepared) : ItemResult
+        data class Failed(val itemId: Long, val error: Throwable) : ItemResult
+    }
 
     private data class Prepared(
         val haar: HaarFingerprintEntity,
@@ -59,23 +69,20 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
         val localFeatures: Int
     )
 
-    private sealed interface ItemResult {
-        data class Ready(val value: Prepared) : ItemResult
-        data object Skipped : ItemResult
-        data class Failed(val itemId: Long, val error: Throwable) : ItemResult
-    }
-
     suspend fun run(rebuild: Boolean = false, onProgress: suspend (Progress) -> Unit = {}): Progress = withContext(Dispatchers.Default) {
-        val run = diagnostics.begin("REVERSE_IMAGE_INDEX", mapOf(
-            "rebuild" to rebuild.toString(),
-            "haar" to HaarFingerprintEngine.ENGINE_VERSION,
-            "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION,
-            "advanced" to AdvancedVisualFingerprintEngine.ENGINE_VERSION,
-            "sharedDecode" to "true",
-            "batchedPersistence" to "true",
-            "batchSize" to BATCH_SIZE.toString(),
-            "parallelism" to PARALLELISM.toString()
-        ))
+        val run = diagnostics.begin(
+            "REVERSE_IMAGE_INDEX",
+            mapOf(
+                "rebuild" to rebuild.toString(),
+                "haar" to HaarFingerprintEngine.ENGINE_VERSION,
+                "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION,
+                "advanced" to AdvancedVisualFingerprintEngine.ENGINE_VERSION,
+                "sharedDecode" to "true",
+                "batchedPersistence" to "true",
+                "batchSize" to BATCH_SIZE.toString(),
+                "parallelism" to PARALLELISM.toString()
+            )
+        )
 
         val items = withContext(Dispatchers.IO) { itemDao.getAll() }
         val total = items.size
@@ -88,7 +95,9 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
 
         val oldHaar = withContext(Dispatchers.IO) { haarDao.getAll().associateBy { it.itemId } }
         val oldClassical = withContext(Dispatchers.IO) { classicalDao.getAll().associateBy { it.itemId } }
-        val oldAdvanced = withContext(Dispatchers.IO) { advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION).associateBy { it.itemId } }
+        val oldAdvanced = withContext(Dispatchers.IO) {
+            advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION).associateBy { it.itemId }
+        }
 
         var processed = 0
         var indexed = 0
@@ -101,7 +110,7 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
 
             val results: List<ItemResult> = coroutineScope {
                 batch.map { item ->
-                    async(Dispatchers.Default.limitedParallelism(PARALLELISM)) {
+                    async(cpuDispatcher) {
                         try {
                             coroutineContext.ensureActive()
                             val current = ensurePrivateCopy(item)
@@ -112,18 +121,57 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
                             if (unchanged) return@async ItemResult.Skipped
 
                             val path = current.filePath
-                                ?: return@async ItemResult.Failed(current.id, IllegalStateException("لا يوجد مسار محلي محفوظ للصورة: ${current.displayName}"))
+                                ?: return@async ItemResult.Failed(
+                                    current.id,
+                                    IllegalStateException("لا يوجد مسار محلي محفوظ للصورة: ${current.displayName}")
+                                )
+
                             val bitmap = BitmapFactory.decodeFile(path)
-                                ?: return@async ItemResult.Failed(current.id, IllegalStateException("تعذر فك ترميز الصورة: ${current.displayName}"))
+                                ?: return@async ItemResult.Failed(
+                                    current.id,
+                                    IllegalStateException("تعذر فك ترميز الصورة: ${current.displayName}")
+                                )
+
                             try {
                                 val haar = haarEngine.fingerprint(bitmap)
                                 val classical = classicalEngine.fingerprint(bitmap)
                                 val advanced = advancedEngine.fingerprint(bitmap)
+
                                 ItemResult.Ready(
                                     Prepared(
-                                        haar = HaarFingerprintEntity(current.id, HaarFingerprintEngine.ENGINE_VERSION, current.sourceModifiedAt, haar.width, haar.height, haar.channels, haar.signature),
-                                        classical = ClassicalVisualFingerprintEntity(current.id, ClassicalVisualFingerprintEngine.ENGINE_VERSION, classical.phash, classical.dhash, classical.colorHistogram, classical.edgeHistogram, classical.keypoints, classical.descriptors, classical.descriptorRows, classical.descriptorCols, classical.descriptorType),
-                                        advanced = AdvancedVisualFingerprintEntity(current.id, AdvancedVisualFingerprintEngine.ENGINE_VERSION, advanced.grayPyramid, advanced.colorMoments, advanced.lbpHistogram, advanced.gradientHistogram, advanced.layoutSignature, advanced.entropy, advanced.aspectRatio),
+                                        haar = HaarFingerprintEntity(
+                                            itemId = current.id,
+                                            engineVersion = HaarFingerprintEngine.ENGINE_VERSION,
+                                            sourceModifiedAt = current.sourceModifiedAt,
+                                            width = haar.width,
+                                            height = haar.height,
+                                            channels = haar.channels,
+                                            signature = haar.signature
+                                        ),
+                                        classical = ClassicalVisualFingerprintEntity(
+                                            itemId = current.id,
+                                            engineVersion = ClassicalVisualFingerprintEngine.ENGINE_VERSION,
+                                            phash = classical.phash,
+                                            dhash = classical.dhash,
+                                            colorHistogram = classical.colorHistogram,
+                                            edgeHistogram = classical.edgeHistogram,
+                                            localKeypoints = classical.keypoints,
+                                            localDescriptors = classical.descriptors,
+                                            localDescriptorRows = classical.descriptorRows,
+                                            localDescriptorCols = classical.descriptorCols,
+                                            localDescriptorType = classical.descriptorType
+                                        ),
+                                        advanced = AdvancedVisualFingerprintEntity(
+                                            itemId = current.id,
+                                            engineVersion = AdvancedVisualFingerprintEngine.ENGINE_VERSION,
+                                            grayPyramid = advanced.grayPyramid,
+                                            colorMoments = advanced.colorMoments,
+                                            lbpHistogram = advanced.lbpHistogram,
+                                            gradientHistogram = advanced.gradientHistogram,
+                                            layoutSignature = advanced.layoutSignature,
+                                            entropy = advanced.entropy,
+                                            aspectRatio = advanced.aspectRatio
+                                        ),
                                         localFeatures = if (classical.keypoints != null && classical.descriptors != null) 1 else 0
                                     )
                                 )
@@ -138,10 +186,7 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
                 }.awaitAll()
             }
 
-            val ready = results.mapNotNull { (it as? ItemResult.Ready)?.value }
-            val batchFailures = results.filterIsInstance<ItemResult.Failed>()
-            val batchSkipped = results.count { it is ItemResult.Skipped }
-
+            val ready = results.mapNotNull { (it as? ItemResult.Ready)?.prepared }
             if (ready.isNotEmpty()) {
                 withContext(Dispatchers.IO) {
                     batchDao.insertBatch(
@@ -152,44 +197,67 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
                 }
             }
 
-            batchFailures.forEach { failure -> diagnostics.begin("REVERSE_IMAGE_INDEX_ITEM", mapOf("itemId" to failure.itemId.toString())).failure("ITEM", failure.error) }
+            val failedItems = results.mapNotNull { it as? ItemResult.Failed }
+            failedItems.forEach { failure -> run.failure("ITEM_${failure.itemId}", failure.error) }
+
             indexed += ready.size
-            skipped += batchSkipped
-            failed += batchFailures.size
+            skipped += results.count { it === ItemResult.Skipped }
+            failed += failedItems.size
             localFeatures += ready.sumOf { it.localFeatures }
             processed += batch.size
             onProgress(Progress(processed, total, indexed, skipped, failed, localFeatures))
         }
 
         val result = Progress(processed, total, indexed, skipped, failed, localFeatures)
-        run.success("Optimized batched shared visual index completed", mapOf(
-            "items" to total.toString(),
-            "indexed" to indexed.toString(),
-            "skipped" to skipped.toString(),
-            "failed" to failed.toString(),
-            "localFeatureIndexed" to localFeatures.toString(),
-            "batchSize" to BATCH_SIZE.toString(),
-            "parallelism" to PARALLELISM.toString()
-        ))
+        run.success(
+            "Optimized batched shared visual index completed",
+            mapOf(
+                "items" to total.toString(),
+                "indexed" to indexed.toString(),
+                "skipped" to skipped.toString(),
+                "failed" to failed.toString(),
+                "localFeatureIndexed" to localFeatures.toString(),
+                "batchSize" to BATCH_SIZE.toString(),
+                "parallelism" to PARALLELISM.toString()
+            )
+        )
         result
     }
 
     private suspend fun ensurePrivateCopy(item: ReverseImageItemEntity): ReverseImageItemEntity {
         val existing = item.filePath?.let(::File)
         if (existing?.isFile == true && existing.length() > 0L) return item
+
         val source = Uri.parse(item.uri)
-        val safeName = displayName(source).replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).ifBlank { "image" }
+        val safeName = displayName(source)
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .take(100)
+            .ifBlank { "image" }
         val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
+
         withContext(Dispatchers.IO) {
-            resolver.openInputStream(source)?.use { input -> FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) } }
-                ?: throw IllegalStateException("تعذر قراءة المصدر: ${item.uri}")
+            resolver.openInputStream(source)?.use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) }
+            } ?: throw IllegalStateException("تعذر قراءة المصدر: ${item.uri}")
         }
-        if (!target.isFile || target.length() <= 0L) throw IllegalStateException("تعذر إنشاء النسخة المحلية: ${item.displayName}")
+
+        if (!target.isFile || target.length() <= 0L) {
+            target.delete()
+            throw IllegalStateException("تعذر إنشاء النسخة المحلية: ${item.displayName}")
+        }
+
         val updated = item.copy(filePath = target.absolutePath, fileSize = target.length())
         withContext(Dispatchers.IO) { itemDao.upsert(updated) }
         return updated
     }
 
-    private fun displayName(uri: Uri): String = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: uri.lastPathSegment ?: "image"
+    private fun displayName(uri: Uri): String = resolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    )?.use { if (it.moveToFirst()) it.getString(0) else null } ?: uri.lastPathSegment ?: "image"
+
     override fun close() = Unit
 }
