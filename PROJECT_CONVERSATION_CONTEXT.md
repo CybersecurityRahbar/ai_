@@ -17,7 +17,7 @@ This file is the durable memory ledger for the reverse-image/indexing developmen
 - Advanced must NOT be a hidden mode inside Reverse Image and must NOT create a second launcher/application.
 - Both feature screens consume a **shared local image corpus / ingestion layer** so the user does not import the same image twice.
 - Feature stores are independent: Reverse Image keeps Haar/Classical/local descriptors; Advanced keeps its own versioned feature index.
-- Existing Reverse Image algorithms must remain intact: DigiKam-style Haar, Classical V4, pHash, dHash, HSV256, spatial edge/shape, AKAZE mutual/RANSAC, SIFT mutual/RANSAC, rotation/crop query variants.
+- Existing Reverse Image algorithms remain intact: DigiKam-style Haar, Classical V4, pHash, dHash, HSV256, spatial edge/shape, AKAZE mutual/RANSAC, SIFT mutual/RANSAC, rotation/crop query variants.
 - Existing Reverse Image search strength invariant: **999+ full-corpus global retrieval → 64 shortlist → AKAZE/RANSAC across all 64 → 16 SIFT/RANSAC**.
 - The user explicitly rejects any performance solution that lowers 64 or 16 or removes/weakens an algorithm.
 - MobileCLIP / previous neural semantic models are intentionally out of scope until the classical systems are mature.
@@ -33,7 +33,7 @@ This file is the durable memory ledger for the reverse-image/indexing developmen
 - Later runtime corpora include 1120 images.
 - Selecting images is reasonably fast; heavy `BUILD HAAR INDEX` / fingerprinting is the main bottleneck.
 - Prior indexing observations were roughly 3–5 seconds per image in some runs.
-- Prior search behavior improved from >10 minutes to roughly 10–19 seconds for ~300–1100 images after staged retrieval and bounded parallel search.
+- Prior search behavior improved materially from >10 minutes to roughly 10–19 seconds for ~300–1100 images after staged retrieval and bounded parallel search.
 - Search quality is generally good for visual similarity, but the user observes some weak/unrelated results and wants stronger discrimination and explanation.
 
 ## Reverse Image debugging history — do not repeat
@@ -42,9 +42,9 @@ This file is the durable memory ledger for the reverse-image/indexing developmen
 2. Results crashed because RecyclerView directly called `setImageURI()` on transient `content://` URIs. Fixed by durable app-private image copies and local display paths.
 3. Repeated searches previously crashed because stale URI display state survived into a new RecyclerView bind. Fixed by clearing old results and preferring durable local file paths.
 4. Large selection initially passed huge URI lists via Activity/Intent. Replaced with paged `BulkImagePickerActivity` and app-private queue-file transport.
-5. The first queue worker loaded the entire queue into memory. Reworked to streaming line processing.
+5. The first queue worker loaded the entire URI queue into memory. Reworked to streaming line processing.
 6. MediaDocumentsProvider decode errors are now isolated per image; the pipeline copies content via `ContentResolver` streams and validates with `BitmapFactory.Options.inJustDecodeBounds` before corpus insertion.
-7. Prior CI failures included Kotlin List/Array mismatch, suspend DAO misuse, expression-body returns, missing queue constants, invalid MediaStore query constants, and WorkInfo/UUID mismatch. These were corrected in later commits/builds.
+7. Prior CI failures included Kotlin List/Array mismatch, suspend DAO misuse, expression-body returns, missing queue constants, invalid MediaStore query constants, WorkInfo/UUID mismatch, and latest visual-entity constructor parameter-shift errors. These were corrected or are being corrected in later commits/builds.
 
 ## Current Reverse Image strength
 
@@ -79,7 +79,7 @@ No duplicate image import/fetch/decode solely because two visual sections need t
 - 16×16 multi-scale grayscale structure;
 - RGB/color moments + saturation statistics;
 - 256-bin LBP texture histogram;
-- 24-bin gradient orientation histogram weighted by magnitude;
+- 24-bin gradient orientation histogram weighted by gradient magnitude;
 - 8×8 spatial layout/edge signature;
 - grayscale entropy;
 - aspect ratio.
@@ -105,7 +105,7 @@ Every future result should expose real, reconstructible evidence:
 
 The displayed score must be mathematically reproducible from stored components. Never label overall score as Haar.
 
-## Scale and durability work completed in this conversation
+## Scale and durability implementation
 
 ### Large-batch selection/import
 
@@ -116,99 +116,87 @@ The displayed score must be mathematically reproducible from stored components. 
 - writes selected URI strings to an app-private queue file;
 - returns only the small queue-file path to the caller, avoiding Binder limits for thousands of URIs.
 
-### Durable import worker
-
-`ImageCorpusImportWorker` + `ImageCorpusImportScheduler`:
+`ImageCorpusImportWorker` + scheduler:
 - runs as unique foreground WorkManager work;
-- streams the queue file instead of loading all URIs into memory;
-- counts total lines in a first lightweight pass and consumes the queue in fixed batches of 32;
-- performs a single batched URI lookup for each 32-item batch;
-- copies/validates candidate images using up to four concurrent I/O tasks;
-- validates image dimensions with `inJustDecodeBounds` and creates one durable local copy;
-- inserts corpus entities with `ReverseImageItemDao.insertAll()`;
-- isolates per-item failures so one corrupt/unsupported URI does not fail the entire batch;
-- exposes `processed/total`, added, skipped, failed, and percent in WorkManager progress.
+- streams queue lines instead of loading all URIs into memory;
+- processes fixed batches rather than one giant in-memory list;
+- performs bounded concurrent copy/validation;
+- validates dimensions with `inJustDecodeBounds` and creates one durable local copy;
+- uses batched corpus insertion;
+- isolates per-item failures;
+- exposes persisted WorkManager progress.
 
-### Shared visual index worker
+### Shared visual index
 
-`UnifiedVisualIndexWorker` now calls `OptimizedUnifiedVisualIndexService` rather than the Activity-owned sequential index.
+`UnifiedVisualIndexWorker` uses `OptimizedUnifiedVisualIndexService`.
 
-`OptimizedUnifiedVisualIndexService`:
-- uses the same Haar, Classical V4, and Advanced V1 engines;
+The optimized index service:
+- uses unchanged Haar, Classical V4, and Advanced V1 engines;
 - decodes each source image once per indexing pass;
-- computes all three feature families from the same Bitmap;
 - processes bounded batches of 16 with up to four CPU workers;
-- collects successful feature results in memory only for that bounded batch;
-- persists Haar + Classical + Advanced rows together via `VisualIndexBatchDao.insertBatch()` in one Room transaction;
-- isolates per-image processing failures instead of aborting the whole batch;
-- keeps existing feature outputs and engine versions unchanged.
+- collects prepared feature rows only for the current batch;
+- persists Haar + Classical + Advanced rows through `VisualIndexBatchDao.insertBatch()` in one Room transaction;
+- isolates per-image failures rather than aborting the entire batch;
+- preserves existing feature outputs and engine versions.
 
-`VisualIndexBatchDao` is a new Room `@Transaction` boundary with batch inserts for all three feature tables.
+### Latest compile issue discovered in Run #103
 
-`ReverseImageItemDao` now also exposes `insertAll()` and `findByUris()` for scalable corpus ingestion.
+Run `#103` (`docs(context): record batch indexing implementation and latest build …`) failed during `compileDebugKotlin` in `OptimizedUnifiedVisualIndexService.kt:124–126`.
 
-### UI integration and WorkInfo compile fix
+Root cause: the service used **positional constructors** for `HaarFingerprintEntity`, `ClassicalVisualFingerprintEntity`, and `AdvancedVisualFingerprintEntity`, but their definitions include `id` and `createdAt` fields and the exact field order differs. Kotlin therefore shifted `String/Long/Int/ByteArray/Float` values into the wrong parameters and produced the cascade of type mismatch errors.
 
-Both `ReverseImageSearchActivity` and `AdvancedVisualIntelligenceActivity` now observe WorkManager operations by passing `WorkInfo.id` rather than accidentally passing the full `WorkInfo` object where a `UUID` is expected.
+Fix applied: replace all three positional constructor calls with **named arguments**, matching the exact entity definitions. `AppDatabase` was re-read and confirmed to already expose `visualIndexBatchDao()`.
 
-Both screens schedule image import through `ImageCorpusImportScheduler` and observe the background operation.
+This fix is required before the batch-index service can be considered build-verified.
 
-## Current remaining engineering work
+### Latest implementation principle
 
-### Priority A — Verify and harden scale behavior
+Do not add more advanced algorithms until the current shared-scale foundation is compile-verified and stable. The purpose of this phase is to make 5,000–6,000+ image ingestion/indexing reliable and fast **without reducing any accuracy-bearing stage**.
 
-1. Wait for/inspect CI after the latest batch/worker changes.
+## Current remaining work
+
+### Priority A — Verify/harden scale behavior
+
+1. Verify CI after the latest constructor fix.
 2. Test 5,000–6,000 selections on the target device.
-3. Test import with mixed valid/corrupt/unsupported/MediaDocumentsProvider URIs.
-4. Test rotation while importing and indexing.
-5. Test leaving app, screen off, long background period, and Android process recreation.
-6. Add explicit persisted operation/checkpoint records beyond WorkManager progress so interrupted queue/index operations can resume from durable per-item state.
+3. Test mixed valid/corrupt/unsupported/MediaDocumentsProvider URIs.
+4. Test rotation during import and indexing.
+5. Test backgrounding, screen-off, long absence, and process recreation.
+6. Add explicit persisted operation/checkpoint records beyond WorkManager progress so interrupted operations resume from durable per-item state.
 
-### Priority B — Measure indexing performance
+### Priority B — Indexing performance
 
-Add stage timings for:
-
-- source copy;
-- bounds validation;
-- Bitmap decode;
-- Haar;
-- Classical global features;
-- AKAZE extraction;
-- Advanced V1;
-- Room batch persistence;
-- total item and batch throughput.
-
-Benchmark before/after optimization using the same image corpus and exact engine versions. Do not claim speedup without measured on-device results.
+1. Stage timings for copy, bounds decode, full bitmap decode, Haar, Classical, AKAZE extraction, Advanced V1, Room transaction, item and batch totals.
+2. Verify that optimized fingerprints/descriptors are equivalent to previous engine outputs for the same engine versions.
+3. Tune concurrency by measured RAM/CPU behavior, not by reducing algorithmic coverage.
+4. Consider reuse/caching of native image representations where safe.
 
 ### Priority C — Advanced Visual Intelligence expansion
 
 Only after A/B are stable:
 
-1. Add more classical analytical signals selected by measurable value.
-2. Keep them in Advanced's own index and schema.
-3. Continue sharing the ingestion/decode pipeline.
-4. Add robust region/scale/illumination/crop/rotation structure where it improves discrimination.
-5. Implement evidence-fusion penalties for contradictions and weak-only signals.
-6. Expand the “Why this result?” UI using real stored components.
+1. Add additional classical analytical signals selected by measured value.
+2. Keep all Advanced features in its own versioned index.
+3. Share ingestion/decode with the current classical pipeline.
+4. Add robust multi-region, scale, illumination, texture, contour, gradient and geometric evidence where it demonstrably improves discrimination.
+5. Add contradiction penalties and explainable evidence fusion.
 
 ### Priority D — Accuracy benchmark
 
-Use controlled cases:
-
+Controlled cases:
 - exact duplicate;
 - JPEG recompression;
 - resize;
 - screenshot with UI frame;
 - small and large crop;
-- brightness/contrast change;
-- color change;
+- brightness/contrast/color changes;
 - near-duplicate burst;
 - unrelated image;
 - 90/180/270-degree rotation;
 - perspective/viewpoint change;
 - image-inside-screenshot.
 
-Measure Top-1/Top-10 rank and every score component. Accuracy improvements must be demonstrated, not assumed.
+Record Top-1/Top-10 and every component; never claim accuracy improvement without measurements.
 
 ## Permanent rules
 
@@ -216,7 +204,7 @@ Measure Top-1/Top-10 rank and every score component. Accuracy improvements must 
 - Never reduce 64 shortlist or 16 SIFT to solve performance.
 - Never silently weaken algorithm strength.
 - Never create a second launcher for a feature screen.
-- Never make the user import the same corpus twice for separate visual engines.
+- Never require duplicate user import/fetching for separate visual engines.
 - Never put thousands of URIs into an Intent.
 - Never let one malformed media item abort an entire large import batch.
 - Never let Activity destruction cancel durable background indexing.
