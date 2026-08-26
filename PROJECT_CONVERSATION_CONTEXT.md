@@ -31,6 +31,31 @@ Runtime verification requirement:
 - A successful Gradle build cannot prove ActivityResult routing.
 - The next installed APK must explicitly test both Reverse Image and Advanced `ADD IMAGES` buttons and confirm that the in-app bulk picker opens.
 
+## New picker requirement — 2026-08-27
+
+The user rejected the current in-app gallery-only bulk picker as the sole image selection experience. Do NOT remove it.
+
+Required UX:
+- Keep the existing paged local MediaStore picker for large on-device gallery browsing.
+- Add a separate option in the same picker screen named `OPEN SYSTEM FILES / GALLERY`.
+- This option must open Android's native document picker using `ACTION_OPEN_DOCUMENT` with multiple selection semantics so the user can see normal system sources such as Gallery, Files, folders, and document providers.
+- Do not impose an application-level 500 or 1000 image cap on this system route. Provider/UI limits, if any, are platform/provider limits rather than an app-defined cap.
+- Use `ActivityResultContracts.OpenMultipleDocuments()` with MIME `image/*`.
+- For selected document URIs, attempt `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)` where supported, catching provider limitations safely.
+- Convert the selected URIs into the same app-private `.uris` selection queue used by the existing import pipeline. Do not create a second ingestion/indexing path.
+- Return the same `RESULT_QUEUE_FILE` result so Reverse Image and Advanced automatically share the existing `ImageCorpusImportWorker` path.
+- The system picker route must work independently of `READ_MEDIA_IMAGES` permission because `ACTION_OPEN_DOCUMENT` grants access to the selected document provider URIs.
+- Preserve the explicit component fix in `BulkImagePickerActivity.launchIntent()`; never regress to a bare implicit Intent.
+
+Implementation committed:
+- `BulkImagePickerActivity.kt` now registers `ActivityResultContracts.OpenMultipleDocuments()` and launches it from `openSystemImagesButton`.
+- The callback deduplicates URIs, attempts persistent read grants, writes them line-by-line to `reverse_image/selection_queue/*.uris`, and returns the same queue-file result to the parent.
+- `activity_bulk_image_picker.xml` now contains a dedicated `OPEN SYSTEM FILES / GALLERY` button and explanatory subtitle while preserving `SELECT ALL`, `LOAD NEXT 100`, and `ADD SELECTED`.
+
+Commits for this addition:
+- Kotlin/system-picker implementation: `f396a51c2563b627f62c8c8c16a0c1ebc234bf50`.
+- Picker UI addition: `367756339658898f9ae39ae4f5f27b13a58466c2`.
+
 ## Permanent architecture requirements
 
 - `IntelligenceHomeActivity` is the single Android launcher.
@@ -81,23 +106,29 @@ Advanced retrieval unions Advanced candidates with candidates from the existing 
 
 ## Device testing state
 
-The user has now begun runtime testing. The first discovered fatal error was the bulk-picker ActivityNotFoundException above. Do not declare the app runtime-ready until this path is tested after the explicit-intent fix.
+The user has now begun runtime testing. The first discovered fatal error was the bulk-picker ActivityNotFoundException above. It was fixed by explicit component routing.
+
+The next requested change is to restore the old Android system file/gallery chooser as an additional option, not as a replacement. The system route is now implemented in the picker and is awaiting CI validation and device verification.
 
 ## Build status
 
-CI #146 successfully built and uploaded a debug APK before the bulk-picker fix. Subsequent commits require their own CI validation. A green build proves compilation/package correctness but does not prove runtime integration.
+CI #149 successfully built and uploaded a debug APK after the explicit bulk-picker Intent fix. The system-picker commits above require a new CI validation. A green build proves compilation/package correctness but does not prove runtime integration.
 
 ## Required next sequence
 
-1. CI for the explicit bulk-picker fix + regression test.
+1. CI for the system-picker addition.
 2. Install that exact APK.
 3. Test `ADD IMAGES` from both Reverse Image and Advanced.
-4. Test picker permission path and large multi-select.
-5. Test import worker and shared index start/resume.
-6. Test rotation, screen-off, backgrounding and process recreation.
-7. Test repeated searches and result display.
-8. Test Advanced explainability/evidence.
-9. Only after runtime stability, execute the full accuracy/performance benchmark.
+4. Inside `BulkImagePickerActivity`, test both picker routes:
+   - existing paged local gallery (`SELECT ALL` / `LOAD NEXT 100` / `ADD SELECTED`);
+   - new `OPEN SYSTEM FILES / GALLERY` multi-select route.
+5. From the native chooser, select images from Gallery and from a Files/folder provider where available; verify return and queue/import.
+6. Test large multi-select without an app-defined cap.
+7. Test import worker and shared index start/resume.
+8. Test rotation, screen-off, backgrounding and process recreation.
+9. Test repeated searches and result display.
+10. Test Advanced explainability/evidence.
+11. Only after runtime stability, execute the full accuracy/performance benchmark.
 
 ## Permanent rules
 
