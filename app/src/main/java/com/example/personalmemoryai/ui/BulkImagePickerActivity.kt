@@ -2,6 +2,7 @@ package com.example.personalmemoryai.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -76,11 +77,8 @@ class BulkImagePickerActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_MEDIA_PERMISSION && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            prepareVolumes()
-        } else {
-            Toast.makeText(this, "يلزم السماح بقراءة الصور لاستخدام المنتقي المحلي الكبير.", Toast.LENGTH_LONG).show()
-        }
+        if (requestCode == REQUEST_MEDIA_PERMISSION && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) prepareVolumes()
+        else Toast.makeText(this, "يلزم السماح بقراءة الصور لاستخدام المنتقي المحلي الكبير.", Toast.LENGTH_LONG).show()
     }
 
     private fun prepareVolumes() {
@@ -120,10 +118,10 @@ class BulkImagePickerActivity : AppCompatActivity() {
         val out = ArrayList<ImageRow>(limit)
         if (Build.VERSION.SDK_INT >= 26) {
             val args = Bundle().apply {
-                putInt(MediaStore.QUERY_ARG_LIMIT, limit)
-                putInt(MediaStore.QUERY_ARG_OFFSET, start)
-                putStringArray(MediaStore.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Images.Media.DATE_ADDED))
-                putInt(MediaStore.QUERY_ARG_SORT_DIRECTION, MediaStore.QUERY_SORT_DIRECTION_DESCENDING)
+                putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
+                putInt(ContentResolver.QUERY_ARG_OFFSET, start)
+                putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Images.Media.DATE_ADDED))
+                putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
             }
             contentResolver.query(collection, projection, args, null)?.use { cursor -> readRows(cursor, collection, out) }
         } else {
