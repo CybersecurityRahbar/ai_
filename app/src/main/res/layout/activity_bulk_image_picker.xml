@@ -37,7 +37,6 @@
             android:text="OPEN SYSTEM FILES / GALLERY"
             android:textColor="#49D9FF"
             android:textStyle="bold"
-            android:allCaps="false"
             android:background="@drawable/bg_intel_button" />
         <TextView
             android:layout_width="match_parent"
