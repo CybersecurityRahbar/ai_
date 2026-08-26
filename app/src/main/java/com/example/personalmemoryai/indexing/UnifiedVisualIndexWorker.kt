@@ -12,7 +12,6 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.personalmemoryai.R
-import com.example.personalmemoryai.reverseimage.ReverseImageSearchService
 
 class UnifiedVisualIndexWorker(
     appContext: Context,
@@ -35,24 +34,34 @@ class UnifiedVisualIndexWorker(
     override suspend fun doWork(): Result {
         setForeground(createForegroundInfo("تهيئة الفهرس البصري المشترك…"))
         val rebuild = inputData.getBoolean(KEY_REBUILD, false)
-        val service = ReverseImageSearchService(applicationContext)
+        val service = OptimizedUnifiedVisualIndexService(applicationContext)
         return try {
-            service.buildIndex(rebuild) { progress ->
+            val result = service.run(rebuild) { progress ->
                 val percent = if (progress.total > 0) {
                     ((progress.processed * 100L) / progress.total).toInt().coerceIn(0, 100)
                 } else 100
-                setProgressAsync(workDataOf(
+                setProgress(workDataOf(
                     KEY_PROCESSED to progress.processed,
                     KEY_TOTAL to progress.total,
                     KEY_INDEXED to progress.indexed,
                     KEY_SKIPPED to progress.skipped,
                     KEY_FAILED to progress.failed,
-                    KEY_LOCAL_FEATURES to progress.localFeatureIndexed,
-                    "percent" to percent
+                    KEY_LOCAL_FEATURES to progress.localFeatures,
+                    "percent" to percent,
+                    "batchSize" to OptimizedUnifiedVisualIndexService.BATCH_SIZE,
+                    "parallelism" to OptimizedUnifiedVisualIndexService.PARALLELISM
                 ))
-                setForegroundAsync(createForegroundInfo("فهرسة الصور $percent% • ${progress.processed}/${progress.total}"))
+                setForeground(createForegroundInfo("فهرسة الصور $percent% • ${progress.processed}/${progress.total}"))
             }
-            Result.success()
+            Result.success(workDataOf(
+                KEY_PROCESSED to result.processed,
+                KEY_TOTAL to result.total,
+                KEY_INDEXED to result.indexed,
+                KEY_SKIPPED to result.skipped,
+                KEY_FAILED to result.failed,
+                KEY_LOCAL_FEATURES to result.localFeatures,
+                "percent" to 100
+            ))
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
             Result.failure(workDataOf("error" to (t.message ?: t.javaClass.simpleName)))
