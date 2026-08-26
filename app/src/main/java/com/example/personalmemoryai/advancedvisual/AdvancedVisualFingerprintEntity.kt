@@ -14,9 +14,13 @@ data class AdvancedVisualFingerprintEntity(
     val engineVersion: String,
     val grayPyramid: ByteArray,
     val colorMoments: ByteArray,
+    val spatialColor: ByteArray,
     val lbpHistogram: ByteArray,
+    val spatialLbp: ByteArray,
     val gradientHistogram: ByteArray,
+    val gradientMagnitude: ByteArray,
     val layoutSignature: ByteArray,
+    val illuminationRobustStructure: ByteArray,
     val entropy: Float,
     val aspectRatio: Float,
     val createdAt: Long = System.currentTimeMillis()
