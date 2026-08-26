@@ -70,6 +70,8 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
             val stored = withContext(Dispatchers.IO) { advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION) }
             if (stored.isEmpty()) return@withContext emptyList()
 
+            val storedById = stored.associateBy { it.itemId }
+            val storedFingerprints = stored.associate { it.itemId to it.toFingerprint() }
             val baseResults = runCatching {
                 ReverseImageSearchService(appContext).use { service -> service.search(queryUri, limit = 64, minimumSimilarity = 0f) }
             }.getOrDefault(emptyList())
@@ -78,7 +80,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
             val bestById = HashMap<Long, Pair<Int, AdvancedVisualFingerprintEngine.Score>>()
             for ((variantIndex, variant) in variants.withIndex()) {
                 for (entity in stored) {
-                    val score = engine.compare(variant.fingerprint, entity.toFingerprint())
+                    val score = engine.compare(variant.fingerprint, storedFingerprints[entity.itemId] ?: entity.toFingerprint())
                     val current = bestById[entity.itemId]
                     if (current == null || score.similarity > current.second.similarity) bestById[entity.itemId] = variantIndex to score
                 }
@@ -100,14 +102,14 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                 val variantIndex = entry.first
                 val score = entry.second
                 val base = baseById[itemId]
-                val baseScore = base?.similarity ?: 0f
+                val targetFingerprint = storedFingerprints[itemId] ?: storedById[itemId]?.toFingerprint() ?: return@mapNotNull null
                 val region = regionVerifier.compare(
                     variants.getOrNull(variantIndex)?.fingerprint ?: return@mapNotNull null,
-                    scoreFingerprintForEntity(stored.firstOrNull { it.itemId == itemId } ?: return@mapNotNull null)
+                    targetFingerprint
                 )
                 val agreementSignals = listOf(score.structure, score.spatialColor, score.spatialTexture, score.gradient, score.illumination, region.similarity)
                 val consensus = agreementSignals.count { it >= 0.62f }
-                var final = if (base != null) baseScore * 0.58f + score.similarity * 0.42f else score.similarity * 0.70f
+                var final = if (base != null) base.similarity * 0.58f + score.similarity * 0.42f else score.similarity * 0.70f
                 final = final * 0.90f + region.similarity * 0.10f
                 if (consensus <= 1 && final > 0.55f) final *= 0.78f
                 if (score.structure < 0.50f && score.illumination < 0.45f && score.spatialColor > 0.80f) final *= 0.82f
@@ -183,14 +185,12 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         return result
     }
 
-    private fun scoreFingerprintForEntity(entity: AdvancedVisualFingerprintEntity) = AdvancedVisualFingerprintEngine.Fingerprint(
-        grayPyramid=entity.grayPyramid, colorMoments=entity.colorMoments, spatialColor=entity.spatialColor,
-        lbpHistogram=entity.lbpHistogram, spatialLbp=entity.spatialLbp, gradientHistogram=entity.gradientHistogram,
-        gradientMagnitude=entity.gradientMagnitude, layoutSignature=entity.layoutSignature,
-        illuminationRobustStructure=entity.illuminationRobustStructure, entropy=entity.entropy, aspectRatio=entity.aspectRatio
+    private fun AdvancedVisualFingerprintEntity.toFingerprint() = AdvancedVisualFingerprintEngine.Fingerprint(
+        grayPyramid=grayPyramid, colorMoments=colorMoments, spatialColor=spatialColor,
+        lbpHistogram=lbpHistogram, spatialLbp=spatialLbp, gradientHistogram=gradientHistogram,
+        gradientMagnitude=gradientMagnitude, layoutSignature=layoutSignature,
+        illuminationRobustStructure=illuminationRobustStructure, entropy=entropy, aspectRatio=aspectRatio
     )
-
-    private fun AdvancedVisualFingerprintEntity.toFingerprint() = scoreFingerprintForEntity(this)
 
     override fun close() = Unit
 }
