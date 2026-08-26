@@ -2,174 +2,224 @@
 
 ## Purpose
 
-This file is a durable project-memory ledger for the development conversation. It records the user's decisions/requirements, implementation decisions, observed failures, and the current execution order so later work can resume without losing architectural context.
+This file is the durable memory ledger for the reverse-image/indexing development conversation. It records user requirements, decisions, observed failures, implementation changes, and the exact next order of work.
 
-> Rule: read this file and `PROJECT_PROGRESS.md` before changing the reverse-image/indexing architecture.
+**Rule:** Read this file and `PROJECT_PROGRESS.md` before changing reverse-image, shared corpus, indexing, or Advanced Visual Intelligence architecture.
 
-## 2026-08-26 — Current conversation state
+## 2026-08-26 — Current state and permanent requirements
 
-### User requirements
+### Architecture demanded by the user
 
-- The existing Reverse Image Search section must remain unchanged as a distinct top-level feature and screen.
-- The new Advanced Visual Intelligence must be a **separate top-level section** in the existing `IntelligenceHomeActivity`, with its own Activity/screen.
-- Advanced Visual Intelligence must use the **same visual language** as the main intelligence system: same colors, panels, buttons, spacing, and overall styling.
-- Advanced Visual Intelligence must not become a hidden mode inside Reverse Image Search and must not create another launcher/application.
-- Both sections use the **same shared image corpus/ingestion layer** so the user does not have to fetch/import the same images twice.
-- Each section retains its **own feature/index storage** and can maintain its own engine versions/rebuild state.
-- Existing Reverse Image algorithms remain intact: DigiKam-style Haar, Classical V4, pHash, dHash, HSV256, spatial edge/shape, persisted AKAZE, mutual matching, RANSAC, SIFT, and rotation/crop variants.
-- Existing Reverse Image search strength is protected: do not reduce the full 64 shortlist or 16 SIFT stage to gain speed.
-- MobileCLIP and the previous neural/semantic stack are explicitly out of scope for this phase.
-- Advanced Visual Intelligence will later contain additional classical/analytical engines chosen for measurable value, not random algorithm accumulation.
-- Advanced results must explain **why** an image was returned and **how** its percentage was formed. The explanation must be based on real stored evidence, not post-hoc text.
-- The user wants large-scale selection/import, including roughly 5,000–6,000 images in a single selection workflow.
-- The user wants import/fingerprinting to continue when the Activity is recreated, the phone is rotated, the app is backgrounded, and the screen is turned off, subject to Android execution rules.
-- The user does not accept speedups that sacrifice recall or algorithmic strength.
+- `IntelligenceHomeActivity` remains the **single Android launcher**.
+- Existing `ReverseImageSearchActivity` remains a distinct top-level feature and screen.
+- `AdvancedVisualIntelligenceActivity` is another distinct top-level feature and screen in the same Intelligence Command Center.
+- Advanced Visual Intelligence must have the same PMAI visual language: same colors, panels, buttons, spacing, and overall style.
+- Advanced must NOT be a hidden mode inside Reverse Image and must NOT create a second launcher/application.
+- Both feature screens consume a **shared local image corpus / ingestion layer** so the user does not import the same image twice.
+- Feature stores are independent: Reverse Image keeps Haar/Classical/local descriptors; Advanced keeps its own versioned feature index.
+- Existing Reverse Image algorithms must remain intact: DigiKam-style Haar, Classical V4, pHash, dHash, HSV256, spatial edge/shape, AKAZE mutual/RANSAC, SIFT mutual/RANSAC, rotation/crop query variants.
+- Existing Reverse Image search strength invariant: **999+ full-corpus global retrieval → 64 shortlist → AKAZE/RANSAC across all 64 → 16 SIFT/RANSAC**.
+- The user explicitly rejects any performance solution that lowers 64 or 16 or removes/weakens an algorithm.
+- MobileCLIP / previous neural semantic models are intentionally out of scope until the classical systems are mature.
+- Advanced Visual Intelligence must add measured, deterministic analytical signals rather than random algorithm accumulation.
+- Advanced results must explain exactly why a result was returned and how its percentage was formed from evidence.
+- The user wants large-batch selection/import, including approximately 5,000–6,000+ images in one workflow.
+- Long indexing/import must survive Activity recreation, rotation, backgrounding, screen-off, and process recreation to the extent Android execution permits; explicit cancellation is the only normal cancel path.
 
-### User device observations
+### Confirmed device/test facts
 
-- Android 12 / SM-G981U.
-- The user tested the existing classical reverse-image stack and found it useful/good for visual similarity.
-- The user reported weak/unrelated images in results; this is a discrimination/ranking problem, not a reason to reduce recall.
-- The user confirmed the test corpus of 999 images was intentional and correct.
-- The user later observed runtime corpora such as 1120 items.
-- Image selection itself is reasonably fast; the main bottleneck is `BUILD HAAR INDEX` / fingerprinting.
-- Observed indexing can take about 3–5 seconds per image on some runs.
-- Observed search latency improved materially after the staged local verification/performance work.
-- The user specifically rejected reducing 64→40 and 16→8 as a performance solution.
+- Target device: Android 12 / SM-G981U.
+- 999-image corpus was intentionally selected by the user and is correct; it is not an indexing defect.
+- Later runtime corpora include 1120 images.
+- Selecting images is reasonably fast; heavy `BUILD HAAR INDEX` / fingerprinting is the main bottleneck.
+- Prior indexing observations were roughly 3–5 seconds per image in some runs.
+- Prior search behavior improved from >10 minutes to roughly 10–19 seconds for ~300–1100 images after staged retrieval and bounded parallel search.
+- Search quality is generally good for visual similarity, but the user observes some weak/unrelated results and wants stronger discrimination and explanation.
 
-### Reverse Image debugging history that must not be repeated
+## Reverse Image debugging history — do not repeat
 
-1. A previous integration accidentally exposed Reverse Image as a second launcher/application. This was fixed by making `IntelligenceHomeActivity` the sole `MAIN/LAUNCHER` and Reverse Image an internal activity.
-2. Results initially crashed because the adapter directly used transient `content://...` URIs. The solution was durable app-private copies and display from local files.
-3. A second-search crash happened because stale/transient URI handling broke RecyclerView binding. Results are now cleared before a new search and local durable paths are preferred.
-4. The original large-selection flow passed large URI lists directly through Activity state/Intent. This was replaced by a paged in-app picker that writes a queue file.
-5. The first queue worker still loaded the full URI queue into memory. It has since been changed to streaming queue-line processing and uses `BitmapFactory.Options.inJustDecodeBounds` for inexpensive dimension validation during ingestion.
-6. Earlier CI failures included Kotlin `List`/`Array` mismatch in AKAZE, suspend DAO invocation outside coroutine context, expression-body return errors, missing queue result constant, and incorrect `MediaStore` query constant usage. These have been corrected in later builds.
+1. Reverse Image was once exposed as a second launcher/application. Fixed by keeping `IntelligenceHomeActivity` as the sole `MAIN/LAUNCHER` and Reverse Image internal.
+2. Results crashed because RecyclerView directly called `setImageURI()` on transient `content://` URIs. Fixed by durable app-private image copies and local display paths.
+3. Repeated searches previously crashed because stale URI display state survived into a new RecyclerView bind. Fixed by clearing old results and preferring durable local file paths.
+4. Large selection initially passed huge URI lists via Activity/Intent. Replaced with paged `BulkImagePickerActivity` and app-private queue-file transport.
+5. The first queue worker loaded the entire queue into memory. Reworked to streaming line processing.
+6. MediaDocumentsProvider decode errors are now isolated per image; the pipeline copies content via `ContentResolver` streams and validates with `BitmapFactory.Options.inJustDecodeBounds` before corpus insertion.
+7. Prior CI failures included Kotlin List/Array mismatch, suspend DAO misuse, expression-body returns, missing queue constants, invalid MediaStore query constants, and WorkInfo/UUID mismatch. These were corrected in later commits/builds.
 
-### Current Reverse Image strength invariant
+## Current Reverse Image strength
 
-Current search strategy remains:
+The current production baseline remains:
 
-`full corpus global retrieval -> 64 shortlist -> AKAZE/mutual/RANSAC over all 64 -> 16 SIFT/RANSAC -> final ranking`
+`full corpus global retrieval -> 64 shortlist -> AKAZE mutual/RANSAC across 64 -> 16 SIFT/RANSAC -> final ranking`
 
-No future performance change may reduce this coverage unless the user explicitly changes the requirement.
+No future performance change may reduce these values without an explicit user request.
 
-## Advanced Visual Intelligence architecture
+## Advanced Visual Intelligence
 
 ### Current top-level structure
 
 `IntelligenceHomeActivity`
-
 - `LOCAL REVERSE IMAGE SEARCH` → `ReverseImageSearchActivity`
 - `ADVANCED VISUAL INTELLIGENCE` → `AdvancedVisualIntelligenceActivity`
 
-`AndroidManifest.xml` must contain only one launcher entry: `IntelligenceHomeActivity`.
+`AndroidManifest.xml`
+- `IntelligenceHomeActivity` is the only launcher.
+- Reverse/Advanced/Bulk picker activities are internal (`exported=false`).
 
 ### Shared corpus principle
 
-`source image -> one durable local copy -> one decode/normalization pass`
+`source URI → one durable local copy → one decode/normalization pass → independent engine outputs`
 
-The outputs then branch into independent stores:
+No duplicate image import/fetch/decode solely because two visual sections need the same image.
 
-- Reverse Image index: Haar + Classical V4 + local descriptors.
-- Advanced index: `advanced_visual_fingerprints` with engine version `ADVANCED-VISUAL-CLASSICAL-V1`.
+### Advanced V1 currently implemented
 
-The branches are architecturally independent even though they consume the same image pass.
+`AdvancedVisualFingerprintEngine` generates deterministic, non-neural evidence:
 
-### Advanced V1 signals currently implemented
-
-- 16×16 multi-scale grayscale structure map.
-- RGB/color moments + saturation statistics.
-- 256-bin LBP texture histogram.
-- 24-bin gradient orientation histogram weighted by gradient magnitude.
-- 8×8 spatial layout/edge signature.
-- grayscale entropy.
+- 16×16 multi-scale grayscale structure;
+- RGB/color moments + saturation statistics;
+- 256-bin LBP texture histogram;
+- 24-bin gradient orientation histogram weighted by magnitude;
+- 8×8 spatial layout/edge signature;
+- grayscale entropy;
 - aspect ratio.
 
-Advanced V1 exposes separate structure/color/texture/gradient/layout/entropy/aspect evidence and reason codes.
+`AdvancedVisualIntelligenceService` preserves component evidence and reason codes. Existing classical evidence remains separate from Advanced evidence.
 
-### Advanced explainability requirement
+### Explainable result requirements
 
-Each result must be able to display:
+Every future result should expose real, reconstructible evidence:
 
 - final percentage;
-- true Haar score;
-- pHash/dHash scores;
-- color/edge/local evidence;
-- AKAZE/RANSAC evidence;
-- SIFT/RANSAC evidence;
-- Advanced V1 component scores;
-- best query variant;
+- true Haar percentage;
+- pHash/dHash evidence;
+- HSV/color evidence;
+- edge/shape evidence;
+- AKAZE good matches + RANSAC inliers;
+- SIFT good matches + RANSAC inliers;
+- Advanced structure/color/texture/gradient/layout evidence;
+- best query variant (original/rotation/crop);
 - geometric consistency;
-- negative/contradictory evidence penalties;
+- contradiction/weak-evidence penalties;
 - explicit reason codes.
 
-The overall percentage must be mathematically reconstructible from stored components.
+The displayed score must be mathematically reproducible from stored components. Never label overall score as Haar.
 
-## Scale/durability implementation in progress
+## Scale and durability work completed in this conversation
 
-### Current implemented pieces
+### Large-batch selection/import
 
-- `BulkImagePickerActivity` supports paged local gallery browsing/selection.
-- Queue file transport avoids placing thousands of URIs inside an Intent.
-- `ImageCorpusImportWorker` was added for durable foreground/background import.
-- `ImageCorpusImportScheduler` schedules the importer as unique WorkManager work.
-- Reverse Image and Advanced activities now schedule import work instead of directly materializing and decoding the full URI list in the Activity.
-- Import worker now streams queue lines and does not load the full queue into memory.
-- Import worker validates image decodability with `inJustDecodeBounds` and creates one durable app-private copy.
-- Shared visual indexing uses WorkManager/foreground execution and is observed from both screens.
+`BulkImagePickerActivity`:
+- paginates MediaStore metadata in batches of 100;
+- does not decode image bitmaps while browsing;
+- supports select-all over available media volumes;
+- writes selected URI strings to an app-private queue file;
+- returns only the small queue-file path to the caller, avoiding Binder limits for thousands of URIs.
 
-### Remaining work before scale architecture is considered complete
+### Durable import worker
 
-1. Add explicit persisted import-operation history/checkpoints so a process death can resume a partially consumed queue without restarting from line 1.
-2. Replace the current per-item `findByUri`/insert persistence path with batched/transactional corpus writes where appropriate.
-3. Replace the current per-image Room fingerprint writes with real batched feature persistence. Adding unused `insertAll` APIs does not count; the worker must actually use them.
-4. Ensure indexing progress survives Activity recreation and process restart with durable operation state.
-5. Add speed instrumentation for copy, bounds decode, feature generation, and database persistence separately.
-6. Tune worker concurrency based on device memory/CPU while preserving exact fingerprint output.
-7. Verify that background/screen-off behavior survives realistic Android lifecycle conditions on the target device.
+`ImageCorpusImportWorker` + `ImageCorpusImportScheduler`:
+- runs as unique foreground WorkManager work;
+- streams the queue file instead of loading all URIs into memory;
+- counts total lines in a first lightweight pass and consumes the queue in fixed batches of 32;
+- performs a single batched URI lookup for each 32-item batch;
+- copies/validates candidate images using up to four concurrent I/O tasks;
+- validates image dimensions with `inJustDecodeBounds` and creates one durable local copy;
+- inserts corpus entities with `ReverseImageItemDao.insertAll()`;
+- isolates per-item failures so one corrupt/unsupported URI does not fail the entire batch;
+- exposes `processed/total`, added, skipped, failed, and percent in WorkManager progress.
 
-## 2026-08-26 — Immediate development order
+### Shared visual index worker
 
-**A. Finish durable ingestion and scale:**
-- streaming queue ✅
-- large selection architecture ✅
-- durable import worker ✅
-- persisted import checkpoint/history ⏳
-- batch corpus DB persistence ⏳
+`UnifiedVisualIndexWorker` now calls `OptimizedUnifiedVisualIndexService` rather than the Activity-owned sequential index.
 
-**B. Finish indexing performance:**
-- shared decode already implemented ✅
-- bounded parallel work already implemented ✅
-- batched fingerprint DB persistence ⏳
-- stage-level timing ⏳
-- optimized cache/version checks ⏳
+`OptimizedUnifiedVisualIndexService`:
+- uses the same Haar, Classical V4, and Advanced V1 engines;
+- decodes each source image once per indexing pass;
+- computes all three feature families from the same Bitmap;
+- processes bounded batches of 16 with up to four CPU workers;
+- collects successful feature results in memory only for that bounded batch;
+- persists Haar + Classical + Advanced rows together via `VisualIndexBatchDao.insertBatch()` in one Room transaction;
+- isolates per-image processing failures instead of aborting the whole batch;
+- keeps existing feature outputs and engine versions unchanged.
 
-**C. Advanced Visual Intelligence expansion:**
-- standalone screen ✅
-- independent index ✅
-- first classical V1 signals ✅
-- evidence model ✅
-- add additional measured classical engines only after scale foundation is stable ⏳
+`VisualIndexBatchDao` is a new Room `@Transaction` boundary with batch inserts for all three feature tables.
 
-**D. Benchmark:**
-- exact duplicate
-- recompression
-- resize
-- screenshot
-- mild/large crop
-- brightness/color change
-- near-duplicate burst
-- unrelated image
-- rotation
-- perspective/viewpoint change
-- source-inside-screenshot
+`ReverseImageItemDao` now also exposes `insertAll()` and `findByUris()` for scalable corpus ingestion.
 
-## Permanent constraints
+### UI integration and WorkInfo compile fix
 
-- Never silently weaken algorithms to improve speed.
+Both `ReverseImageSearchActivity` and `AdvancedVisualIntelligenceActivity` now observe WorkManager operations by passing `WorkInfo.id` rather than accidentally passing the full `WorkInfo` object where a `UUID` is expected.
+
+Both screens schedule image import through `ImageCorpusImportScheduler` and observe the background operation.
+
+## Current remaining engineering work
+
+### Priority A — Verify and harden scale behavior
+
+1. Wait for/inspect CI after the latest batch/worker changes.
+2. Test 5,000–6,000 selections on the target device.
+3. Test import with mixed valid/corrupt/unsupported/MediaDocumentsProvider URIs.
+4. Test rotation while importing and indexing.
+5. Test leaving app, screen off, long background period, and Android process recreation.
+6. Add explicit persisted operation/checkpoint records beyond WorkManager progress so interrupted queue/index operations can resume from durable per-item state.
+
+### Priority B — Measure indexing performance
+
+Add stage timings for:
+
+- source copy;
+- bounds validation;
+- Bitmap decode;
+- Haar;
+- Classical global features;
+- AKAZE extraction;
+- Advanced V1;
+- Room batch persistence;
+- total item and batch throughput.
+
+Benchmark before/after optimization using the same image corpus and exact engine versions. Do not claim speedup without measured on-device results.
+
+### Priority C — Advanced Visual Intelligence expansion
+
+Only after A/B are stable:
+
+1. Add more classical analytical signals selected by measurable value.
+2. Keep them in Advanced's own index and schema.
+3. Continue sharing the ingestion/decode pipeline.
+4. Add robust region/scale/illumination/crop/rotation structure where it improves discrimination.
+5. Implement evidence-fusion penalties for contradictions and weak-only signals.
+6. Expand the “Why this result?” UI using real stored components.
+
+### Priority D — Accuracy benchmark
+
+Use controlled cases:
+
+- exact duplicate;
+- JPEG recompression;
+- resize;
+- screenshot with UI frame;
+- small and large crop;
+- brightness/contrast change;
+- color change;
+- near-duplicate burst;
+- unrelated image;
+- 90/180/270-degree rotation;
+- perspective/viewpoint change;
+- image-inside-screenshot.
+
+Measure Top-1/Top-10 rank and every score component. Accuracy improvements must be demonstrated, not assumed.
+
+## Permanent rules
+
+- **999 is valid and intentional.**
+- Never reduce 64 shortlist or 16 SIFT to solve performance.
+- Never silently weaken algorithm strength.
 - Never create a second launcher for a feature screen.
-- Never require duplicate user import/fetching for separate visual engines.
-- Never call a percentage an evidence score unless its source is actually that component.
-- Never claim accuracy improvement without measured on-device benchmark evidence.
-- Read this file and `PROJECT_PROGRESS.md` before subsequent reverse-image/indexing work.
+- Never make the user import the same corpus twice for separate visual engines.
+- Never put thousands of URIs into an Intent.
+- Never let one malformed media item abort an entire large import batch.
+- Never let Activity destruction cancel durable background indexing.
+- Never call a total/aggregate score “Haar” unless it is the real Haar component.
+- Never claim accuracy improvement without measured benchmark evidence.
+- Do not add advanced algorithms merely for novelty; each must have a defined metric, storage schema, cost, and benchmark purpose.
