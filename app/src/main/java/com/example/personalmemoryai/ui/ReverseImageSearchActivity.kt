@@ -1,5 +1,6 @@
 package com.example.personalmemoryai.ui
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
@@ -21,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -45,9 +47,9 @@ class ReverseImageSearchActivity : AppCompatActivity() {
             showStatus("لم يتم إنشاء قائمة الصور المختارة.")
             return@registerForActivityResult
         }
-        val id = ImageCorpusImportScheduler.enqueue(applicationContext, queuePath)
-        binding.statusText.text = "تم جدولة استيراد الصور في الخلفية: $id"
-        observeImportWork(id)
+        val importId = ImageCorpusImportScheduler.enqueue(applicationContext, queuePath)
+        binding.statusText.text = "بدأ استيراد الصور في الخلفية • العملية: ${importId.toString().take(8)}"
+        observeImportWork(importId)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -103,7 +105,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
                 val processed = p.getInt(ImageCorpusImportWorker.KEY_PROCESSED, 0)
                 val total = p.getInt(ImageCorpusImportWorker.KEY_TOTAL, 0)
                 val percent = p.getInt(ImageCorpusImportWorker.KEY_PERCENT, 0)
-                binding.progressBar.visibility = View.VISIBLE
+                binding.progressBar.visibility = if (info.state.isFinished) View.GONE else View.VISIBLE
                 binding.progressBar.isIndeterminate = false
                 binding.progressBar.max = total.coerceAtLeast(1)
                 binding.progressBar.progress = processed.coerceIn(0, binding.progressBar.max)
@@ -127,7 +129,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
     private fun observeExistingImportWork() {
         lifecycleScope.launch {
             val infos = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(ImageCorpusImportWorker.WORK_NAME).get() }
-            infos.firstOrNull { !it.state.isFinished }?.let(::observeImportWork)
+            infos.firstOrNull { !it.state.isFinished }?.let { observeImportWork(it.id) }
         }
     }
 
