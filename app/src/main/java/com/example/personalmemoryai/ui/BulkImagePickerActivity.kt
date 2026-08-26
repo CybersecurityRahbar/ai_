@@ -35,7 +35,14 @@ class BulkImagePickerActivity : AppCompatActivity() {
         private const val REQUEST_MEDIA_PERMISSION = 7301
         private const val EXTRA_TITLE = "title"
 
-        fun launchIntent(title: String = "SELECT LOCAL IMAGES"): Intent = Intent().apply { putExtra(EXTRA_TITLE, title) }
+        fun launchIntent(title: String = "SELECT LOCAL IMAGES"): Intent =
+            Intent().apply {
+                setClassName(
+                    "com.example.personalmemoryai",
+                    "com.example.personalmemoryai.ui.BulkImagePickerActivity"
+                )
+                putExtra(EXTRA_TITLE, title)
+            }
     }
 
     private val rows = mutableListOf<ImageRow>()
