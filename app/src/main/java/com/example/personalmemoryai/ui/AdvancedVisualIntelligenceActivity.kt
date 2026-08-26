@@ -2,7 +2,6 @@ package com.example.personalmemoryai.ui
 
 import android.net.Uri
 import android.os.Bundle
-import android.os.Parcelable
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -32,16 +32,15 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
 
     private val corpusPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != RESULT_OK) return@registerForActivityResult
-        val uris = result.data?.getParcelableArrayListExtra<Parcelable>(BulkImagePickerActivity.Companion.RESULT_URIS)
-            ?.mapNotNull { it as? Uri }
-            .orEmpty()
-        if (uris.isEmpty()) {
-            binding.statusText.text = "لم يتم اختيار صور لإضافتها إلى Corpus المشترك."
+        val queuePath = result.data?.getStringExtra(BulkImagePickerActivity.RESULT_QUEUE_FILE)
+        if (queuePath.isNullOrBlank()) {
+            binding.statusText.text = "لم يتم إنشاء قائمة الصور المختارة."
             return@registerForActivityResult
         }
         lifecycleScope.launch {
             setBusy(true)
             try {
+                val uris = readUriQueue(queuePath)
                 val added = withContext(Dispatchers.IO) {
                     com.example.personalmemoryai.reverseimage.ReverseImageSearchService(applicationContext).use { it.addImages(uris) }
                 }
@@ -81,6 +80,12 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
         binding.cancelSearchButton.setOnClickListener { searchJob?.cancel(); binding.statusText.text = "تم إلغاء البحث الحالي."; setBusy(false) }
         refreshCounts()
         pollSharedIndex()
+    }
+
+    private suspend fun readUriQueue(path: String): List<Uri> = withContext(Dispatchers.IO) {
+        val file = File(path)
+        if (!file.isFile) return@withContext emptyList()
+        file.useLines { lines -> lines.map(String::trim).filter(String::isNotBlank).map(Uri::parse).toList() }.also { file.delete() }
     }
 
     private fun startSharedIndex(rebuild: Boolean) {
