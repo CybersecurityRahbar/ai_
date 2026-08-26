@@ -1,6 +1,5 @@
 package com.example.personalmemoryai.ui
 
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Parcelable
@@ -33,7 +32,7 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
 
     private val corpusPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != RESULT_OK) return@registerForActivityResult
-        val uris = result.data?.getParcelableArrayListExtra<Parcelable>(BulkImagePickerActivity.RESULT_URIS)
+        val uris = result.data?.getParcelableArrayListExtra<Parcelable>(BulkImagePickerActivity.Companion.RESULT_URIS)
             ?.mapNotNull { it as? Uri }
             .orEmpty()
         if (uris.isEmpty()) {
