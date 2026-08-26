@@ -1,88 +1,72 @@
 # Personal Memory AI — Project Progress Log
 
-## 2026-08-26 — Advanced Visual Intelligence V1 + shared durable indexing implementation
+## 2026-08-26 — Advanced Visual Intelligence V1 + scalable shared indexing implementation
 
 ### User-mandated architecture
 
-The new **Advanced Visual Intelligence** must be a distinct top-level section in the existing `Intelligence Command Center`.
+The new **Advanced Visual Intelligence** is a distinct top-level section in the existing `Intelligence Command Center`.
 
-- It has its **own Activity/screen**.
-- It is visible as its **own action** in the central `IntelligenceHomeActivity`.
-- It uses the same PMAI visual language, backgrounds, panels, buttons, spacing, and colors.
-- It is **not** a hidden mode inside `ReverseImageSearchActivity`.
-- It is **not** a second Android application and has no launcher entry of its own. `IntelligenceHomeActivity` remains the sole `MAIN/LAUNCHER`.
-- The existing Reverse Image Search screen remains a separate screen and retains its existing classical search behavior.
+- Own Activity/screen.
+- Own visible action in `IntelligenceHomeActivity`.
+- Same PMAI visual language: backgrounds, panels, buttons, spacing, colors.
+- Not a hidden mode inside `ReverseImageSearchActivity`.
+- Not a second Android application and has no launcher entry. `IntelligenceHomeActivity` remains the sole `MAIN/LAUNCHER`.
+- Existing Reverse Image Search remains a separate screen and retains its existing search stack.
 
-### Shared corpus / independent indices
+### Shared corpus / independent feature indices
 
-The user explicitly requires that adding/fetching images must not be performed twice merely because both sections need the same images.
+The user requires that the same images are not fetched/copied/decoded twice merely because both sections need them.
 
-The architecture now uses:
+Architecture:
 
-`Shared local image corpus -> one decode/normalization pass -> independent feature indices`
+`Shared local image corpus -> one durable local copy -> one decode/normalization pass -> independent feature indices`
 
-Current independent persistent indices:
+Independent indices:
 
 1. Existing Reverse Image:
    - Haar/Wavelet
    - Classical V4
    - persisted AKAZE descriptors
-   - separate existing tables/DAOs
-2. New Advanced Visual Intelligence:
+   - existing tables/DAOs
+2. Advanced Visual Intelligence:
    - `advanced_visual_fingerprints`
-   - independent engine version `ADVANCED-VISUAL-CLASSICAL-V1`
+   - engine version `ADVANCED-VISUAL-CLASSICAL-V1`
 
-`ReverseImageSearchService.buildIndex()` now computes Haar + Classical V4 + Advanced V1 from **the same decoded Bitmap** and stores each feature family separately. This is the first concrete implementation of the shared-indexing requirement.
+`ReverseImageSearchService.buildIndex()` computes Haar + Classical V4 + Advanced V1 from the **same decoded Bitmap** and stores each feature family separately.
 
-### Advanced V1 classical engines implemented
+### Advanced Visual Intelligence V1
 
-The new `AdvancedVisualFingerprintEngine` currently produces deterministic, non-neural signals:
+`AdvancedVisualFingerprintEngine` currently produces deterministic, non-neural signals:
 
-- 16×16 multi-scale grayscale structure map.
-- RGB/color moments plus saturation statistics.
-- 256-bin Local Binary Pattern (LBP) texture histogram.
-- 24-bin gradient-orientation histogram weighted by gradient magnitude.
-- 8×8 spatial layout/edge signature.
-- normalized grayscale entropy.
+- 16x16 multi-scale grayscale structural map;
+- RGB/color moments and saturation statistics;
+- 256-bin LBP texture histogram;
+- 24-bin gradient-orientation histogram weighted by magnitude;
+- 8x8 spatial layout/edge signature;
+- normalized grayscale entropy;
 - aspect-ratio consistency.
 
-The engine produces a transparent `Score` with separate:
+Its score exposes structure, color, texture, gradient, layout, entropy, aspect plus reason codes such as `strong_multi_scale_structure`, `strong_color_distribution`, `texture_agreement`, `gradient_orientation_agreement`, `spatial_layout_agreement`, `weak_structure`, and `insufficient_advanced_evidence`.
 
-- structure
-- color
-- texture
-- gradient
-- layout
-- entropy
-- aspect
+### Explainable search
 
-components and human-readable reason codes such as `strong_multi_scale_structure`, `strong_color_distribution`, `texture_agreement`, `gradient_orientation_agreement`, `spatial_layout_agreement`, `weak_structure`, and `insufficient_advanced_evidence`.
+`AdvancedVisualIntelligenceService` is a separate search service. V1 combines existing full-strength classical evidence (65%) with Advanced V1 evidence (35%). These weights are explicitly experimental and must be benchmarked before being treated as final.
 
-### Explainable Advanced search implemented
+The result model retains:
 
-`AdvancedVisualIntelligenceService` is a separate search service.
+- final score;
+- existing classical overall score;
+- **true Haar score** from the Haar engine, not the overall classical score;
+- pHash/dHash;
+- color/edge/local evidence;
+- RANSAC inliers;
+- Advanced score;
+- structure/color/texture/gradient/layout evidence;
+- reason codes.
 
-It compares the new Advanced V1 index and also retrieves the existing full-strength classical result set for the same query. It then fuses:
+The UI can therefore explain the components rather than mislabe​​ling an overall score as Haar.
 
-- existing classical evidence: 65%
-- Advanced V1 evidence: 35%
-
-for the current V1 experimental explainable ranking.
-
-The result model preserves component evidence including:
-
-- existing classical overall score
-- Haar percentage
-- pHash/dHash
-- color/edge/local evidence
-- RANSAC inliers
-- Advanced percentage
-- structure/color/texture/gradient/layout components
-- reason codes
-
-This is explicitly a **measured/experimental V1 fusion**, not an accuracy claim. Future benchmark data must validate the weights.
-
-### Standalone Advanced UI implemented
+### Standalone Advanced UI
 
 Added:
 
@@ -91,108 +75,99 @@ Added:
 - `AdvancedVisualResultAdapter.kt`
 - `item_advanced_visual_result.xml`
 
-The screen contains separate sections for:
-
-- shared corpus / independent advanced index
-- shared background indexing
-- advanced query
-- explainable visual results
-
-The design reuses the PMAI intelligence resources such as `bg_intelligence`, `panel_intelligence`, and `bg_intel_button` rather than introducing a different visual system.
+The screen has separate sections for shared corpus, background indexing, query, and explainable results, while using the same PMAI intelligence drawables.
 
 ### Main Command Center integration
 
-`IntelligenceHomeActivity` now contains a distinct action:
+`IntelligenceHomeActivity` contains its own action:
 
 `ADVANCED VISUAL INTELLIGENCE`
 
 It launches only `AdvancedVisualIntelligenceActivity`.
 
-No second `MAIN/LAUNCHER` was added. `AndroidManifest.xml` currently has `IntelligenceHomeActivity` as the sole launcher, while both Reverse Image and Advanced Visual are non-exported internal screens.
+`AndroidManifest.xml` contains one launcher only: `IntelligenceHomeActivity`. `ReverseImageSearchActivity`, `AdvancedVisualIntelligenceActivity`, and `BulkImagePickerActivity` are internal (`exported=false`). This preserves the integration architecture and avoids the earlier duplicate-application launcher bug.
 
-### Durable shared indexing worker implemented
+### Durable shared indexing
 
 Added:
 
 - `UnifiedVisualIndexWorker.kt`
 - `VisualIndexWorkScheduler.kt`
 
-The shared indexing operation is now launched as a unique WorkManager task rather than being tied only to an Activity coroutine.
+The visual-index operation is now a unique WorkManager task with foreground execution and persisted progress (`processed`, `total`, `indexed`, `skipped`, `failed`, `localFeatures`, percent).
 
-The worker:
+The existing Reverse Image screen and the new Advanced screen both trigger/observe the same shared work item. UI recreation does not own the indexing operation.
 
-- runs the shared Haar + Classical + Advanced indexing pass;
-- publishes persisted WorkManager progress (`processed`, `total`, `indexed`, `skipped`, `failed`, `localFeatures`, `percent`);
-- runs as a long-running foreground worker with a user-visible notification;
-- uses the `dataSync` foreground-service classification appropriate for local file processing.
+### Zero-recall-loss indexing performance pass
 
-Android's documentation explicitly supports WorkManager long-running workers and foreground execution for important local processing tasks. citeturn984758search2turn366781search0
+The shared index now:
 
-This is intended to survive Activity recreation, rotation, temporary backgrounding, and screen-off better than a `lifecycleScope` job. Android 12+ restricts arbitrary background foreground-service starts, so the user-initiated WorkManager path is the appropriate architecture here. citeturn984758search1turn984758search3
+- preloads existing Haar/Classical/Advanced fingerprint rows once into maps;
+- decodes each source image once;
+- computes Haar + Classical V4 + Advanced V1 from that single Bitmap;
+- processes images in bounded chunks of four with up to four concurrent CPU tasks;
+- retains all existing algorithms and descriptor stages unchanged;
+- does not reduce the 64 shortlist or 16 SIFT stages.
 
-### Reverse Image screen integration
+The goal is to reduce repeated Room reads and serial per-image execution without weakening any fingerprint.
 
-The existing `ReverseImageSearchActivity` now launches the same unique shared indexing worker for `BUILD HAAR INDEX` / `REBUILD` and observes its durable progress.
+### Large-batch local picker
 
-This preserves the existing Reverse Image UI while ensuring its indexing pass also generates the Advanced index in the same decode pass.
+`BulkImagePickerActivity` is now the corpus selector for both Reverse Image and Advanced Visual.
 
-The Reverse Image search algorithm itself remains:
+- Loads MediaStore metadata in pages of 100.
+- Does not decode image bitmaps for selection.
+- Supports explicit select-all across discovered media volumes.
+- Requests `READ_EXTERNAL_STORAGE` on Android 12 and `READ_MEDIA_IMAGES` on Android 13+.
+- Most importantly, the selected URI strings are now written to an **app-private queue file** before returning to the caller. The caller receives only a tiny file path in the result `Intent`, avoiding Binder transaction limits when selecting thousands of images.
+- Android 24–25 query fallback is present for the paginated query path; API 26+ uses MediaStore query args.
 
-- full corpus global retrieval
-- 64 shortlist
-- AKAZE/RANSAC over the shortlist
-- 16 SIFT/RANSAC candidates
-- no recall-reduction shortcut
+This is designed for 5,000–6,000+ image selections without passing thousands of `Uri` objects through Binder.
 
-### Large-batch local picker implemented
+### Import robustness
 
-Added `BulkImagePickerActivity` as an in-app local gallery/picker with:
+`ReverseImageSearchService.addImages()` now isolates each URI in its own try/catch and records per-item import diagnostics rather than aborting the whole batch when one URI cannot be decoded/copied.
 
-- paged loading in groups of 100;
-- `SELECT ALL` that collects only URI strings rather than decoding images into memory;
-- incremental page loading;
-- selected-count telemetry;
-- one final URI list returned to the calling screen.
+Durable app-private copies remain the canonical analysis/search source.
 
-This replaces the previous reliance on the system `GetMultipleContents()` picker for corpus acquisition in Reverse Image and Advanced Visual. The purpose is to remove the observed 500-item/large-selection limitation of the system picker path and support thousands of selected images without creating a giant in-memory bitmap workload.
+### Remaining scale/durability hardening
 
-The picker requests the appropriate image-read permission (`READ_EXTERNAL_STORAGE` on Android 12 and `READ_MEDIA_IMAGES` on Android 13+).
+1. Convert `addImages()` itself into durable chunked background ingestion rather than processing the entire queue in one Activity coroutine.
+2. Add explicit persisted operation/checkpoint records so progress and resume state are visible beyond WorkManager's current output/progress payload.
+3. Add batched Room transactions for index persistence.
+4. Add stage-level latency metrics: private-copy, decode, Haar, Classical V4, AKAZE extraction, Advanced V1, DB write, total item.
+5. Add dedicated tests for corrupt/unsupported ContentResolver providers and recovery/quarantine.
+6. Test screen-off, rotation, app backgrounding, and process recreation on the Android 12 device.
 
-### Current known limitations still being worked on
+### Current accuracy/performance invariants
 
-1. The new picker is now paged, but the large-batch ingestion path still needs full **streaming/chunked queueing** so a 5,000–6,000 selection is not sent as one giant list to a single Activity coroutine.
-2. `ReverseImageSearchService.addImages()` still processes the selected URI list synchronously and must be moved to durable/bounded ingestion work next.
-3. The WorkManager worker is durable and resumable through versioned skip checks, but explicit chunk checkpoints and a user-facing persisted operation history still need to be added.
-4. The current indexing pass still performs separate Room reads/writes per item; shared decoding is implemented, but batched DB transactions and multi-image CPU workers are the next performance optimization.
-5. ContentResolver URI decoding is more robust for app-private copies, but the failing DocumentsProvider cases need dedicated per-item import diagnostics and recovery tests.
-6. Advanced search V1 is deliberately an initial classical evidence layer. It must be benchmarked before more engines or weight changes are justified.
+- Never reduce the existing 64 shortlist.
+- Never reduce the 16 SIFT verification set.
+- Never remove Haar, pHash, dHash, HSV256, Sobel/shape, AKAZE, mutual matching, RANSAC, SIFT, or query variants to gain speed.
+- Speed must come from shared decoding, caching, batching, memory control, native allocation reduction, and scheduling.
+- MobileCLIP remains untouched.
 
-### Hard accuracy/performance invariants
+### Current CI state
 
-- Do not reduce the existing 64 shortlist.
-- Do not reduce the 16 SIFT verification set.
-- Do not remove Haar, pHash, dHash, HSV256, Sobel/shape, AKAZE, mutual matching, RANSAC, SIFT, or query variants to gain speed.
-- Performance improvements must come from shared decoding, batching, caching, memory control, native allocation reduction, and CPU scheduling.
-- MobileCLIP remains untouched by this phase.
+The latest code commit `b90290b42c062853f3fd4fcef8ab9c2ced0043f9` includes the true-Haar explainability fix and shared indexing performance pass. GitHub Actions run #76 (`33000684859`) was queued at the last check; do not consider this version build-verified until that run completes successfully.
 
-## 2026-08-26 — Scale, durability, indexing performance, and Advanced Visual Intelligence roadmap
+## Earlier reverse-image phases
 
-The current device findings, large-batch defects, rotation/background defects, zero-recall-loss indexing strategy, explainability requirements, and phased roadmap remain valid and are expanded by the implementation above.
+### 2026-08-26 — Full-strength performance architecture
 
-## 2026-08-26 — Full-strength reverse-image search performance pass
+- Restored full 64 shortlist and 16 SIFT.
+- Added bounded parallel search without recall reduction.
+- Query variants computed once and reused.
 
-- Restored full `64` shortlist and full `16` SIFT stage.
-- Added bounded parallel execution without reducing recall.
-- Query variants are computed once and reused.
+### 2026-08-25 — Classical V4
 
-## 2026-08-25 — Reverse-image classical stack v4
-
-- SIFT/RANSAC verifier.
+- Added SIFT/RANSAC shortlist verification.
 - Rotation-aware retrieval.
 - HSV256.
 
-## 2026-08-25 — Reverse-image classical stack v3 and integration history
+### 2026-08-25 — Classical V3 / integration history
 
-- DigiKam-style Haar/Wavelet anchor.
+- DigiKam-style Haar/Wavelet anchor validated by the user.
 - Classical corrections and staged retrieval.
-- Reverse Image remains inside the existing application shell and is not a second Android application.
+- Reverse Image remains inside the existing application shell, not a second application.
+- Durable app-private copies address transient DocumentsProvider permission failures.
