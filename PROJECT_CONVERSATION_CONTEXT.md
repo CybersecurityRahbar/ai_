@@ -39,7 +39,7 @@ Durable memory for the reverse-image/indexing development conversation. Read thi
 4. Huge multi-select URI lists were unsafe through Activity/Intent. Replaced by paged picker and app-private queue file.
 5. Queue worker initially loaded all URIs into memory. Reworked to streaming lines and fixed batches.
 6. MediaDocumentsProvider decode failures are isolated per item; import uses ContentResolver streams and bounds-only validation.
-7. CI failures encountered included coroutine suspend misuse, expression-body returns, missing queue constants, invalid MediaStore constants, WorkInfo/UUID mismatch, and Room Entity positional-constructor shifts. These were fixed in subsequent commits.
+7. CI failures encountered included coroutine suspend misuse, expression-body returns, missing queue constants, invalid MediaStore constants, WorkInfo/UUID mismatch, Room Entity positional-constructor shifts, and V2 generic syntax. These were fixed in subsequent commits.
 
 ## Shared ingestion/indexing foundation
 
@@ -106,115 +106,105 @@ Persistent signals:
 - entropy;
 - aspect ratio.
 
-The V2 score contains independent evidence fields and uses consensus plus contradiction penalties. Strong color or texture alone cannot freely create a high score when structure disagrees.
+V2 includes consensus and contradiction penalties. Strong color or texture alone cannot freely inflate a result when structure disagrees.
 
 ### Advanced candidate recall/fusion
 
-Advanced search computes V2 global evidence and obtains up to 64 candidates from the existing Reverse Image search. It takes the top 64 Advanced candidates, unions both sets, and then fuses evidence. Thus one engine cannot erase a strong candidate from the other merely because of differing global scores.
+Advanced search computes V2 evidence, selects its top 64, obtains up to 64 existing Reverse Image candidates, unions the IDs, then performs final fusion. Thus neither engine can erase a strong candidate from the other merely due to different global ranking.
 
 ### Advanced query variants
 
-For each query, Advanced now evaluates:
+Advanced evaluates:
 - original;
-- 90° rotation;
-- 180° rotation;
-- 270° rotation;
+- rotation 90°;
+- rotation 180°;
+- rotation 270°;
 - center crop 92%;
 - center crop 82%;
 - center crop 72%.
 
-For every candidate the system retains the variant that produced the strongest Advanced score. The result card displays this `bestQueryVariant`, providing real provenance for crop/rotation matches without duplicating stored corpus images.
+The winning variant is retained in each result and shown to the user.
+
+### Advanced Regional Consistency layer — NEW
+
+`AdvancedRegionConsistencyVerifier.kt` adds a deterministic spatial cross-check using the already stored V2 signatures:
+
+- pooled 8×8 structure from the stored 16×16 grayscale signature;
+- 4×4 spatial color;
+- 4×4 spatial texture;
+- 8×8 layout;
+- stable-region ratio;
+- inter-signal disagreement.
+
+It adds no database image copies and no second decode. It is intended to suppress false positives where global color/texture looks similar but the spatial arrangement does not.
+
+### Advanced Multiscale Structural Consensus layer — NEW
+
+`AdvancedStructuralConsensusEngine.kt` reuses existing V2 grayscale/layout features and checks coarse + fine structural agreement plus layout. No additional stored fingerprint is required.
+
+### Advanced evidence gate/fusion — NEW
+
+The final Advanced score now combines:
+
+`existing Classical/Haar evidence + Advanced V2 + Regional Consistency + Multiscale Structural Consensus`
+
+with explicit penalties for weak region coverage, strong-coarse/weak-fine conflict, and spatial evidence disagreement.
+
+`confidencePercent` is separate from `finalPercent`. It is an evidence-strength heuristic based on cross-signal consensus, regional stability, structural consensus, and existing geometric evidence. It is NOT a statistically calibrated probability and must not be presented as one before benchmark data.
 
 ### Explainability
 
-Every Advanced result exposes:
+Each result can show:
 
-- final percentage;
-- existing classical percentage;
-- true Haar percentage;
-- pHash/dHash/color/edge/local/RANSAC evidence;
-- Advanced total;
-- structure;
-- global/spatial color;
-- global/spatial texture;
-- gradient direction/magnitude;
-- layout;
-- illumination robustness;
-- entropy/aspect;
-- best query variant;
-- consensus and contradiction reason codes.
+- final similarity;
+- evidence confidence;
+- classical/Haar evidence;
+- Advanced V2 component evidence;
+- regional consistency;
+- stable region coverage;
+- spatial disagreement;
+- structural consensus;
+- coarse/fine structure;
+- winning query variant;
+- reason codes and contradiction evidence.
 
-The UI labels the engine `ADVANCED-V2` and never calls the aggregate score Haar.
+The aggregate score is never mislabeled as Haar.
 
-### Database schema
+## Database schema
 
-Advanced V2 added:
+Advanced V2 fields:
 
 - `spatialColor BLOB`
 - `spatialLbp BLOB`
 - `gradientMagnitude BLOB`
 - `illuminationRobustStructure BLOB`
 
-Database version 12 includes migration `11→12` which rebuilds only `advanced_visual_fingerprints`. Existing shared corpus data remains intact. Advanced V2 must be rebuilt before quality measurements.
-
-## Latest completed work in this conversation
-
-- Confirmed successful CI #111 for the previous durable shared indexing foundation.
-- Upgraded Advanced engine from V1 to V2 with spatial color/texture, gradient magnitude, and illumination-robust evidence.
-- Updated the shared batch index service to persist all V2 fields.
-- Added Room migration 11→12.
-- Updated Advanced fusion to union Reverse Image and Advanced candidate sets before ranking.
-- Added contradiction penalties and reason codes.
-- Added multi-variant Advanced query analysis for rotation/crop robustness and provenance.
-- Expanded the Advanced result UI to display all V2 evidence and the winning query variant.
-- Updated `PROJECT_PROGRESS.md` with the V2 architecture and constraints.
+Database version 12 includes migration `11→12` for the V2 feature table.
 
 ## Current user instruction
 
-The user explicitly does NOT want to install or test intermediate builds. Complete the important Advanced Visual Intelligence work first, then create one coherent build for comprehensive testing of the whole system.
+The user does **not** want to install or test intermediate builds. Complete the important Advanced Visual Intelligence work first, then produce one coherent build for comprehensive testing of the whole system.
+
+## Latest completed changes
+
+- CI #128 succeeded after V2 entity compatibility fixes.
+- Added `AdvancedRegionConsistencyVerifier`.
+- Added `AdvancedStructuralConsensusEngine`.
+- Integrated both into `AdvancedVisualIntelligenceService`.
+- Added regional and structural evidence fields to `Evidence`.
+- Added separate confidence percentage.
+- Expanded result UI to display regional/structural evidence.
+- Updated `PROJECT_PROGRESS.md` with this analytical layer.
+- Fixed a potential O(N²) stored-fingerprint lookup by creating an itemId→Fingerprint map once.
 
 ## Next work sequence
 
-### 1. CI verification
-
-All current V2/schema/service/UI changes must be CI-verified before calling the version device-ready.
-
-### 2. Advanced remaining quality layer
-
-After CI passes:
-- add a measured region-consistency/geometric verifier where useful;
-- strengthen duplicate/near-duplicate evidence without changing Reverse Image's 64/16 pipeline;
-- improve score calibration/confidence bands only after device benchmark data;
-- add an expandable “Why this result?” view showing actual contribution and contradiction details.
-
-### 3. Scale/durability hardening
-
-- test 5,000–6,000 selections;
-- mixed valid/corrupt/provider URIs;
-- rotation during import/index;
-- background/screen-off/long absence;
-- process recreation and resume;
-- verify durable per-batch checkpoint behavior.
-
-### 4. Index performance benchmark
-
-Measure on device:
-- copy;
-- bounds validation;
-- full decode;
-- Haar;
-- Classical V4;
-- AKAZE extraction;
-- Advanced V2;
-- Room transaction;
-- batch throughput;
-- total throughput.
-
-Performance optimization must not reduce algorithmic coverage.
-
-### 5. Final accuracy benchmark
-
-Test exact duplicates, recompression, resize, screenshots, crops, brightness/color changes, burst near-duplicates, unrelated images, rotations, perspective/viewpoint changes, and image-inside-screenshot. Record Top-1/Top-10 plus all signal components.
+1. Verify fresh CI for the newest Advanced regional/structural commits.
+2. Complete expandable “Why this result?” UX if the current result card does not provide sufficient detail.
+3. Hardening of scale/durable background behavior.
+4. On-device benchmark at 1k → 5k → 6k images.
+5. Accuracy benchmark covering exact duplicate, recompression, resize, screenshot/UI frame, crops, illumination/color changes, burst near-duplicates, unrelated images, rotations, perspective/viewpoint, and image-inside-screenshot.
+6. Only after benchmark data, calibrate score/confidence bands.
 
 ## Permanent rules
 
@@ -227,6 +217,6 @@ Test exact duplicates, recompression, resize, screenshots, crops, brightness/col
 - Never put thousands of URIs into an Intent.
 - Never let one bad media item abort a large batch.
 - Never let Activity destruction cancel durable indexing.
-- Never call the aggregate score Haar.
+- Never call an aggregate score Haar.
 - Never claim accuracy/performance improvement without measured evidence.
-- Never add algorithms merely for novelty.
+- Never add algorithms merely for novelty; every engine must have a defined role, representation, metric, cost, and benchmark value.
