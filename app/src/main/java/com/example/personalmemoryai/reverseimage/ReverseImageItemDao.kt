@@ -25,6 +25,9 @@ interface ReverseImageItemDao {
     @Query("SELECT * FROM reverse_image_items WHERE uri = :uri LIMIT 1")
     suspend fun findByUri(uri: String): ReverseImageItemEntity?
 
+    @Query("SELECT * FROM reverse_image_items WHERE uri IN (:uris)")
+    suspend fun findByUris(uris: List<String>): List<ReverseImageItemEntity>
+
     @Query("SELECT COUNT(*) FROM reverse_image_items")
     suspend fun count(): Long
 
