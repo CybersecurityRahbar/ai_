@@ -1,6 +1,5 @@
 package com.example.personalmemoryai.ui
 
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
@@ -12,6 +11,8 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.example.personalmemoryai.databinding.ActivityReverseImageSearchBinding
+import com.example.personalmemoryai.indexing.ImageCorpusImportScheduler
+import com.example.personalmemoryai.indexing.ImageCorpusImportWorker
 import com.example.personalmemoryai.indexing.UnifiedVisualIndexWorker
 import com.example.personalmemoryai.indexing.VisualIndexWorkScheduler
 import com.example.personalmemoryai.reverseimage.ReverseImageSearchService
@@ -20,7 +21,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -31,6 +31,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
     private lateinit var adapter: ReverseImageResultAdapter
     private var searchJob: Job? = null
     private var indexObservationJob: Job? = null
+    private var importObservationJob: Job? = null
     private var observedWorkId: UUID? = null
 
     private val queryPicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -44,7 +45,9 @@ class ReverseImageSearchActivity : AppCompatActivity() {
             showStatus("لم يتم إنشاء قائمة الصور المختارة.")
             return@registerForActivityResult
         }
-        lifecycleScope.launch { addImages(readUriQueue(queuePath)) }
+        val id = ImageCorpusImportScheduler.enqueue(applicationContext, queuePath)
+        binding.statusText.text = "تم جدولة استيراد الصور في الخلفية: $id"
+        observeImportWork(id)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,34 +65,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         binding.rebuildIndexButton.setOnClickListener { startSharedIndex(true) }
         refreshCount()
         observeExistingIndexWork()
-    }
-
-    private suspend fun readUriQueue(path: String): List<Uri> = withContext(Dispatchers.IO) {
-        val file = File(path)
-        if (!file.isFile) return@withContext emptyList()
-        file.useLines { lines -> lines.map(String::trim).filter(String::isNotBlank).map(Uri::parse).toList() }.also { file.delete() }
-    }
-
-    private suspend fun addImages(uris: List<Uri>) {
-        if (uris.isEmpty()) {
-            showStatus("لم توجد صور صالحة في قائمة الاختيار.")
-            return
-        }
-        setBusy(true)
-        binding.progressBar.visibility = View.VISIBLE
-        binding.progressBar.isIndeterminate = true
-        binding.progressPercentText.text = "جارٍ تجهيز ${uris.size} صورة…"
-        try {
-            val added = withContext(Dispatchers.IO) { service.addImages(uris) }
-            binding.statusText.text = "تمت إضافة $added صورة إلى Corpus المشترك. لم تُفهرس مرتين."
-            binding.progressPercentText.text = "اكتملت الإضافة • $added/${uris.size}"
-            refreshCount()
-        } catch (t: Throwable) {
-            showError("فشل إضافة الصور: ${t.message}")
-        } finally {
-            binding.progressBar.isIndeterminate = false
-            setBusy(false)
-        }
+        observeExistingImportWork()
     }
 
     private fun startSharedIndex(rebuild: Boolean) {
@@ -103,7 +79,8 @@ class ReverseImageSearchActivity : AppCompatActivity() {
             while (!isFinishing && !isDestroyed) {
                 val info = withContext(Dispatchers.IO) {
                     val wm = WorkManager.getInstance(applicationContext)
-                    if (workId != null) wm.getWorkInfoById(workId).get() else wm.getWorkInfosForUniqueWork(UnifiedVisualIndexWorker.WORK_NAME).get().firstOrNull { !it.state.isFinished }
+                    if (workId != null) wm.getWorkInfoById(workId).get()
+                    else wm.getWorkInfosForUniqueWork(UnifiedVisualIndexWorker.WORK_NAME).get().firstOrNull { !it.state.isFinished }
                 }
                 if (info == null) break
                 observedWorkId = info.id
@@ -116,6 +93,44 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         }
     }
 
+    private fun observeImportWork(id: UUID) {
+        importObservationJob?.cancel()
+        importObservationJob = lifecycleScope.launch {
+            setBusy(true)
+            while (!isFinishing && !isDestroyed) {
+                val info = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfoById(id).get() } ?: break
+                val p = info.progress
+                val processed = p.getInt(ImageCorpusImportWorker.KEY_PROCESSED, 0)
+                val total = p.getInt(ImageCorpusImportWorker.KEY_TOTAL, 0)
+                val percent = p.getInt(ImageCorpusImportWorker.KEY_PERCENT, 0)
+                binding.progressBar.visibility = View.VISIBLE
+                binding.progressBar.isIndeterminate = false
+                binding.progressBar.max = total.coerceAtLeast(1)
+                binding.progressBar.progress = processed.coerceIn(0, binding.progressBar.max)
+                binding.progressPercentText.text = String.format(Locale.US, "%d%% • %d/%d", percent, processed, total)
+                binding.counterText.text = "Added ${p.getInt(ImageCorpusImportWorker.KEY_ADDED, 0)} • Skipped ${p.getInt(ImageCorpusImportWorker.KEY_SKIPPED, 0)} • Failed ${p.getInt(ImageCorpusImportWorker.KEY_FAILED, 0)}"
+                binding.statusText.text = when (info.state) {
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING -> "استيراد الصور في الخلفية…"
+                    WorkInfo.State.SUCCEEDED -> "اكتمل استيراد الصور إلى Corpus المشترك."
+                    WorkInfo.State.FAILED -> "فشل استيراد الصور: ${info.outputData.getString("error") ?: "خطأ غير محدد"}"
+                    WorkInfo.State.CANCELLED -> "تم إلغاء استيراد الصور."
+                    else -> info.state.name
+                }
+                if (info.state.isFinished) break
+                delay(600)
+            }
+            setBusy(false)
+            refreshCount()
+        }
+    }
+
+    private fun observeExistingImportWork() {
+        lifecycleScope.launch {
+            val infos = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(ImageCorpusImportWorker.WORK_NAME).get() }
+            infos.firstOrNull { !it.state.isFinished }?.let(::observeImportWork)
+        }
+    }
+
     private fun renderIndexWork(info: WorkInfo) {
         val p = info.progress
         val processed = p.getInt(UnifiedVisualIndexWorker.KEY_PROCESSED, 0)
@@ -125,8 +140,8 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         binding.progressBar.isIndeterminate = false
         binding.progressBar.max = total.coerceAtLeast(1)
         binding.progressBar.progress = processed.coerceIn(0, binding.progressBar.max)
-        binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
-        binding.counterText.text = "نجح ${p.getInt(UnifiedVisualIndexWorker.KEY_INDEXED, 0)} • تخطي ${p.getInt(UnifiedVisualIndexWorker.KEY_SKIPPED, 0)} • Local features ${p.getInt(UnifiedVisualIndexWorker.KEY_LOCAL_FEATURES, 0)} • فشل ${p.getInt(UnifiedVisualIndexWorker.KEY_FAILED, 0)}"
+        binding.progressPercentText.text = String.format(Locale.US, "%d%% • %d/%d", percent, processed, total)
+        binding.counterText.text = "نجح ${p.getInt(UnifiedVisualIndexWorker.KEY_INDEXED, 0)} • تخطي ${p.getInt(UnifiedVisualIndexWorker.KEY_SKIPPED, 0)} • Local ${p.getInt(UnifiedVisualIndexWorker.KEY_LOCAL_FEATURES, 0)} • فشل ${p.getInt(UnifiedVisualIndexWorker.KEY_FAILED, 0)}"
         binding.statusText.text = when (info.state) {
             WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING -> "الفهرسة المشتركة في الخلفية • Haar + Classical V4 + Advanced Visual"
             WorkInfo.State.SUCCEEDED -> "اكتمل الفهرس المشترك لجميع المحركات."
@@ -191,7 +206,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
     private fun showError(message: String) { binding.statusText.text = message; binding.progressPercentText.text = "FAILED"; Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
 
     override fun onDestroy() {
-        searchJob?.cancel(); indexObservationJob?.cancel(); service.close(); super.onDestroy()
+        searchJob?.cancel(); indexObservationJob?.cancel(); importObservationJob?.cancel(); service.close(); super.onDestroy()
     }
 
     private fun ReverseImageSearchService.Result.displayUri(): String = item.filePath?.takeIf { it.isNotBlank() }?.let { "file://$it" } ?: item.uri
