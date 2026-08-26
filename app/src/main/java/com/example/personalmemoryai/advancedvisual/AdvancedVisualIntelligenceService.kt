@@ -7,6 +7,9 @@ import android.net.Uri
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.reverseimage.ReverseImageSearchService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
 /** Independent Advanced search service with multi-variant query analysis and explainable fusion. */
@@ -18,6 +21,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
     private val engine = AdvancedVisualFingerprintEngine()
     private val regionVerifier = AdvancedRegionConsistencyVerifier()
     private val structuralConsensus = AdvancedStructuralConsensusEngine()
+    private val cpuDispatcher = Dispatchers.Default.limitedParallelism(4)
 
     data class Evidence(
         val itemId: Long,
@@ -84,13 +88,22 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
 
             val bestById = HashMap<Long, Pair<Int, AdvancedVisualFingerprintEngine.Score>>()
             for ((variantIndex, variant) in variants.withIndex()) {
-                for (entity in stored) {
-                    val target = storedFingerprints[entity.itemId] ?: entity.toFingerprint()
-                    val score = engine.compare(variant.fingerprint, target)
-                    val current = bestById[entity.itemId]
-                    if (current == null || score.similarity > current.second.similarity) bestById[entity.itemId] = variantIndex to score
+                val variantResults = coroutineScope {
+                    stored.chunked(128).map { chunk ->
+                        async(cpuDispatcher) {
+                            chunk.map { entity ->
+                                val target = storedFingerprints[entity.itemId] ?: entity.toFingerprint()
+                                val score = engine.compare(variant.fingerprint, target)
+                                Triple(entity.itemId, score, variantIndex)
+                            }
+                        }
+                    }.awaitAll().flatten()
                 }
-                onProgress(variantIndex + 1, variants.size, "Advanced V2 variant ${variant.label}")
+                for ((itemId, score, _) in variantResults) {
+                    val current = bestById[itemId]
+                    if (current == null || score.similarity > current.second.similarity) bestById[itemId] = variantIndex to score
+                }
+                onProgress(variantIndex + 1, variants.size, "Advanced V2 variant ${variant.label} • full corpus")
             }
 
             variants.filter { it.bitmap != null && it.bitmap !== original }.forEach { it.bitmap!!.recycle() }
@@ -132,7 +145,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                     consensusRatio * 0.45f +
                     region.stableRegionRatio * 0.25f +
                     structural.similarity * 0.20f +
-                    (if (base?.ransacInliers ?: 0 >= 4) 0.10f else 0f)
+                    (if ((base?.ransacInliers ?: 0) >= 4) 0.10f else 0f)
                 )).toInt().coerceIn(0, 100)
 
                 val variantLabel = variants.getOrNull(variantIndex)?.label ?: "original"
@@ -146,9 +159,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                     if (score.spatialTexture >= 0.76f) add("regional_texture_consistency")
                     if (score.gradientMagnitude >= 0.78f) add("gradient_strength_consistency")
                     if (score.illumination >= 0.72f) add("illumination_robust_match")
-                    if (consensus >= 5) add("strong_independent_signal_consensus")
-                    else if (consensus >= 3) add("independent_signal_consensus")
-                    else add("weak_cross_signal_consensus")
+                    if (consensus >= 5) add("strong_independent_signal_consensus") else if (consensus >= 3) add("independent_signal_consensus") else add("weak_cross_signal_consensus")
                     if (variantLabel != "original") add("best_match_from_query_variant")
                     if (base == null) add("advanced_only_candidate")
                     if (region.stableRegionRatio < 0.25f) add("low_stable_region_coverage")
@@ -158,32 +169,21 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
 
                 Evidence(
                     itemId=item.id, displayName=item.displayName, filePath=item.filePath,
-                    finalSimilarity=final, finalPercent=(final*100f).toInt().coerceIn(0,100),
-                    confidencePercent=confidence,
+                    finalSimilarity=final, finalPercent=(final*100f).toInt().coerceIn(0,100), confidencePercent=confidence,
                     baseClassicalPercent=base?.percent ?: 0, haarPercent=base?.haarPercent ?: 0,
                     phashPercent=base?.phashPercent ?: 0, dhashPercent=base?.dhashPercent ?: 0,
                     colorPercent=base?.colorPercent ?: 0, edgePercent=base?.edgePercent ?: 0,
                     localPercent=base?.localPercent ?: 0, ransacInliers=base?.ransacInliers ?: 0,
-                    advancedPercent=(score.similarity*100f).toInt().coerceIn(0,100),
-                    structurePercent=(score.structure*100f).toInt().coerceIn(0,100),
-                    advancedColorPercent=(score.color*100f).toInt().coerceIn(0,100),
-                    spatialColorPercent=(score.spatialColor*100f).toInt().coerceIn(0,100),
-                    texturePercent=(score.texture*100f).toInt().coerceIn(0,100),
-                    spatialTexturePercent=(score.spatialTexture*100f).toInt().coerceIn(0,100),
-                    gradientPercent=(score.gradient*100f).toInt().coerceIn(0,100),
-                    gradientMagnitudePercent=(score.gradientMagnitude*100f).toInt().coerceIn(0,100),
-                    layoutPercent=(score.layout*100f).toInt().coerceIn(0,100),
-                    illuminationPercent=(score.illumination*100f).toInt().coerceIn(0,100),
-                    entropyPercent=(score.entropy*100f).toInt().coerceIn(0,100),
-                    aspectPercent=(score.aspect*100f).toInt().coerceIn(0,100),
-                    regionConsistencyPercent=(region.similarity*100f).toInt().coerceIn(0,100),
-                    stableRegionPercent=(region.stableRegionRatio*100f).toInt().coerceIn(0,100),
-                    spatialDisagreementPercent=(region.disagreementPenalty*100f).toInt().coerceIn(0,100),
-                    structuralConsensusPercent=(structural.similarity*100f).toInt().coerceIn(0,100),
-                    coarseStructurePercent=(structural.coarse*100f).toInt().coerceIn(0,100),
-                    fineStructurePercent=(structural.fine*100f).toInt().coerceIn(0,100),
-                    bestQueryVariant=variantLabel,
-                    evidenceReasons=reasons
+                    advancedPercent=(score.similarity*100f).toInt().coerceIn(0,100), structurePercent=(score.structure*100f).toInt().coerceIn(0,100),
+                    advancedColorPercent=(score.color*100f).toInt().coerceIn(0,100), spatialColorPercent=(score.spatialColor*100f).toInt().coerceIn(0,100),
+                    texturePercent=(score.texture*100f).toInt().coerceIn(0,100), spatialTexturePercent=(score.spatialTexture*100f).toInt().coerceIn(0,100),
+                    gradientPercent=(score.gradient*100f).toInt().coerceIn(0,100), gradientMagnitudePercent=(score.gradientMagnitude*100f).toInt().coerceIn(0,100),
+                    layoutPercent=(score.layout*100f).toInt().coerceIn(0,100), illuminationPercent=(score.illumination*100f).toInt().coerceIn(0,100),
+                    entropyPercent=(score.entropy*100f).toInt().coerceIn(0,100), aspectPercent=(score.aspect*100f).toInt().coerceIn(0,100),
+                    regionConsistencyPercent=(region.similarity*100f).toInt().coerceIn(0,100), stableRegionPercent=(region.stableRegionRatio*100f).toInt().coerceIn(0,100),
+                    spatialDisagreementPercent=(region.disagreementPenalty*100f).toInt().coerceIn(0,100), structuralConsensusPercent=(structural.similarity*100f).toInt().coerceIn(0,100),
+                    coarseStructurePercent=(structural.coarse*100f).toInt().coerceIn(0,100), fineStructurePercent=(structural.fine*100f).toInt().coerceIn(0,100),
+                    bestQueryVariant=variantLabel, evidenceReasons=reasons
                 )
             }.sortedByDescending { it.finalSimilarity }.take(limit)
         } finally { original.recycle() }
