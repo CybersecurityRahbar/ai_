@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application
@@ -21,6 +23,8 @@
         <activity android:name=".ui.DataCenterActivity" android:exported="false" />
         <activity android:name=".ui.ReverseImageSearchActivity" android:exported="false" />
         <activity android:name=".ui.AdvancedVisualIntelligenceActivity" android:exported="false" />
+        <activity android:name=".ui.AdvancedVisualIntelligenceActivity" android:exported="false" />
+        <activity android:name=".ui.BulkImagePickerActivity" android:exported="false" />
         <activity android:name=".ui.ImageViewerActivity" android:exported="false" />
         <activity android:name=".ui.FaceSearchActivity" android:exported="false" />
         <activity android:name=".ui.PeopleIntelligenceActivity" android:exported="false" />
