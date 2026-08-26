@@ -1,6 +1,7 @@
 package com.example.personalmemoryai.ui
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualIntelligenceService
@@ -23,10 +24,17 @@ class AdvancedVisualResultAdapter(
     override fun getItemCount(): Int = items.size
 
     inner class ViewHolder(private val binding: ItemAdvancedVisualResultBinding) : RecyclerView.ViewHolder(binding.root) {
+        private var expanded = false
+
         fun bind(item: AdvancedVisualIntelligenceService.Evidence) {
+            expanded = false
             binding.root.setOnClickListener { onImageClick(item.filePath) }
             binding.nameText.text = item.displayName
             binding.scoreText.text = "${item.finalPercent}% FINAL • CONFIDENCE ${item.confidencePercent}% • ADVANCED-V2"
+            binding.summaryText.text = buildString {
+                append("CLASSICAL ${item.baseClassicalPercent}%  •  ADVANCED ${item.advancedPercent}%  •  REGIONAL ${item.regionConsistencyPercent}%  •  STRUCTURAL ${item.structuralConsensusPercent}%\n")
+                append("Best variant: ${item.bestQueryVariant}  •  stable regions: ${item.stableRegionPercent}%")
+            }
             binding.explainText.text = buildString {
                 append("WINNING QUERY VARIANT: ${item.bestQueryVariant}\n")
                 append("CLASSICAL ${item.baseClassicalPercent}%  |  ADVANCED ${item.advancedPercent}%  |  REGIONAL ${item.regionConsistencyPercent}%\n")
@@ -41,7 +49,14 @@ class AdvancedVisualResultAdapter(
                 append("Existing color ${item.colorPercent}% • edge ${item.edgePercent}% • local ${item.localPercent}% • RANSAC ${item.ransacInliers}\n")
                 append("WHY: ${item.evidenceReasons.joinToString(", ").ifBlank { "insufficient evidence" }}")
             }
-            binding.root.contentDescription = "${item.displayName}, ${item.finalPercent} percent similarity, confidence ${item.confidencePercent} percent, region consistency ${item.regionConsistencyPercent} percent, ${item.bestQueryVariant}, explainable Advanced Visual Intelligence result"
+            binding.explainText.visibility = View.GONE
+            binding.whyToggleText.text = "WHY THIS RESULT  ▸"
+            binding.whyToggleText.setOnClickListener {
+                expanded = !expanded
+                binding.explainText.visibility = if (expanded) View.VISIBLE else View.GONE
+                binding.whyToggleText.text = if (expanded) "WHY THIS RESULT  ▾" else "WHY THIS RESULT  ▸"
+            }
+            binding.root.contentDescription = "${item.displayName}, ${item.finalPercent} percent similarity, confidence ${item.confidencePercent} percent, region consistency ${item.regionConsistencyPercent} percent, ${item.bestQueryVariant}, expandable explainable Advanced Visual Intelligence result"
         }
     }
 }
