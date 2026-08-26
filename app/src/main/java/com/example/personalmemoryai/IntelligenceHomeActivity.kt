@@ -14,6 +14,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.personalmemoryai.diagnostics.IntelligenceHealthService
+import com.example.personalmemoryai.ui.AdvancedVisualIntelligenceActivity
 import com.example.personalmemoryai.ui.DataCenterActivity
 import com.example.personalmemoryai.ui.DiagnosticsActivity
 import com.example.personalmemoryai.ui.EvidenceRelationshipsActivity
@@ -69,6 +70,9 @@ class IntelligenceHomeActivity : AppCompatActivity() {
         content.addView(title("SEARCH / EVIDENCE RETRIEVAL", cyan))
         content.addView(action("LOCAL REVERSE IMAGE SEARCH", "Haar • pHash • dHash • color • shape • AKAZE • RANSAC", cyan) {
             startActivity(Intent(this, ReverseImageSearchActivity::class.java))
+        })
+        content.addView(action("ADVANCED VISUAL INTELLIGENCE", "Multi-scale structure • LBP texture • gradient • layout • explainable fusion", violet) {
+            startActivity(Intent(this, AdvancedVisualIntelligenceActivity::class.java))
         })
         content.addView(action("EVIDENCE SEARCH CONSOLE", "Image-to-image similarity • OCR • object retrieval • no Text Encoder dependency", cyan) { startActivity(Intent(this, EvidenceSearchActivity::class.java)) })
         content.addView(action("COMPOSITE INVESTIGATION", "Face • body • pose • appearance • scene • visual • OCR • objects", violet) { startActivity(Intent(this, InvestigationActivity::class.java)) })
