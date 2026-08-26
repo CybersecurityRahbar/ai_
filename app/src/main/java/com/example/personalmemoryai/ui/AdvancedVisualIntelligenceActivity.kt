@@ -12,14 +12,15 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualIntelligenceService
 import com.example.personalmemoryai.databinding.ActivityAdvancedVisualIntelligenceBinding
+import com.example.personalmemoryai.indexing.ImageCorpusImportScheduler
+import com.example.personalmemoryai.indexing.ImageCorpusImportWorker
 import com.example.personalmemoryai.indexing.UnifiedVisualIndexWorker
 import com.example.personalmemoryai.indexing.VisualIndexWorkScheduler
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
+import kotlinx.coroutines.Dispatchers
 import java.util.Locale
 import java.util.UUID
 
@@ -29,6 +30,7 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
     private lateinit var adapter: AdvancedVisualResultAdapter
     private var searchJob: Job? = null
     private var observedWorkId: UUID? = null
+    private var importObservationJob: Job? = null
 
     private val corpusPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != RESULT_OK) return@registerForActivityResult
@@ -37,19 +39,9 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
             binding.statusText.text = "لم يتم إنشاء قائمة الصور المختارة."
             return@registerForActivityResult
         }
-        lifecycleScope.launch {
-            setBusy(true)
-            try {
-                val uris = readUriQueue(queuePath)
-                val added = withContext(Dispatchers.IO) {
-                    com.example.personalmemoryai.reverseimage.ReverseImageSearchService(applicationContext).use { it.addImages(uris) }
-                }
-                binding.statusText.text = "تمت إضافة $added صورة إلى Corpus المشترك. لا توجد فهرسة ثانية للصورة عند تشغيل المحركات."
-                refreshCounts()
-            } catch (t: Throwable) {
-                showError("تعذر إضافة الصور: ${t.message}")
-            } finally { setBusy(false) }
-        }
+        val id = ImageCorpusImportScheduler.enqueue(applicationContext, queuePath)
+        binding.statusText.text = "تمت إضافة مهمة استيراد الصور إلى الخلفية: $id"
+        observeImport(id)
     }
 
     private val queryPicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -80,12 +72,7 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
         binding.cancelSearchButton.setOnClickListener { searchJob?.cancel(); binding.statusText.text = "تم إلغاء البحث الحالي."; setBusy(false) }
         refreshCounts()
         pollSharedIndex()
-    }
-
-    private suspend fun readUriQueue(path: String): List<Uri> = withContext(Dispatchers.IO) {
-        val file = File(path)
-        if (!file.isFile) return@withContext emptyList()
-        file.useLines { lines -> lines.map(String::trim).filter(String::isNotBlank).map(Uri::parse).toList() }.also { file.delete() }
+        pollImport()
     }
 
     private fun startSharedIndex(rebuild: Boolean) {
@@ -99,9 +86,7 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
         lifecycleScope.launch {
             setBusy(true)
             while (true) {
-                val info = withContext(Dispatchers.IO) {
-                    WorkManager.getInstance(applicationContext).getWorkInfoById(id).get()
-                } ?: break
+                val info = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfoById(id).get() } ?: break
                 val p = info.progress
                 val processed = p.getInt(UnifiedVisualIndexWorker.KEY_PROCESSED, 0)
                 val total = p.getInt(UnifiedVisualIndexWorker.KEY_TOTAL, 0)
@@ -126,13 +111,47 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
         }
     }
 
+    private fun observeImport(id: UUID) {
+        importObservationJob?.cancel()
+        importObservationJob = lifecycleScope.launch {
+            setBusy(true)
+            while (true) {
+                val info = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfoById(id).get() } ?: break
+                val p = info.progress
+                val processed = p.getInt(ImageCorpusImportWorker.KEY_PROCESSED, 0)
+                val total = p.getInt(ImageCorpusImportWorker.KEY_TOTAL, 0)
+                val percent = p.getInt(ImageCorpusImportWorker.KEY_PERCENT, 0)
+                binding.progressBar.visibility = View.VISIBLE
+                binding.progressBar.max = total.coerceAtLeast(1)
+                binding.progressBar.progress = processed.coerceIn(0, binding.progressBar.max)
+                binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
+                binding.counterText.text = "Added ${p.getInt(ImageCorpusImportWorker.KEY_ADDED, 0)} • Skipped ${p.getInt(ImageCorpusImportWorker.KEY_SKIPPED, 0)} • Failed ${p.getInt(ImageCorpusImportWorker.KEY_FAILED, 0)}"
+                binding.statusText.text = when (info.state) {
+                    WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> "استيراد الصور في الخلفية…"
+                    WorkInfo.State.SUCCEEDED -> "اكتمل استيراد الصور إلى Corpus المشترك."
+                    WorkInfo.State.FAILED -> "فشل استيراد الصور: ${info.outputData.getString("error") ?: "خطأ غير محدد"}"
+                    WorkInfo.State.CANCELLED -> "تم إلغاء استيراد الصور."
+                    else -> info.state.name
+                }
+                if (info.state.isFinished) break
+                delay(600)
+            }
+            setBusy(false)
+            refreshCounts()
+        }
+    }
+
     private fun pollSharedIndex() {
         lifecycleScope.launch {
-            val infos = withContext(Dispatchers.IO) {
-                WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(UnifiedVisualIndexWorker.WORK_NAME).get()
-            }
-            val running = infos.firstOrNull { !it.state.isFinished }
-            if (running != null) observeWork(running.id)
+            val infos = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(UnifiedVisualIndexWorker.WORK_NAME).get() }
+            infos.firstOrNull { !it.state.isFinished }?.let(::observeWork)
+        }
+    }
+
+    private fun pollImport() {
+        lifecycleScope.launch {
+            val infos = withContext(Dispatchers.IO) { WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(ImageCorpusImportWorker.WORK_NAME).get() }
+            infos.firstOrNull { !it.state.isFinished }?.let(::observeImport)
         }
     }
 
@@ -193,6 +212,7 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         searchJob?.cancel()
+        importObservationJob?.cancel()
         observedWorkId = null
         service.close()
         super.onDestroy()
