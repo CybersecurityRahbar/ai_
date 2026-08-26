@@ -29,11 +29,35 @@
     </LinearLayout>
 
     <TextView
-        android:id="@+id/explainText"
+        android:id="@+id/summaryText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="6dp"
         android:textColor="#A8C7D5"
         android:textSize="9sp"
         android:lineSpacingExtra="2dp" />
+
+    <TextView
+        android:id="@+id/whyToggleText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:text="WHY THIS RESULT  ▸"
+        android:textColor="#7DFF19"
+        android:textSize="9sp"
+        android:textStyle="bold"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <TextView
+        android:id="@+id/explainText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textColor="#A8C7D5"
+        android:textSize="9sp"
+        android:lineSpacingExtra="2dp"
+        android:visibility="gone" />
 </LinearLayout>
