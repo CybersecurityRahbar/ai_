@@ -2,14 +2,23 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:layout_margin="4dp"
     android:orientation="vertical"
-    android:padding="12dp"
-    android:layout_margin="5dp"
-    android:background="@drawable/panel_intelligence">
+    android:padding="7dp"
+    android:background="@drawable/panel_intelligence"
+    android:elevation="2dp">
+
+    <ImageView
+        android:id="@+id/resultImage"
+        android:layout_width="match_parent"
+        android:layout_height="150dp"
+        android:scaleType="centerCrop"
+        android:contentDescription="Advanced Visual Intelligence result" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
         android:orientation="horizontal">
         <TextView
             android:id="@+id/nameText"
@@ -17,36 +26,49 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:textColor="#E5F4FA"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end" />
         <TextView
             android:id="@+id/scoreText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textColor="#7DFF19"
-            android:textSize="12sp"
+            android:textSize="10sp"
             android:textStyle="bold" />
     </LinearLayout>
 
     <TextView
-        android:id="@+id/summaryText"
+        android:id="@+id/detailText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:textColor="#A8C7D5"
-        android:textSize="9sp"
-        android:lineSpacingExtra="2dp" />
+        android:layout_marginTop="3dp"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:textColor="#C8E4ED"
+        android:textSize="9sp" />
+
+    <TextView
+        android:id="@+id/pathText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:maxLines="1"
+        android:ellipsize="middle"
+        android:textColor="#71A0B8"
+        android:textSize="8sp" />
 
     <TextView
         android:id="@+id/whyToggleText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp"
+        android:layout_marginTop="6dp"
+        android:paddingTop="3dp"
+        android:paddingBottom="3dp"
         android:text="WHY THIS RESULT  ▸"
         android:textColor="#7DFF19"
-        android:textSize="9sp"
+        android:textSize="8sp"
         android:textStyle="bold"
         android:clickable="true"
         android:focusable="true" />
@@ -55,9 +77,9 @@
         android:id="@+id/explainText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="3dp"
         android:textColor="#A8C7D5"
-        android:textSize="9sp"
+        android:textSize="8sp"
         android:lineSpacingExtra="2dp"
         android:visibility="gone" />
 </LinearLayout>
