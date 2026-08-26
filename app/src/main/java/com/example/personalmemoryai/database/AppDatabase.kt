@@ -10,6 +10,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualFingerprintDao
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualFingerprintEntity
 import com.example.personalmemoryai.indexing.VisualIndexBatchDao
+import com.example.personalmemoryai.indexing.VisualIndexOperationDao
+import com.example.personalmemoryai.indexing.VisualIndexOperationEntity
 import com.example.personalmemoryai.reverseimage.ClassicalVisualFingerprintDao
 import com.example.personalmemoryai.reverseimage.ClassicalVisualFingerprintEntity
 import com.example.personalmemoryai.reverseimage.HaarFingerprintDao
@@ -18,8 +20,8 @@ import com.example.personalmemoryai.reverseimage.ReverseImageItemDao
 import com.example.personalmemoryai.reverseimage.ReverseImageItemEntity
 
 @Database(
-    entities = [ImageEntity::class, FaceEntity::class, PersonEntity::class, EmbeddingEntity::class, ObjectEntity::class, HaarFingerprintEntity::class, ReverseImageItemEntity::class, ClassicalVisualFingerprintEntity::class, AdvancedVisualFingerprintEntity::class],
-    version = 10,
+    entities = [ImageEntity::class, FaceEntity::class, PersonEntity::class, EmbeddingEntity::class, ObjectEntity::class, HaarFingerprintEntity::class, ReverseImageItemEntity::class, ClassicalVisualFingerprintEntity::class, AdvancedVisualFingerprintEntity::class, VisualIndexOperationEntity::class],
+    version = 11,
     exportSchema = true
 )
 @TypeConverters(DatabaseConverters::class)
@@ -34,6 +36,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun classicalVisualFingerprintDao(): ClassicalVisualFingerprintDao
     abstract fun advancedVisualFingerprintDao(): AdvancedVisualFingerprintDao
     abstract fun visualIndexBatchDao(): VisualIndexBatchDao
+    abstract fun visualIndexOperationDao(): VisualIndexOperationDao
 
     companion object {
         private const val DATABASE_NAME = "personal_memory.db"
@@ -57,61 +60,23 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
         private val MIGRATION_3_4 = object : Migration(3, 4) { override fun migrate(database: SupportSQLiteDatabase) { database.execSQL("ALTER TABLE images ADD COLUMN detectedObjects TEXT NOT NULL DEFAULT ''") } }
-        private val MIGRATION_4_5 = object : Migration(4, 5) {
+        private val MIGRATION_4_5 = object : Migration(4, 5) { override fun migrate(database: SupportSQLiteDatabase) { database.execSQL("""CREATE TABLE IF NOT EXISTS object_observations (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, imageId INTEGER NOT NULL, classId INTEGER NOT NULL, label TEXT NOT NULL, arabicLabel TEXT NOT NULL, confidence REAL NOT NULL, left REAL NOT NULL, top REAL NOT NULL, right REAL NOT NULL, bottom REAL NOT NULL, detectorName TEXT NOT NULL, detectorVersion TEXT NOT NULL, inferenceTimeMs INTEGER NOT NULL, createdAt INTEGER NOT NULL, FOREIGN KEY(imageId) REFERENCES images(id) ON DELETE CASCADE)"""); database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_imageId ON object_observations(imageId)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_classId ON object_observations(classId)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_label ON object_observations(label)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_confidence ON object_observations(confidence)") } }
+        private val MIGRATION_5_6 = object : Migration(5, 6) { override fun migrate(database: SupportSQLiteDatabase) { database.execSQL("ALTER TABLE images ADD COLUMN ocrQualityScore REAL NOT NULL DEFAULT 0.0"); database.execSQL("ALTER TABLE images ADD COLUMN ocrPassCount INTEGER NOT NULL DEFAULT 0"); database.execSQL("ALTER TABLE images ADD COLUMN ocrSuccessfulPasses INTEGER NOT NULL DEFAULT 0"); database.execSQL("ALTER TABLE images ADD COLUMN ocrLatinCharacters INTEGER NOT NULL DEFAULT 0"); database.execSQL("ALTER TABLE images ADD COLUMN ocrArabicCharacters INTEGER NOT NULL DEFAULT 0") } }
+        private val MIGRATION_6_7 = object : Migration(6, 7) { override fun migrate(database: SupportSQLiteDatabase) { database.execSQL("""CREATE TABLE IF NOT EXISTS image_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, imageId INTEGER NOT NULL, engineVersion TEXT NOT NULL, sourceModifiedAt INTEGER, width INTEGER NOT NULL, height INTEGER NOT NULL, channels INTEGER NOT NULL, signature BLOB NOT NULL, createdAt INTEGER NOT NULL)"""); database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_image_fingerprints_imageId ON image_fingerprints(imageId)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_engineVersion ON image_fingerprints(engineVersion)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_sourceModifiedAt ON image_fingerprints(sourceModifiedAt)") } }
+        private val MIGRATION_7_8 = object : Migration(7, 8) { override fun migrate(database: SupportSQLiteDatabase) { database.execSQL("DROP TABLE IF EXISTS image_fingerprints"); database.execSQL("""CREATE TABLE IF NOT EXISTS reverse_image_items (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, uri TEXT NOT NULL, displayName TEXT NOT NULL, filePath TEXT, fileSize INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, mimeType TEXT, sourceModifiedAt INTEGER, addedAt INTEGER NOT NULL)"""); database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_reverse_image_items_uri ON reverse_image_items(uri)"); database.execSQL("""CREATE TABLE IF NOT EXISTS image_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, itemId INTEGER NOT NULL, engineVersion TEXT NOT NULL, sourceModifiedAt INTEGER, width INTEGER NOT NULL, height INTEGER NOT NULL, channels INTEGER NOT NULL, signature BLOB NOT NULL, createdAt INTEGER NOT NULL)"""); database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_image_fingerprints_itemId ON image_fingerprints(itemId)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_engineVersion ON image_fingerprints(engineVersion)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_sourceModifiedAt ON image_fingerprints(sourceModifiedAt)") } }
+        private val MIGRATION_8_9 = object : Migration(8, 9) { override fun migrate(database: SupportSQLiteDatabase) { database.execSQL("""CREATE TABLE IF NOT EXISTS classical_visual_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, itemId INTEGER NOT NULL, engineVersion TEXT NOT NULL, phash INTEGER NOT NULL, dhash INTEGER NOT NULL, colorHistogram BLOB NOT NULL, edgeHistogram BLOB NOT NULL, localKeypoints BLOB, localDescriptors BLOB, localDescriptorRows INTEGER NOT NULL, localDescriptorCols INTEGER NOT NULL, localDescriptorType INTEGER NOT NULL, createdAt INTEGER NOT NULL)"""); database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_classical_visual_fingerprints_itemId ON classical_visual_fingerprints(itemId)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_classical_visual_fingerprints_engineVersion ON classical_visual_fingerprints(engineVersion)") } }
+        private val MIGRATION_9_10 = object : Migration(9, 10) { override fun migrate(database: SupportSQLiteDatabase) { database.execSQL("""CREATE TABLE IF NOT EXISTS advanced_visual_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, itemId INTEGER NOT NULL, engineVersion TEXT NOT NULL, grayPyramid BLOB NOT NULL, colorMoments BLOB NOT NULL, lbpHistogram BLOB NOT NULL, gradientHistogram BLOB NOT NULL, layoutSignature BLOB NOT NULL, entropy REAL NOT NULL, aspectRatio REAL NOT NULL, createdAt INTEGER NOT NULL)"""); database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_advanced_visual_fingerprints_itemId ON advanced_visual_fingerprints(itemId)"); database.execSQL("CREATE INDEX IF NOT EXISTS index_advanced_visual_fingerprints_engineVersion ON advanced_visual_fingerprints(engineVersion)") } }
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("""CREATE TABLE IF NOT EXISTS object_observations (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, imageId INTEGER NOT NULL, classId INTEGER NOT NULL, label TEXT NOT NULL, arabicLabel TEXT NOT NULL, confidence REAL NOT NULL, left REAL NOT NULL, top REAL NOT NULL, right REAL NOT NULL, bottom REAL NOT NULL, detectorName TEXT NOT NULL, detectorVersion TEXT NOT NULL, inferenceTimeMs INTEGER NOT NULL, createdAt INTEGER NOT NULL, FOREIGN KEY(imageId) REFERENCES images(id) ON DELETE CASCADE)""")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_imageId ON object_observations(imageId)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_classId ON object_observations(classId)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_label ON object_observations(label)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_object_observations_confidence ON object_observations(confidence)")
-            }
-        }
-        private val MIGRATION_5_6 = object : Migration(5, 6) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE images ADD COLUMN ocrQualityScore REAL NOT NULL DEFAULT 0.0")
-                database.execSQL("ALTER TABLE images ADD COLUMN ocrPassCount INTEGER NOT NULL DEFAULT 0")
-                database.execSQL("ALTER TABLE images ADD COLUMN ocrSuccessfulPasses INTEGER NOT NULL DEFAULT 0")
-                database.execSQL("ALTER TABLE images ADD COLUMN ocrLatinCharacters INTEGER NOT NULL DEFAULT 0")
-                database.execSQL("ALTER TABLE images ADD COLUMN ocrArabicCharacters INTEGER NOT NULL DEFAULT 0")
-            }
-        }
-        private val MIGRATION_6_7 = object : Migration(6, 7) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("""CREATE TABLE IF NOT EXISTS image_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, imageId INTEGER NOT NULL, engineVersion TEXT NOT NULL, sourceModifiedAt INTEGER, width INTEGER NOT NULL, height INTEGER NOT NULL, channels INTEGER NOT NULL, signature BLOB NOT NULL, createdAt INTEGER NOT NULL)""")
-                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_image_fingerprints_imageId ON image_fingerprints(imageId)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_engineVersion ON image_fingerprints(engineVersion)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_sourceModifiedAt ON image_fingerprints(sourceModifiedAt)")
-            }
-        }
-        private val MIGRATION_7_8 = object : Migration(7, 8) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("DROP TABLE IF EXISTS image_fingerprints")
-                database.execSQL("""CREATE TABLE IF NOT EXISTS reverse_image_items (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, uri TEXT NOT NULL, displayName TEXT NOT NULL, filePath TEXT, fileSize INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, mimeType TEXT, sourceModifiedAt INTEGER, addedAt INTEGER NOT NULL)""")
-                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_reverse_image_items_uri ON reverse_image_items(uri)")
-                database.execSQL("""CREATE TABLE IF NOT EXISTS image_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, itemId INTEGER NOT NULL, engineVersion TEXT NOT NULL, sourceModifiedAt INTEGER, width INTEGER NOT NULL, height INTEGER NOT NULL, channels INTEGER NOT NULL, signature BLOB NOT NULL, createdAt INTEGER NOT NULL)""")
-                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_image_fingerprints_itemId ON image_fingerprints(itemId)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_engineVersion ON image_fingerprints(engineVersion)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_image_fingerprints_sourceModifiedAt ON image_fingerprints(sourceModifiedAt)")
-            }
-        }
-        private val MIGRATION_8_9 = object : Migration(8, 9) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("""CREATE TABLE IF NOT EXISTS classical_visual_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, itemId INTEGER NOT NULL, engineVersion TEXT NOT NULL, phash INTEGER NOT NULL, dhash INTEGER NOT NULL, colorHistogram BLOB NOT NULL, edgeHistogram BLOB NOT NULL, localKeypoints BLOB, localDescriptors BLOB, localDescriptorRows INTEGER NOT NULL, localDescriptorCols INTEGER NOT NULL, localDescriptorType INTEGER NOT NULL, createdAt INTEGER NOT NULL)""")
-                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_classical_visual_fingerprints_itemId ON classical_visual_fingerprints(itemId)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_classical_visual_fingerprints_engineVersion ON classical_visual_fingerprints(engineVersion)")
-            }
-        }
-        private val MIGRATION_9_10 = object : Migration(9, 10) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("""CREATE TABLE IF NOT EXISTS advanced_visual_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, itemId INTEGER NOT NULL, engineVersion TEXT NOT NULL, grayPyramid BLOB NOT NULL, colorMoments BLOB NOT NULL, lbpHistogram BLOB NOT NULL, gradientHistogram BLOB NOT NULL, layoutSignature BLOB NOT NULL, entropy REAL NOT NULL, aspectRatio REAL NOT NULL, createdAt INTEGER NOT NULL)""")
-                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_advanced_visual_fingerprints_itemId ON advanced_visual_fingerprints(itemId)")
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_advanced_visual_fingerprints_engineVersion ON advanced_visual_fingerprints(engineVersion)")
+                database.execSQL("""CREATE TABLE IF NOT EXISTS visual_index_operations (id TEXT NOT NULL PRIMARY KEY, rebuild INTEGER NOT NULL, total INTEGER NOT NULL, processed INTEGER NOT NULL, indexed INTEGER NOT NULL, skipped INTEGER NOT NULL, failed INTEGER NOT NULL, localFeatures INTEGER NOT NULL, status TEXT NOT NULL, engineHaar TEXT NOT NULL, engineClassical TEXT NOT NULL, engineAdvanced TEXT NOT NULL, startedAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, finishedAt INTEGER, lastError TEXT)""")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_visual_index_operations_status ON visual_index_operations(status)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_visual_index_operations_updatedAt ON visual_index_operations(updatedAt)")
             }
         }
 
         fun getInstance(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, DATABASE_NAME)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                 .build().also { INSTANCE = it }
         }
 
