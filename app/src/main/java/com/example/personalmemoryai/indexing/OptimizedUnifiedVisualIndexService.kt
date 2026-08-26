@@ -62,7 +62,7 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
         try{
             for(batch in items.chunked(BATCH_SIZE)){
                 coroutineContext.ensureActive()
-                val results:List<ItemResult>=coroutineScope{batch.map{item->async(cpuDispatcher){
+                val results: List<ItemResult> = coroutineScope{batch.map{item->async(cpuDispatcher){
                     val itemStart=System.currentTimeMillis()
                     try{
                         coroutineContext.ensureActive();val current=ensurePrivateCopy(item)
