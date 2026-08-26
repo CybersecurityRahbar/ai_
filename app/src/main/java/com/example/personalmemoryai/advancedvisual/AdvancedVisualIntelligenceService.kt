@@ -1,15 +1,16 @@
 package com.example.personalmemoryai.advancedvisual
 
-import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.net.Uri
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.reverseimage.ReverseImageSearchService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Independent Advanced search service. It consumes the shared corpus, unions candidate recall, then fuses evidence. */
-class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
+/** Independent Advanced search service with multi-variant query analysis and explainable fusion. */
+class AdvancedVisualIntelligenceService(context: android.content.Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val database = AppDatabase.getInstance(appContext)
     private val advancedDao = database.advancedVisualFingerprintDao()
@@ -42,8 +43,11 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
         val illuminationPercent: Int,
         val entropyPercent: Int,
         val aspectPercent: Int,
+        val bestQueryVariant: String,
         val evidenceReasons: List<String>
     )
+
+    private data class QueryVariant(val label: String, val fingerprint: AdvancedVisualFingerprintEngine.Fingerprint, val bitmap: Bitmap?)
 
     suspend fun fingerprintCount(): Long = withContext(Dispatchers.IO) { advancedDao.count() }
 
@@ -53,43 +57,47 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
         minimumSimilarity: Float = 0.35f,
         onProgress: (processed: Int, total: Int, stage: String) -> Unit = { _, _, _ -> }
     ): List<Evidence> = withContext(Dispatchers.Default) {
-        val queryBitmap = appContext.contentResolver.openInputStream(queryUri).use { input ->
+        val original = appContext.contentResolver.openInputStream(queryUri).use { input ->
             requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة صورة البحث المتقدم: $queryUri" }
         }
         try {
-            onProgress(0, 1, "تحضير Advanced Visual Intelligence V2")
-            val query = engine.fingerprint(queryBitmap)
+            val variants = buildQueryVariants(original)
+            onProgress(0, variants.size, "تحضير ${variants.size} نسخ استعلام Advanced V2")
             val stored = withContext(Dispatchers.IO) { advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION) }
             if (stored.isEmpty()) return@withContext emptyList()
 
             val baseResults = runCatching {
-                ReverseImageSearchService(appContext).use { service ->
-                    service.search(queryUri, limit = 64, minimumSimilarity = 0f)
-                }
+                ReverseImageSearchService(appContext).use { service -> service.search(queryUri, limit = 64, minimumSimilarity = 0f) }
             }.getOrDefault(emptyList())
             val baseById = baseResults.associateBy { it.item.id }
 
-            val scored = ArrayList<Pair<AdvancedVisualFingerprintEntity, AdvancedVisualFingerprintEngine.Score>>(stored.size)
-            for ((index, entity) in stored.withIndex()) {
-                scored += entity to engine.compare(query, entity.toFingerprint())
-                if (index % 16 == 0 || index == stored.lastIndex) {
-                    onProgress(index + 1, stored.size, "Advanced V2 global analysis • ${index + 1}/${stored.size}")
+            val bestById = HashMap<Long, Pair<Int, AdvancedVisualFingerprintEngine.Score>>()
+            for ((variantIndex, variant) in variants.withIndex()) {
+                for ((index, entity) in stored.withIndex()) {
+                    val score = engine.compare(variant.fingerprint, entity.toFingerprint())
+                    val current = bestById[entity.itemId]
+                    if (current == null || score.similarity > current.second.similarity) {
+                        bestById[entity.itemId] = variantIndex to score
+                    }
                 }
+                onProgress(variantIndex + 1, variants.size, "Advanced V2 variant ${variant.label}")
             }
 
-            val advancedTop = scored.sortedByDescending { it.second.similarity }.take(64)
-            val advancedById = scored.associateBy { it.first.itemId }
+            variants.filter { it.bitmap != null && it.bitmap !== original }.forEach { it.bitmap!!.recycle() }
+
+            val advancedTop = bestById.entries.sortedByDescending { it.value.second.similarity }.take(64)
+            val advancedById = bestById
             val candidateIds = LinkedHashSet<Long>().apply {
                 baseResults.forEach { add(it.item.id) }
-                advancedTop.forEach { add(it.first.itemId) }
+                advancedTop.forEach { add(it.key) }
             }
-            val items = withContext(Dispatchers.IO) {
-                itemDao.getByIds(candidateIds.toList()).associateBy { it.id }
-            }
+            val items = withContext(Dispatchers.IO) { itemDao.getByIds(candidateIds.toList()).associateBy { it.id } }
 
             return@withContext candidateIds.mapNotNull { itemId ->
                 val item = items[itemId] ?: return@mapNotNull null
-                val score = advancedById[itemId]?.second ?: return@mapNotNull null
+                val entry = advancedById[itemId] ?: return@mapNotNull null
+                val variantIndex = entry.first
+                val score = entry.second
                 val base = baseById[itemId]
                 val baseScore = base?.similarity ?: 0f
                 val agreementSignals = listOf(score.structure, score.spatialColor, score.spatialTexture, score.gradient, score.illumination)
@@ -103,6 +111,7 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
                 final = final.coerceIn(0f, 1f)
                 if (final < minimumSimilarity) return@mapNotNull null
 
+                val variantLabel = variants.getOrNull(variantIndex)?.label ?: "original"
                 val reasons = buildList {
                     addAll(score.evidence)
                     if (base != null && base.percent >= 85) add("strong_existing_classical_agreement")
@@ -115,23 +124,17 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
                     if (consensus <= 1) add("weak_cross_signal_consensus")
                     if (score.spatialColor >= 0.80f && score.structure < 0.50f) add("color_structure_contradiction")
                     if (score.texture >= 0.80f && score.structure < 0.45f) add("texture_structure_contradiction")
+                    if (variantLabel != "original") add("best_match_from_query_variant")
                     if (base == null) add("advanced_only_candidate")
                 }.distinct()
 
                 Evidence(
-                    itemId=item.id,
-                    displayName=item.displayName,
-                    filePath=item.filePath,
-                    finalSimilarity=final,
-                    finalPercent=(final*100f).toInt().coerceIn(0,100),
-                    baseClassicalPercent=base?.percent ?: 0,
-                    haarPercent=base?.haarPercent ?: 0,
-                    phashPercent=base?.phashPercent ?: 0,
-                    dhashPercent=base?.dhashPercent ?: 0,
-                    colorPercent=base?.colorPercent ?: 0,
-                    edgePercent=base?.edgePercent ?: 0,
-                    localPercent=base?.localPercent ?: 0,
-                    ransacInliers=base?.ransacInliers ?: 0,
+                    itemId=item.id, displayName=item.displayName, filePath=item.filePath,
+                    finalSimilarity=final, finalPercent=(final*100f).toInt().coerceIn(0,100),
+                    baseClassicalPercent=base?.percent ?: 0, haarPercent=base?.haarPercent ?: 0,
+                    phashPercent=base?.phashPercent ?: 0, dhashPercent=base?.dhashPercent ?: 0,
+                    colorPercent=base?.colorPercent ?: 0, edgePercent=base?.edgePercent ?: 0,
+                    localPercent=base?.localPercent ?: 0, ransacInliers=base?.ransacInliers ?: 0,
                     advancedPercent=(score.similarity*100f).toInt().coerceIn(0,100),
                     structurePercent=(score.structure*100f).toInt().coerceIn(0,100),
                     advancedColorPercent=(score.color*100f).toInt().coerceIn(0,100),
@@ -144,24 +147,34 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
                     illuminationPercent=(score.illumination*100f).toInt().coerceIn(0,100),
                     entropyPercent=(score.entropy*100f).toInt().coerceIn(0,100),
                     aspectPercent=(score.aspect*100f).toInt().coerceIn(0,100),
+                    bestQueryVariant=variantLabel,
                     evidenceReasons=reasons
                 )
             }.sortedByDescending { it.finalSimilarity }.take(limit)
-        } finally { queryBitmap.recycle() }
+        } finally { original.recycle() }
+    }
+
+    private fun buildQueryVariants(original: Bitmap): List<QueryVariant> {
+        val result = ArrayList<QueryVariant>(7)
+        fun add(label: String, bitmap: Bitmap) { result += QueryVariant(label, engine.fingerprint(bitmap), bitmap) }
+        add("original", original)
+        for (angle in intArrayOf(90, 180, 270)) {
+            val matrix = Matrix().apply { postRotate(angle.toFloat()) }
+            add("rotation_${angle}", Bitmap.createBitmap(original, 0, 0, original.width, original.height, matrix, true))
+        }
+        for (ratio in floatArrayOf(0.92f, 0.82f, 0.72f)) {
+            val w = maxOf(1, (original.width * ratio).toInt()); val h = maxOf(1, (original.height * ratio).toInt())
+            val left = (original.width - w) / 2; val top = (original.height - h) / 2
+            add("center_crop_${(ratio*100).toInt()}", Bitmap.createBitmap(original, left, top, w, h))
+        }
+        return result
     }
 
     private fun AdvancedVisualFingerprintEntity.toFingerprint() = AdvancedVisualFingerprintEngine.Fingerprint(
-        grayPyramid=grayPyramid,
-        colorMoments=colorMoments,
-        spatialColor=spatialColor,
-        lbpHistogram=lbpHistogram,
-        spatialLbp=spatialLbp,
-        gradientHistogram=gradientHistogram,
-        gradientMagnitude=gradientMagnitude,
-        layoutSignature=layoutSignature,
-        illuminationRobustStructure=illuminationRobustStructure,
-        entropy=entropy,
-        aspectRatio=aspectRatio
+        grayPyramid=grayPyramid, colorMoments=colorMoments, spatialColor=spatialColor, lbpHistogram=lbpHistogram,
+        spatialLbp=spatialLbp, gradientHistogram=gradientHistogram, gradientMagnitude=gradientMagnitude,
+        layoutSignature=layoutSignature, illuminationRobustStructure=illuminationRobustStructure,
+        entropy=entropy, aspectRatio=aspectRatio
     )
 
     override fun close() = Unit
