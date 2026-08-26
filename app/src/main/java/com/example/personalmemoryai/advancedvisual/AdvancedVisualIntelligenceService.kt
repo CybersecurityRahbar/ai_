@@ -17,6 +17,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
     private val itemDao = database.reverseImageItemDao()
     private val engine = AdvancedVisualFingerprintEngine()
     private val regionVerifier = AdvancedRegionConsistencyVerifier()
+    private val structuralConsensus = AdvancedStructuralConsensusEngine()
 
     data class Evidence(
         val itemId: Long,
@@ -24,6 +25,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         val filePath: String?,
         val finalSimilarity: Float,
         val finalPercent: Int,
+        val confidencePercent: Int,
         val baseClassicalPercent: Int,
         val haarPercent: Int,
         val phashPercent: Int,
@@ -47,6 +49,9 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         val regionConsistencyPercent: Int,
         val stableRegionPercent: Int,
         val spatialDisagreementPercent: Int,
+        val structuralConsensusPercent: Int,
+        val coarseStructurePercent: Int,
+        val fineStructurePercent: Int,
         val bestQueryVariant: String,
         val evidenceReasons: List<String>
     )
@@ -80,7 +85,8 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
             val bestById = HashMap<Long, Pair<Int, AdvancedVisualFingerprintEngine.Score>>()
             for ((variantIndex, variant) in variants.withIndex()) {
                 for (entity in stored) {
-                    val score = engine.compare(variant.fingerprint, storedFingerprints[entity.itemId] ?: entity.toFingerprint())
+                    val target = storedFingerprints[entity.itemId] ?: entity.toFingerprint()
+                    val score = engine.compare(variant.fingerprint, target)
                     val current = bestById[entity.itemId]
                     if (current == null || score.similarity > current.second.similarity) bestById[entity.itemId] = variantIndex to score
                 }
@@ -103,46 +109,57 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                 val score = entry.second
                 val base = baseById[itemId]
                 val targetFingerprint = storedFingerprints[itemId] ?: storedById[itemId]?.toFingerprint() ?: return@mapNotNull null
-                val region = regionVerifier.compare(
-                    variants.getOrNull(variantIndex)?.fingerprint ?: return@mapNotNull null,
-                    targetFingerprint
-                )
-                val agreementSignals = listOf(score.structure, score.spatialColor, score.spatialTexture, score.gradient, score.illumination, region.similarity)
+                val queryFingerprint = variants.getOrNull(variantIndex)?.fingerprint ?: return@mapNotNull null
+                val region = regionVerifier.compare(queryFingerprint, targetFingerprint)
+                val structural = structuralConsensus.compare(queryFingerprint, targetFingerprint)
+                val agreementSignals = listOf(score.structure, score.spatialColor, score.spatialTexture, score.gradient, score.illumination, region.similarity, structural.similarity)
                 val consensus = agreementSignals.count { it >= 0.62f }
                 var final = if (base != null) base.similarity * 0.58f + score.similarity * 0.42f else score.similarity * 0.70f
-                final = final * 0.90f + region.similarity * 0.10f
+                final = final * 0.86f + region.similarity * 0.08f + structural.similarity * 0.06f
                 if (consensus <= 1 && final > 0.55f) final *= 0.78f
                 if (score.structure < 0.50f && score.illumination < 0.45f && score.spatialColor > 0.80f) final *= 0.82f
                 if (score.texture > 0.80f && score.structure < 0.45f) final *= 0.90f
                 if (base != null && base.ransacInliers == 0 && score.structure < 0.50f) final *= 0.90f
                 if (region.stableRegionRatio < 0.25f && final > 0.58f) final *= 0.86f
                 if (region.disagreementPenalty > 0.40f && final > 0.62f) final *= 0.90f
-                if (consensus >= 4 && region.stableRegionRatio >= 0.60f && score.gradient >= 0.65f && score.illumination >= 0.60f) final = (final + 0.025f).coerceAtMost(1f)
+                if (structural.fine < 0.42f && structural.coarse > 0.70f) final *= 0.88f
+                if (consensus >= 5 && region.stableRegionRatio >= 0.60f && structural.similarity >= 0.70f) final = (final + 0.025f).coerceAtMost(1f)
                 final = final.coerceIn(0f, 1f)
                 if (final < minimumSimilarity) return@mapNotNull null
+
+                val consensusRatio = consensus.toFloat() / agreementSignals.size.toFloat()
+                val confidence = (100f * (
+                    consensusRatio * 0.45f +
+                    region.stableRegionRatio * 0.25f +
+                    structural.similarity * 0.20f +
+                    (if (base?.ransacInliers ?: 0 >= 4) 0.10f else 0f)
+                )).toInt().coerceIn(0, 100)
 
                 val variantLabel = variants.getOrNull(variantIndex)?.label ?: "original"
                 val reasons = buildList {
                     addAll(score.evidence)
                     addAll(region.evidence)
+                    addAll(structural.evidence)
                     if (base != null && base.percent >= 85) add("strong_existing_classical_agreement")
                     if (base != null && base.ransacInliers >= 4) add("existing_geometric_match")
                     if (score.spatialColor >= 0.78f) add("spatial_color_consistency")
                     if (score.spatialTexture >= 0.76f) add("regional_texture_consistency")
                     if (score.gradientMagnitude >= 0.78f) add("gradient_strength_consistency")
                     if (score.illumination >= 0.72f) add("illumination_robust_match")
-                    if (consensus >= 4) add("strong_independent_signal_consensus")
-                    if (consensus >= 3) add("independent_signal_consensus")
-                    if (consensus <= 1) add("weak_cross_signal_consensus")
+                    if (consensus >= 5) add("strong_independent_signal_consensus")
+                    else if (consensus >= 3) add("independent_signal_consensus")
+                    else add("weak_cross_signal_consensus")
                     if (variantLabel != "original") add("best_match_from_query_variant")
                     if (base == null) add("advanced_only_candidate")
                     if (region.stableRegionRatio < 0.25f) add("low_stable_region_coverage")
                     if (region.disagreementPenalty > 0.40f) add("spatial_evidence_conflict")
+                    if (structural.fine < 0.42f && structural.coarse > 0.70f) add("fine_structure_conflict")
                 }.distinct()
 
                 Evidence(
                     itemId=item.id, displayName=item.displayName, filePath=item.filePath,
                     finalSimilarity=final, finalPercent=(final*100f).toInt().coerceIn(0,100),
+                    confidencePercent=confidence,
                     baseClassicalPercent=base?.percent ?: 0, haarPercent=base?.haarPercent ?: 0,
                     phashPercent=base?.phashPercent ?: 0, dhashPercent=base?.dhashPercent ?: 0,
                     colorPercent=base?.colorPercent ?: 0, edgePercent=base?.edgePercent ?: 0,
@@ -162,6 +179,9 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                     regionConsistencyPercent=(region.similarity*100f).toInt().coerceIn(0,100),
                     stableRegionPercent=(region.stableRegionRatio*100f).toInt().coerceIn(0,100),
                     spatialDisagreementPercent=(region.disagreementPenalty*100f).toInt().coerceIn(0,100),
+                    structuralConsensusPercent=(structural.similarity*100f).toInt().coerceIn(0,100),
+                    coarseStructurePercent=(structural.coarse*100f).toInt().coerceIn(0,100),
+                    fineStructurePercent=(structural.fine*100f).toInt().coerceIn(0,100),
                     bestQueryVariant=variantLabel,
                     evidenceReasons=reasons
                 )
