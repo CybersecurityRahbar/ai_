@@ -15,6 +15,7 @@ import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -54,6 +55,48 @@ class BulkImagePickerActivity : AppCompatActivity() {
     private var volumeIndex = 0
     private lateinit var adapter: ImagePickerAdapter
 
+    private val systemImagesPicker =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNullOrEmpty()) return@registerForActivityResult
+            lifecycleScope.launch {
+                val distinctUris = uris.distinct()
+                var persisted = 0
+                distinctUris.forEach { uri ->
+                    try {
+                        contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                        persisted++
+                    } catch (_: SecurityException) {
+                        // Some providers grant transient access only; the import worker
+                        // still consumes the URI immediately through the queued handoff.
+                    } catch (_: UnsupportedOperationException) {
+                        // Provider does not expose persistable permissions.
+                    }
+                }
+                try {
+                    val file = writeUriSelectionFile(distinctUris)
+                    setResult(
+                        Activity.RESULT_OK,
+                        Intent().putExtra(RESULT_QUEUE_FILE, file.absolutePath)
+                    )
+                    Toast.makeText(
+                        this@BulkImagePickerActivity,
+                        "تم اختيار ${distinctUris.size} صورة من ملفات النظام • صلاحيات مستمرة: $persisted",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    finish()
+                } catch (t: Throwable) {
+                    Toast.makeText(
+                        this@BulkImagePickerActivity,
+                        "تعذر تجهيز قائمة الصور المختارة: ${t.message ?: "خطأ غير محدد"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_bulk_image_picker)
@@ -65,6 +108,9 @@ class BulkImagePickerActivity : AppCompatActivity() {
         findViewById<RecyclerView>(R.id.imagesRecyclerView).apply {
             layoutManager = GridLayoutManager(this@BulkImagePickerActivity, 3)
             adapter = this@BulkImagePickerActivity.adapter
+        }
+        findViewById<View>(R.id.openSystemImagesButton).setOnClickListener {
+            systemImagesPicker.launch(arrayOf("image/*"))
         }
         findViewById<View>(R.id.loadMoreButton).setOnClickListener { loadPage() }
         findViewById<View>(R.id.selectAllButton).setOnClickListener { selectAllMedia() }
@@ -85,7 +131,7 @@ class BulkImagePickerActivity : AppCompatActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_MEDIA_PERMISSION && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) prepareVolumes()
-        else Toast.makeText(this, "يلزم السماح بقراءة الصور لاستخدام المنتقي المحلي الكبير.", Toast.LENGTH_LONG).show()
+        else Toast.makeText(this, "يلزم السماح بقراءة الصور لاستخدام المنتقي المحلي الكبير. ويمكنك مع ذلك استخدام فتح ملفات النظام.", Toast.LENGTH_LONG).show()
     }
 
     private fun prepareVolumes() {
@@ -94,7 +140,9 @@ class BulkImagePickerActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 30) volumes += MediaStore.getExternalVolumeNames(this).filterNot { it == MediaStore.VOLUME_EXTERNAL }
         volumeIndex = 0
         offset = 0
+        allSelected = false
         rows.clear()
+        selected.clear()
         adapter.submit(rows)
         loadPage()
     }
@@ -103,19 +151,28 @@ class BulkImagePickerActivity : AppCompatActivity() {
         if (loading || volumeIndex >= volumes.size) return
         loading = true
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { queryPage(volumes[volumeIndex], offset, PAGE_SIZE) }
-            if (result.isEmpty()) {
-                volumeIndex++
-                offset = 0
+            try {
+                val result = withContext(Dispatchers.IO) { queryPage(volumes[volumeIndex], offset, PAGE_SIZE) }
+                if (result.isEmpty()) {
+                    volumeIndex++
+                    offset = 0
+                    loading = false
+                    if (volumeIndex < volumes.size) loadPage() else updateSummary()
+                    return@launch
+                }
+                rows += result
+                offset += result.size
+                adapter.submit(rows)
                 loading = false
-                if (volumeIndex < volumes.size) loadPage() else updateSummary()
-                return@launch
+                updateSummary()
+            } catch (t: Throwable) {
+                loading = false
+                Toast.makeText(
+                    this@BulkImagePickerActivity,
+                    "تعذر قراءة صفحة الصور: ${t.message ?: "خطأ غير محدد"}",
+                    Toast.LENGTH_LONG
+                ).show()
             }
-            rows += result
-            offset += result.size
-            adapter.submit(rows)
-            loading = false
-            updateSummary()
         }
     }
 
@@ -189,14 +246,19 @@ class BulkImagePickerActivity : AppCompatActivity() {
         return out
     }
 
-    private suspend fun writeSelectionFile(): File {
+    private suspend fun writeUriSelectionFile(uris: Collection<Uri>): File {
         val dir = File(filesDir, "reverse_image/selection_queue").apply { mkdirs() }
         val file = File(dir, "${UUID.randomUUID()}.uris")
         withContext(Dispatchers.IO) {
-            file.bufferedWriter(Charsets.UTF_8).use { writer -> selected.forEach { writer.appendLine(it) } }
+            file.bufferedWriter(Charsets.UTF_8).use { writer ->
+                uris.forEach { writer.appendLine(it.toString()) }
+            }
         }
         return file
     }
+
+    private suspend fun writeSelectionFile(): File =
+        writeUriSelectionFile(selected.map(Uri::parse))
 
     private fun finishWithSelection() {
         if (selected.isEmpty()) {
@@ -204,9 +266,13 @@ class BulkImagePickerActivity : AppCompatActivity() {
             return
         }
         lifecycleScope.launch {
-            val file = writeSelectionFile()
-            setResult(Activity.RESULT_OK, Intent().putExtra(RESULT_QUEUE_FILE, file.absolutePath))
-            finish()
+            try {
+                val file = writeSelectionFile()
+                setResult(Activity.RESULT_OK, Intent().putExtra(RESULT_QUEUE_FILE, file.absolutePath))
+                finish()
+            } catch (t: Throwable) {
+                Toast.makeText(this@BulkImagePickerActivity, "تعذر حفظ الاختيارات: ${t.message ?: "خطأ غير محدد"}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
