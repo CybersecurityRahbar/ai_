@@ -1,38 +1,48 @@
 package com.example.personalmemoryai.ui
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Parcelable
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.example.personalmemoryai.databinding.ActivityReverseImageSearchBinding
+import com.example.personalmemoryai.indexing.UnifiedVisualIndexWorker
+import com.example.personalmemoryai.indexing.VisualIndexWorkScheduler
 import com.example.personalmemoryai.reverseimage.ReverseImageSearchService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.util.UUID
 
-/** First-class local reverse-image search screen inside the main PMAI shell. */
+/** Existing reverse-image screen. Advanced Visual Intelligence is a separate screen. */
 class ReverseImageSearchActivity : AppCompatActivity() {
     private lateinit var binding: ActivityReverseImageSearchBinding
     private lateinit var service: ReverseImageSearchService
     private lateinit var adapter: ReverseImageResultAdapter
     private var searchJob: Job? = null
+    private var indexObservationJob: Job? = null
+    private var observedWorkId: UUID? = null
 
     private val queryPicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) runSearch(uri)
     }
 
-    private val corpusPicker = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-        if (uris.isNullOrEmpty()) {
-            showStatus("لم يتم اختيار أي صورة لإضافتها إلى Corpus البحث العكسي.")
-        } else {
-            addImages(uris.take(1000))
-        }
+    private val corpusPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val uris = result.data?.getParcelableArrayListExtra<Parcelable>(BulkImagePickerActivity.RESULT_URIS)
+            ?.mapNotNull { it as? Uri }
+            .orEmpty()
+        if (uris.isEmpty()) showStatus("لم يتم اختيار أي صورة لإضافتها إلى Corpus البحث العكسي.") else addImages(uris)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,9 +51,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         service = ReverseImageSearchService(applicationContext)
-        adapter = ReverseImageResultAdapter { result ->
-            ImageViewerActivity.start(this, result.displayUri())
-        }
+        adapter = ReverseImageResultAdapter { result -> ImageViewerActivity.start(this, result.displayUri()) }
         binding.resultsRecyclerView.layoutManager = GridLayoutManager(this, 2)
         binding.resultsRecyclerView.adapter = adapter
 
@@ -54,11 +62,12 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         binding.addImagesButton.setOnClickListener {
             adapter.clear()
             binding.resultsRecyclerView.scrollToPosition(0)
-            corpusPicker.launch("image/*")
+            corpusPicker.launch(BulkImagePickerActivity.launchIntent("REVERSE IMAGE / LOCAL CORPUS"))
         }
-        binding.buildIndexButton.setOnClickListener { buildIndex(false) }
-        binding.rebuildIndexButton.setOnClickListener { buildIndex(true) }
+        binding.buildIndexButton.setOnClickListener { startSharedIndex(false) }
+        binding.rebuildIndexButton.setOnClickListener { startSharedIndex(true) }
         refreshCount()
+        observeExistingIndexWork()
     }
 
     private fun addImages(uris: List<Uri>) {
@@ -69,7 +78,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
             binding.progressPercentText.text = "جارٍ تجهيز الصور  •  0/${uris.size}"
             try {
                 val added = withContext(Dispatchers.IO) { service.addImages(uris) }
-                binding.statusText.text = "تمت إضافة $added صورة إلى Corpus المحلي. أعد بناء الفهرس عند الحاجة."
+                binding.statusText.text = "تمت إضافة $added صورة إلى Corpus المشترك. لم تُفهرس مرتين."
                 binding.progressPercentText.text = "اكتملت الإضافة  •  $added/${uris.size}"
                 refreshCount()
             } catch (t: Throwable) {
@@ -81,49 +90,48 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildIndex(rebuild: Boolean) {
-        lifecycleScope.launch {
-            setBusy(true)
-            binding.progressBar.visibility = View.VISIBLE
-            binding.progressBar.isIndeterminate = false
-            binding.progressBar.progress = 0
-            binding.progressPercentText.text = "0%  •  0/0"
-            binding.counterText.text = "تهيئة الفهرس…"
-            binding.statusText.text = if (rebuild) {
-                "إعادة بناء Haar + Classical Visual Index…"
-            } else {
-                "بناء Haar + Classical Visual Index…"
-            }
-            val startedAt = System.currentTimeMillis()
-            try {
-                service.buildIndex(rebuild) { progress ->
-                    runOnUiThread {
-                        val total = progress.total.coerceAtLeast(1)
-                        val processed = progress.processed.coerceIn(0, total)
-                        val percent = ((processed * 100L) / total).toInt().coerceIn(0, 100)
-                        val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000L).coerceAtLeast(1L)
-                        val rate = processed.toDouble() / elapsedSec.toDouble()
-                        val remaining = (total - processed).coerceAtLeast(0)
-                        val etaSec = if (rate > 0.0) (remaining / rate).toLong() else 0L
-                        binding.progressBar.max = total
-                        binding.progressBar.progress = processed
-                        binding.progressPercentText.text = String.format(
-                            Locale.US, "%d%%  •  %d/%d  •  %.1f صورة/ث  •  ETA %s",
-                            percent, processed, total, rate, formatDuration(etaSec)
-                        )
-                        binding.counterText.text = "نجح ${progress.indexed}  •  تخطي ${progress.skipped}  •  Local features ${progress.localFeatureIndexed}  •  فشل ${progress.failed}"
-                        binding.statusText.text = "فهرسة الصورة $processed من $total"
-                    }
+    private fun startSharedIndex(rebuild: Boolean) {
+        observedWorkId = VisualIndexWorkScheduler.enqueue(applicationContext, rebuild)
+        observeExistingIndexWork(observedWorkId)
+    }
+
+    private fun observeExistingIndexWork(workId: UUID? = null) {
+        indexObservationJob?.cancel()
+        indexObservationJob = lifecycleScope.launch {
+            while (!isFinishing && !isDestroyed) {
+                val info = withContext(Dispatchers.IO) {
+                    val wm = WorkManager.getInstance(applicationContext)
+                    if (workId != null) wm.getWorkInfoById(workId).get()
+                    else wm.getWorkInfosForUniqueWork(UnifiedVisualIndexWorker.WORK_NAME).get().firstOrNull { !it.state.isFinished }
                 }
-                binding.progressBar.progress = binding.progressBar.max
-                binding.progressPercentText.text = "100%  •  ${binding.progressBar.max}/${binding.progressBar.max}  •  اكتمل"
-                binding.statusText.text = "اكتمل الفهرس • Haar + pHash + dHash + HSV256 + Shape + AKAZE/RANSAC + SIFT."
-                refreshCount()
-            } catch (t: Throwable) {
-                showError("فشل بناء الفهرس: ${t.message}")
-            } finally {
-                setBusy(false)
+                if (info == null) break
+                observedWorkId = info.id
+                renderIndexWork(info)
+                if (info.state.isFinished) break
+                delay(700)
             }
+            setBusy(false)
+            refreshCount()
+        }
+    }
+
+    private fun renderIndexWork(info: WorkInfo) {
+        val p = info.progress
+        val processed = p.getInt(UnifiedVisualIndexWorker.KEY_PROCESSED, 0)
+        val total = p.getInt(UnifiedVisualIndexWorker.KEY_TOTAL, 0)
+        val percent = p.getInt("percent", 0)
+        binding.progressBar.visibility = if (info.state == WorkInfo.State.RUNNING || info.state == WorkInfo.State.ENQUEUED) View.VISIBLE else View.GONE
+        binding.progressBar.isIndeterminate = false
+        binding.progressBar.max = total.coerceAtLeast(1)
+        binding.progressBar.progress = processed.coerceIn(0, binding.progressBar.max)
+        binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
+        binding.counterText.text = "نجح ${p.getInt(UnifiedVisualIndexWorker.KEY_INDEXED, 0)}  •  تخطي ${p.getInt(UnifiedVisualIndexWorker.KEY_SKIPPED, 0)}  •  Local features ${p.getInt(UnifiedVisualIndexWorker.KEY_LOCAL_FEATURES, 0)}  •  فشل ${p.getInt(UnifiedVisualIndexWorker.KEY_FAILED, 0)}"
+        binding.statusText.text = when (info.state) {
+            WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING -> "الفهرسة المشتركة في الخلفية • Haar + Classical V4 + Advanced Visual"
+            WorkInfo.State.SUCCEEDED -> "اكتمل الفهرس المشترك لجميع المحركات."
+            WorkInfo.State.FAILED -> "فشل الفهرس: ${info.outputData.getString("error") ?: "خطأ غير محدد"}"
+            WorkInfo.State.CANCELLED -> "تم إلغاء الفهرسة."
+            else -> info.state.name
         }
     }
 
@@ -132,7 +140,6 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         adapter.clear()
         binding.resultsRecyclerView.scrollToPosition(0)
         val threshold = (binding.thresholdSeek.progress / 100f).coerceIn(0f, 1f)
-
         searchJob = lifecycleScope.launch {
             setBusy(true)
             binding.progressBar.visibility = View.VISIBLE
@@ -142,28 +149,15 @@ class ReverseImageSearchActivity : AppCompatActivity() {
             binding.counterText.text = "البحث السابق تم مسحه • بدء بحث جديد"
             binding.statusText.text = "بدء البحث المحلي…"
             try {
-                val results = service.search(
-                    uri,
-                    limit = 50,
-                    minimumSimilarity = threshold
-                ) { progress ->
+                val results = service.search(uri, limit = 50, minimumSimilarity = threshold) { progress ->
                     runOnUiThread {
                         val total = progress.total.coerceAtLeast(1)
                         val processed = progress.processed.coerceIn(0, total)
                         binding.progressBar.max = total
                         binding.progressBar.progress = processed
                         val percent = ((processed * 100L) / total).toInt().coerceIn(0, 100)
-                        binding.progressPercentText.text = String.format(
-                            Locale.US,
-                            "%d%%  •  %d/%d",
-                            percent, processed, total
-                        )
-                        binding.counterText.text = when (progress.stage) {
-                            "البحث العالمي" -> "فحص Corpus • ${progress.processed}/${progress.total}"
-                            "التحقق الهندسي AKAZE/RANSAC" -> "التحقق المحلي • ${progress.processed}/${progress.total} • نتائج مؤكدة ${progress.localVerified}"
-                            "التحقق الإضافي SIFT/RANSAC" -> "SIFT • ${progress.processed}/${progress.total} • اكتمل ${progress.siftVerified}"
-                            else -> progress.stage
-                        }
+                        binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
+                        binding.counterText.text = "${progress.stage} • ${progress.processed}/${progress.total} • Local ${progress.localVerified} • SIFT ${progress.siftVerified}"
                         binding.statusText.text = progress.stage
                     }
                 }
@@ -171,19 +165,11 @@ class ReverseImageSearchActivity : AppCompatActivity() {
                 binding.progressBar.progress = binding.progressBar.max
                 binding.progressPercentText.text = "100%  •  اكتمل البحث"
                 binding.counterText.text = "${results.size} نتيجة • الحد الأدنى ${String.format(Locale.US, "%.0f", threshold * 100)}%"
-                binding.statusText.text = if (results.isEmpty()) {
-                    "اكتمل البحث • لا توجد صور ضمن العتبة الحالية."
-                } else {
-                    "اكتمل البحث • ${results.size} نتيجة مرتبة بالأدلة البصرية."
-                }
+                binding.statusText.text = if (results.isEmpty()) "اكتمل البحث • لا توجد صور ضمن العتبة الحالية." else "اكتمل البحث • ${results.size} نتيجة مرتبة بالأدلة البصرية."
             } catch (t: Throwable) {
-                if (t !is kotlinx.coroutines.CancellationException) {
-                    showError("تعذر تنفيذ البحث العكسي: ${t.message}")
-                }
+                if (t !is kotlinx.coroutines.CancellationException) showError("تعذر تنفيذ البحث العكسي: ${t.message}")
             } finally {
-                if (!isFinishing && !isDestroyed) {
-                    setBusy(false)
-                }
+                if (!isFinishing && !isDestroyed) setBusy(false)
             }
         }
     }
@@ -198,7 +184,6 @@ class ReverseImageSearchActivity : AppCompatActivity() {
     }
 
     private fun setBusy(value: Boolean) {
-        binding.progressBar.visibility = if (value) View.VISIBLE else View.GONE
         binding.queryImageButton.isEnabled = !value
         binding.addImagesButton.isEnabled = !value
         binding.buildIndexButton.isEnabled = !value
@@ -206,9 +191,7 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         binding.thresholdSeek.isEnabled = !value
     }
 
-    private fun showStatus(text: String) {
-        binding.statusText.text = text
-    }
+    private fun showStatus(text: String) { binding.statusText.text = text }
 
     private fun showError(message: String) {
         binding.statusText.text = message
@@ -216,15 +199,9 @@ class ReverseImageSearchActivity : AppCompatActivity() {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
-    private fun formatDuration(seconds: Long): String {
-        if (seconds <= 0L) return "—"
-        val minutes = seconds / 60L
-        val remaining = seconds % 60L
-        return if (minutes > 0L) "${minutes}د ${remaining}ث" else "${remaining}ث"
-    }
-
     override fun onDestroy() {
         searchJob?.cancel()
+        indexObservationJob?.cancel()
         service.close()
         super.onDestroy()
     }
