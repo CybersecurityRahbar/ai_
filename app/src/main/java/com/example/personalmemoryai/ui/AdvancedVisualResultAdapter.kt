@@ -7,11 +7,13 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualIntelligenceService
 import com.example.personalmemoryai.databinding.ItemAdvancedVisualResultBinding
+import java.util.concurrent.Executors
 
 class AdvancedVisualResultAdapter(
     private val onImageClick: (String?) -> Unit
 ) : RecyclerView.Adapter<AdvancedVisualResultAdapter.ViewHolder>() {
     private var items: List<AdvancedVisualIntelligenceService.Evidence> = emptyList()
+    private val imageExecutor = Executors.newFixedThreadPool(2)
 
     fun submitList(next: List<AdvancedVisualIntelligenceService.Evidence>) {
         items = next
@@ -29,18 +31,37 @@ class AdvancedVisualResultAdapter(
         super.onViewRecycled(holder)
     }
 
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        imageExecutor.shutdownNow()
+        super.onDetachedFromRecyclerView(recyclerView)
+    }
+
     inner class ViewHolder(private val binding: ItemAdvancedVisualResultBinding) : RecyclerView.ViewHolder(binding.root) {
         private var expanded = false
+        private var boundPath: String? = null
 
         fun bind(item: AdvancedVisualIntelligenceService.Evidence) {
             expanded = false
             binding.explainText.visibility = View.GONE
             binding.whyToggleText.text = "WHY THIS RESULT  ▸"
             binding.root.setOnClickListener { onImageClick(item.filePath) }
+            boundPath = item.filePath
             binding.resultImage.setImageDrawable(null)
+
             val path = item.filePath
             if (!path.isNullOrBlank()) {
-                runCatching { BitmapFactory.decodeFile(path) }.getOrNull()?.let { binding.resultImage.setImageBitmap(it) }
+                imageExecutor.execute {
+                    val bitmap = runCatching {
+                        BitmapFactory.Options().apply { inSampleSize = 2 }.let { options ->
+                            BitmapFactory.decodeFile(path, options)
+                        }
+                    }.getOrNull()
+                    binding.root.post {
+                        if (boundPath == path && bitmap != null) {
+                            binding.resultImage.setImageBitmap(bitmap)
+                        }
+                    }
+                }
             }
 
             binding.nameText.text = item.displayName
@@ -76,6 +97,7 @@ class AdvancedVisualResultAdapter(
             binding.root.setOnClickListener(null)
             binding.whyToggleText.setOnClickListener(null)
             binding.resultImage.setImageDrawable(null)
+            boundPath = null
             expanded = false
         }
     }
