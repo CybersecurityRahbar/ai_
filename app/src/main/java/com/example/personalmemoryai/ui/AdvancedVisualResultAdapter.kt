@@ -28,8 +28,9 @@ class AdvancedVisualResultAdapter(
             binding.nameText.text = item.displayName
             binding.scoreText.text = "${item.finalPercent}% FINAL • ADVANCED-V2"
             binding.explainText.text = buildString {
+                append("WINNING QUERY VARIANT: ${item.bestQueryVariant}\n")
                 append("CLASSICAL BASE ${item.baseClassicalPercent}%  |  ADVANCED ${item.advancedPercent}%\n")
-                append("Advanced structure ${item.structurePercent}%  • spatial color ${item.spatialColorPercent}%\n")
+                append("Structure ${item.structurePercent}%  • spatial color ${item.spatialColorPercent}%\n")
                 append("Texture ${item.texturePercent}%  • spatial texture ${item.spatialTexturePercent}%\n")
                 append("Gradient ${item.gradientPercent}%  • magnitude ${item.gradientMagnitudePercent}%\n")
                 append("Layout ${item.layoutPercent}%  • illumination ${item.illuminationPercent}%\n")
@@ -38,7 +39,7 @@ class AdvancedVisualResultAdapter(
                 append("Existing color ${item.colorPercent}% • edge ${item.edgePercent}% • local ${item.localPercent}% • RANSAC ${item.ransacInliers}\n")
                 append("WHY: ${item.evidenceReasons.joinToString(", ").ifBlank { "insufficient evidence" }}")
             }
-            binding.root.contentDescription = "${item.displayName}, ${item.finalPercent} percent similarity, explainable Advanced Visual Intelligence result"
+            binding.root.contentDescription = "${item.displayName}, ${item.finalPercent} percent similarity, ${item.bestQueryVariant}, explainable Advanced Visual Intelligence result"
         }
     }
 }
