@@ -16,6 +16,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
     private val advancedDao = database.advancedVisualFingerprintDao()
     private val itemDao = database.reverseImageItemDao()
     private val engine = AdvancedVisualFingerprintEngine()
+    private val regionVerifier = AdvancedRegionConsistencyVerifier()
 
     data class Evidence(
         val itemId: Long,
@@ -43,6 +44,9 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         val illuminationPercent: Int,
         val entropyPercent: Int,
         val aspectPercent: Int,
+        val regionConsistencyPercent: Int,
+        val stableRegionPercent: Int,
+        val spatialDisagreementPercent: Int,
         val bestQueryVariant: String,
         val evidenceReasons: List<String>
     )
@@ -73,12 +77,10 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
 
             val bestById = HashMap<Long, Pair<Int, AdvancedVisualFingerprintEngine.Score>>()
             for ((variantIndex, variant) in variants.withIndex()) {
-                for ((index, entity) in stored.withIndex()) {
+                for (entity in stored) {
                     val score = engine.compare(variant.fingerprint, entity.toFingerprint())
                     val current = bestById[entity.itemId]
-                    if (current == null || score.similarity > current.second.similarity) {
-                        bestById[entity.itemId] = variantIndex to score
-                    }
+                    if (current == null || score.similarity > current.second.similarity) bestById[entity.itemId] = variantIndex to score
                 }
                 onProgress(variantIndex + 1, variants.size, "Advanced V2 variant ${variant.label}")
             }
@@ -86,7 +88,6 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
             variants.filter { it.bitmap != null && it.bitmap !== original }.forEach { it.bitmap!!.recycle() }
 
             val advancedTop = bestById.entries.sortedByDescending { it.value.second.similarity }.take(64)
-            val advancedById = bestById
             val candidateIds = LinkedHashSet<Long>().apply {
                 baseResults.forEach { add(it.item.id) }
                 advancedTop.forEach { add(it.key) }
@@ -95,37 +96,46 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
 
             return@withContext candidateIds.mapNotNull { itemId ->
                 val item = items[itemId] ?: return@mapNotNull null
-                val entry = advancedById[itemId] ?: return@mapNotNull null
+                val entry = bestById[itemId] ?: return@mapNotNull null
                 val variantIndex = entry.first
                 val score = entry.second
                 val base = baseById[itemId]
                 val baseScore = base?.similarity ?: 0f
-                val agreementSignals = listOf(score.structure, score.spatialColor, score.spatialTexture, score.gradient, score.illumination)
+                val region = regionVerifier.compare(
+                    variants.getOrNull(variantIndex)?.fingerprint ?: return@mapNotNull null,
+                    scoreFingerprintForEntity(stored.firstOrNull { it.itemId == itemId } ?: return@mapNotNull null)
+                )
+                val agreementSignals = listOf(score.structure, score.spatialColor, score.spatialTexture, score.gradient, score.illumination, region.similarity)
                 val consensus = agreementSignals.count { it >= 0.62f }
                 var final = if (base != null) baseScore * 0.58f + score.similarity * 0.42f else score.similarity * 0.70f
+                final = final * 0.90f + region.similarity * 0.10f
                 if (consensus <= 1 && final > 0.55f) final *= 0.78f
                 if (score.structure < 0.50f && score.illumination < 0.45f && score.spatialColor > 0.80f) final *= 0.82f
                 if (score.texture > 0.80f && score.structure < 0.45f) final *= 0.90f
                 if (base != null && base.ransacInliers == 0 && score.structure < 0.50f) final *= 0.90f
-                if (consensus >= 3 && score.gradient >= 0.65f && score.illumination >= 0.60f) final = (final + 0.025f).coerceAtMost(1f)
+                if (region.stableRegionRatio < 0.25f && final > 0.58f) final *= 0.86f
+                if (region.disagreementPenalty > 0.40f && final > 0.62f) final *= 0.90f
+                if (consensus >= 4 && region.stableRegionRatio >= 0.60f && score.gradient >= 0.65f && score.illumination >= 0.60f) final = (final + 0.025f).coerceAtMost(1f)
                 final = final.coerceIn(0f, 1f)
                 if (final < minimumSimilarity) return@mapNotNull null
 
                 val variantLabel = variants.getOrNull(variantIndex)?.label ?: "original"
                 val reasons = buildList {
                     addAll(score.evidence)
+                    addAll(region.evidence)
                     if (base != null && base.percent >= 85) add("strong_existing_classical_agreement")
                     if (base != null && base.ransacInliers >= 4) add("existing_geometric_match")
                     if (score.spatialColor >= 0.78f) add("spatial_color_consistency")
                     if (score.spatialTexture >= 0.76f) add("regional_texture_consistency")
                     if (score.gradientMagnitude >= 0.78f) add("gradient_strength_consistency")
                     if (score.illumination >= 0.72f) add("illumination_robust_match")
+                    if (consensus >= 4) add("strong_independent_signal_consensus")
                     if (consensus >= 3) add("independent_signal_consensus")
                     if (consensus <= 1) add("weak_cross_signal_consensus")
-                    if (score.spatialColor >= 0.80f && score.structure < 0.50f) add("color_structure_contradiction")
-                    if (score.texture >= 0.80f && score.structure < 0.45f) add("texture_structure_contradiction")
                     if (variantLabel != "original") add("best_match_from_query_variant")
                     if (base == null) add("advanced_only_candidate")
+                    if (region.stableRegionRatio < 0.25f) add("low_stable_region_coverage")
+                    if (region.disagreementPenalty > 0.40f) add("spatial_evidence_conflict")
                 }.distinct()
 
                 Evidence(
@@ -147,6 +157,9 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                     illuminationPercent=(score.illumination*100f).toInt().coerceIn(0,100),
                     entropyPercent=(score.entropy*100f).toInt().coerceIn(0,100),
                     aspectPercent=(score.aspect*100f).toInt().coerceIn(0,100),
+                    regionConsistencyPercent=(region.similarity*100f).toInt().coerceIn(0,100),
+                    stableRegionPercent=(region.stableRegionRatio*100f).toInt().coerceIn(0,100),
+                    spatialDisagreementPercent=(region.disagreementPenalty*100f).toInt().coerceIn(0,100),
                     bestQueryVariant=variantLabel,
                     evidenceReasons=reasons
                 )
@@ -170,12 +183,14 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         return result
     }
 
-    private fun AdvancedVisualFingerprintEntity.toFingerprint() = AdvancedVisualFingerprintEngine.Fingerprint(
-        grayPyramid=grayPyramid, colorMoments=colorMoments, spatialColor=spatialColor, lbpHistogram=lbpHistogram,
-        spatialLbp=spatialLbp, gradientHistogram=gradientHistogram, gradientMagnitude=gradientMagnitude,
-        layoutSignature=layoutSignature, illuminationRobustStructure=illuminationRobustStructure,
-        entropy=entropy, aspectRatio=aspectRatio
+    private fun scoreFingerprintForEntity(entity: AdvancedVisualFingerprintEntity) = AdvancedVisualFingerprintEngine.Fingerprint(
+        grayPyramid=entity.grayPyramid, colorMoments=entity.colorMoments, spatialColor=entity.spatialColor,
+        lbpHistogram=entity.lbpHistogram, spatialLbp=entity.spatialLbp, gradientHistogram=entity.gradientHistogram,
+        gradientMagnitude=entity.gradientMagnitude, layoutSignature=entity.layoutSignature,
+        illuminationRobustStructure=entity.illuminationRobustStructure, entropy=entity.entropy, aspectRatio=entity.aspectRatio
     )
+
+    private fun AdvancedVisualFingerprintEntity.toFingerprint() = scoreFingerprintForEntity(this)
 
     override fun close() = Unit
 }
