@@ -24,9 +24,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
-import kotlin.system.measureTimeMillis
 
-/** Background index runner with zero-recall-loss parallel feature extraction and batched persistence. */
+/** Background index runner with zero-recall-loss parallel extraction, batched persistence, and durable checkpoints. */
 class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
     companion object {
         const val BATCH_SIZE = 16
@@ -115,6 +114,7 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
 
         if (total == 0) {
             onProgress(initial)
+            val finished = System.currentTimeMillis()
             withContext(Dispatchers.IO) {
                 operationDao.upsert(
                     VisualIndexOperationEntity(
@@ -131,8 +131,8 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
                         engineClassical = ClassicalVisualFingerprintEngine.ENGINE_VERSION,
                         engineAdvanced = AdvancedVisualFingerprintEngine.ENGINE_VERSION,
                         startedAt = startedAt,
-                        updatedAt = System.currentTimeMillis(),
-                        finishedAt = System.currentTimeMillis()
+                        updatedAt = finished,
+                        finishedAt = finished
                     )
                 )
             }
@@ -157,11 +157,10 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
         try {
             for (batch in items.chunked(BATCH_SIZE)) {
                 coroutineContext.ensureActive()
-
                 val results: List<ItemResult> = coroutineScope {
                     batch.map { item ->
                         async(cpuDispatcher) {
-                            var itemElapsed = 0L
+                            val itemStart = System.currentTimeMillis()
                             try {
                                 coroutineContext.ensureActive()
                                 val current = ensurePrivateCopy(item)
@@ -175,66 +174,16 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
                                     ?: return@async ItemResult.Failed(
                                         current.id,
                                         IllegalStateException("لا يوجد مسار محلي محفوظ للصورة: ${current.displayName}"),
-                                        0L
+                                        System.currentTimeMillis() - itemStart
                                     )
-
-                                val bitmapStart = System.currentTimeMillis()
                                 val bitmap = BitmapFactory.decodeFile(path)
                                     ?: return@async ItemResult.Failed(
                                         current.id,
                                         IllegalStateException("تعذر فك ترميز الصورة: ${current.displayName}"),
-                                        System.currentTimeMillis() - bitmapStart
+                                        System.currentTimeMillis() - itemStart
                                     )
-
                                 try {
-                                    itemElapsed = measureTimeMillis {
-                                        val haar = haarEngine.fingerprint(bitmap)
-                                        val classical = classicalEngine.fingerprint(bitmap)
-                                        val advanced = advancedEngine.fingerprint(bitmap)
-                                        val prepared = Prepared(
-                                            haar = HaarFingerprintEntity(
-                                                itemId = current.id,
-                                                engineVersion = HaarFingerprintEngine.ENGINE_VERSION,
-                                                sourceModifiedAt = current.sourceModifiedAt,
-                                                width = haar.width,
-                                                height = haar.height,
-                                                channels = haar.channels,
-                                                signature = haar.signature
-                                            ),
-                                            classical = ClassicalVisualFingerprintEntity(
-                                                itemId = current.id,
-                                                engineVersion = ClassicalVisualFingerprintEngine.ENGINE_VERSION,
-                                                phash = classical.phash,
-                                                dhash = classical.dhash,
-                                                colorHistogram = classical.colorHistogram,
-                                                edgeHistogram = classical.edgeHistogram,
-                                                localKeypoints = classical.keypoints,
-                                                localDescriptors = classical.descriptors,
-                                                localDescriptorRows = classical.descriptorRows,
-                                                localDescriptorCols = classical.descriptorCols,
-                                                localDescriptorType = classical.descriptorType
-                                            ),
-                                            advanced = AdvancedVisualFingerprintEntity(
-                                                itemId = current.id,
-                                                engineVersion = AdvancedVisualFingerprintEngine.ENGINE_VERSION,
-                                                grayPyramid = advanced.grayPyramid,
-                                                colorMoments = advanced.colorMoments,
-                                                lbpHistogram = advanced.lbpHistogram,
-                                                gradientHistogram = advanced.gradientHistogram,
-                                                layoutSignature = advanced.layoutSignature,
-                                                entropy = advanced.entropy,
-                                                aspectRatio = advanced.aspectRatio
-                                            ),
-                                            localFeatures = if (classical.keypoints != null && classical.descriptors != null) 1 else 0
-                                        )
-                                        itemElapsed = itemElapsed.coerceAtLeast(1L)
-                                        return@measureTimeMillis prepared
-                                    }.let { elapsedAndPrepared ->
-                                        // The expression above deliberately measures only feature extraction;
-                                        // the prepared object is reconstructed below to keep timing isolated.
-                                        elapsedAndPrepared
-                                    }
-
+                                    coroutineContext.ensureActive()
                                     val haar = haarEngine.fingerprint(bitmap)
                                     val classical = classicalEngine.fingerprint(bitmap)
                                     val advanced = advancedEngine.fingerprint(bitmap)
@@ -275,14 +224,14 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
                                             ),
                                             localFeatures = if (classical.keypoints != null && classical.descriptors != null) 1 else 0
                                         ),
-                                        itemElapsed
+                                        System.currentTimeMillis() - itemStart
                                     )
                                 } finally {
                                     bitmap.recycle()
                                 }
                             } catch (t: Throwable) {
                                 if (t is kotlinx.coroutines.CancellationException) throw t
-                                ItemResult.Failed(item.id, t, itemElapsed)
+                                ItemResult.Failed(item.id, t, System.currentTimeMillis() - itemStart)
                             }
                         }
                     }.awaitAll()
@@ -290,18 +239,17 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
 
                 val ready = results.mapNotNull { (it as? ItemResult.Ready)?.prepared }
                 val failedItems = results.mapNotNull { it as? ItemResult.Failed }
-                val persistenceElapsed = measureTimeMillis {
-                    if (ready.isNotEmpty()) {
-                        withContext(Dispatchers.IO) {
-                            batchDao.insertBatch(
-                                haar = ready.map { it.haar },
-                                classical = ready.map { it.classical },
-                                advanced = ready.map { it.advanced }
-                            )
-                        }
+                val persistStart = System.currentTimeMillis()
+                if (ready.isNotEmpty()) {
+                    withContext(Dispatchers.IO) {
+                        batchDao.insertBatch(
+                            haar = ready.map { it.haar },
+                            classical = ready.map { it.classical },
+                            advanced = ready.map { it.advanced }
+                        )
                     }
                 }
-                persistenceMs += persistenceElapsed
+                persistenceMs += System.currentTimeMillis() - persistStart
                 extractionMs += results.sumOf {
                     when (it) {
                         ItemResult.Skipped -> 0L
@@ -319,6 +267,7 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
                 processed += batch.size
 
                 val progress = Progress(processed, total, indexed, skipped, failed, localFeatures)
+                val now = System.currentTimeMillis()
                 withContext(Dispatchers.IO) {
                     operationDao.upsert(
                         VisualIndexOperationEntity(
@@ -335,7 +284,7 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
                             engineClassical = ClassicalVisualFingerprintEngine.ENGINE_VERSION,
                             engineAdvanced = AdvancedVisualFingerprintEngine.ENGINE_VERSION,
                             startedAt = startedAt,
-                            updatedAt = System.currentTimeMillis()
+                            updatedAt = now
                         )
                     )
                 }
@@ -415,25 +364,21 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
     private suspend fun ensurePrivateCopy(item: ReverseImageItemEntity): ReverseImageItemEntity {
         val existing = item.filePath?.let(::File)
         if (existing?.isFile == true && existing.length() > 0L) return item
-
         val source = Uri.parse(item.uri)
         val safeName = displayName(source)
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .take(100)
             .ifBlank { "image" }
         val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
-
         withContext(Dispatchers.IO) {
             resolver.openInputStream(source)?.use { input ->
                 FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) }
             } ?: throw IllegalStateException("تعذر قراءة المصدر: ${item.uri}")
         }
-
         if (!target.isFile || target.length() <= 0L) {
             target.delete()
             throw IllegalStateException("تعذر إنشاء النسخة المحلية: ${item.displayName}")
         }
-
         val updated = item.copy(filePath = target.absolutePath, fileSize = target.length())
         withContext(Dispatchers.IO) { itemDao.upsert(updated) }
         return updated
@@ -445,7 +390,7 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
         null,
         null,
         null
-    )?.use { if (it.moveToFirst()) it.getString(0) else null } ?: uri.lastPathSegment ?: "image"
+    )?.use { if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null } ?: uri.lastPathSegment ?: "image"
 
     override fun close() = Unit
 }
