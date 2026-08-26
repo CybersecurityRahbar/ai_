@@ -7,6 +7,8 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.example.personalmemoryai.advancedvisual.AdvancedVisualFingerprintEngine
+import com.example.personalmemoryai.advancedvisual.AdvancedVisualFingerprintEntity
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.diagnostics.DiagnosticsManager
 import kotlinx.coroutines.Dispatchers
@@ -38,8 +40,10 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
     private val itemDao = database.reverseImageItemDao()
     private val fingerprintDao = database.haarFingerprintDao()
     private val classicalDao = database.classicalVisualFingerprintDao()
+    private val advancedDao = database.advancedVisualFingerprintDao()
     private val haarEngine = HaarFingerprintEngine()
     private val classicalEngine = ClassicalVisualFingerprintEngine()
+    private val advancedEngine = AdvancedVisualFingerprintEngine()
     private val siftVerifier = SiftLocalVerifier()
     private val diagnostics = DiagnosticsManager.get(appContext)
     private val resolver: ContentResolver = appContext.contentResolver
@@ -107,6 +111,7 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
     suspend fun itemCount(): Long = withContext(Dispatchers.IO) { itemDao.count() }
     suspend fun fingerprintCount(): Long = withContext(Dispatchers.IO) { fingerprintDao.count() }
     suspend fun classicalFingerprintCount(): Long = withContext(Dispatchers.IO) { classicalDao.count() }
+    suspend fun advancedFingerprintCount(): Long = withContext(Dispatchers.IO) { advancedDao.count() }
 
     suspend fun addImages(uris: List<Uri>): Int = withContext(Dispatchers.IO) {
         var added = 0
@@ -147,7 +152,9 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
         val run = diagnostics.begin("REVERSE_IMAGE_INDEX", mapOf(
             "rebuild" to rebuild.toString(),
             "haar" to HaarFingerprintEngine.ENGINE_VERSION,
-            "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION
+            "classical" to ClassicalVisualFingerprintEngine.ENGINE_VERSION,
+            "advanced" to AdvancedVisualFingerprintEngine.ENGINE_VERSION,
+            "sharedDecode" to "true"
         ))
         val items = withContext(Dispatchers.IO) { itemDao.getAll() }
         var indexed = 0
@@ -161,9 +168,11 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 val item = withContext(Dispatchers.IO) { ensurePrivateCopy(originalItem) }
                 val oldHaar = withContext(Dispatchers.IO) { fingerprintDao.getForItem(item.id) }
                 val oldClassical = withContext(Dispatchers.IO) { classicalDao.getForItem(item.id) }
+                val oldAdvanced = withContext(Dispatchers.IO) { advancedDao.getForItem(item.id) }
                 val unchanged = !rebuild &&
                     oldHaar?.engineVersion == HaarFingerprintEngine.ENGINE_VERSION &&
-                    oldClassical?.engineVersion == ClassicalVisualFingerprintEngine.ENGINE_VERSION
+                    oldClassical?.engineVersion == ClassicalVisualFingerprintEngine.ENGINE_VERSION &&
+                    oldAdvanced?.engineVersion == AdvancedVisualFingerprintEngine.ENGINE_VERSION
                 if (unchanged) {
                     skipped++
                 } else {
@@ -171,8 +180,10 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                     val bitmap = BitmapFactory.decodeFile(localPath)
                         ?: throw IllegalStateException("تعذر قراءة النسخة المحلية: ${item.displayName}")
                     try {
+                        // One decoded Bitmap powers every indexed visual family.
                         val haar = haarEngine.fingerprint(bitmap)
                         val classical = classicalEngine.fingerprint(bitmap)
+                        val advanced = advancedEngine.fingerprint(bitmap)
                         withContext(Dispatchers.IO) {
                             fingerprintDao.insert(HaarFingerprintEntity(
                                 itemId = item.id,
@@ -193,6 +204,17 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                                 localDescriptorCols = classical.descriptorCols,
                                 localDescriptorType = classical.descriptorType
                             ))
+                            advancedDao.upsert(AdvancedVisualFingerprintEntity(
+                                itemId = item.id,
+                                engineVersion = AdvancedVisualFingerprintEngine.ENGINE_VERSION,
+                                grayPyramid = advanced.grayPyramid,
+                                colorMoments = advanced.colorMoments,
+                                lbpHistogram = advanced.lbpHistogram,
+                                gradientHistogram = advanced.gradientHistogram,
+                                layoutSignature = advanced.layoutSignature,
+                                entropy = advanced.entropy,
+                                aspectRatio = advanced.aspectRatio
+                            ))
                         }
                         indexed++
                         if (classical.keypoints != null && classical.descriptors != null) localFeatureIndexed++
@@ -206,10 +228,12 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
                 onProgress(IndexProgress(index + 1, items.size, indexed, skipped, failed, localFeatureIndexed))
             }
         }
-        run.success("Reverse-image multi-fingerprint index completed", mapOf(
+        run.success("Reverse-image shared visual index completed", mapOf(
             "items" to items.size.toString(), "indexed" to indexed.toString(),
             "skipped" to skipped.toString(), "failed" to failed.toString(),
-            "localFeatureIndexed" to localFeatureIndexed.toString()
+            "localFeatureIndexed" to localFeatureIndexed.toString(),
+            "sharedDecode" to "true",
+            "signals" to "haar,classical-v4,advanced-v1"
         ))
         IndexProgress(items.size, items.size, indexed, skipped, failed, localFeatureIndexed)
     }
@@ -476,12 +500,8 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
             if (target.length() <= 0L) {
                 target.delete()
                 null
-            } else {
-                target
-            }
-        } catch (_: Throwable) {
-            null
-        }
+            } else target
+        } catch (_: Throwable) { null }
     }
 
     private fun displayName(uri: Uri): String = resolver.query(
