@@ -7,12 +7,14 @@ import android.net.Uri
 import com.example.personalmemoryai.database.AppDatabase
 import com.example.personalmemoryai.reverseimage.ReverseImageSearchService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
 /** Independent Advanced search service with multi-variant query analysis and explainable fusion. */
+@OptIn(ExperimentalCoroutinesApi::class)
 class AdvancedVisualIntelligenceService(context: android.content.Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val database = AppDatabase.getInstance(appContext)
@@ -141,13 +143,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                 if (final < minimumSimilarity) return@mapNotNull null
 
                 val consensusRatio = consensus.toFloat() / agreementSignals.size.toFloat()
-                val confidence = (100f * (
-                    consensusRatio * 0.45f +
-                    region.stableRegionRatio * 0.25f +
-                    structural.similarity * 0.20f +
-                    (if ((base?.ransacInliers ?: 0) >= 4) 0.10f else 0f)
-                )).toInt().coerceIn(0, 100)
-
+                val confidence = (100f * (consensusRatio * 0.45f + region.stableRegionRatio * 0.25f + structural.similarity * 0.20f + (if ((base?.ransacInliers ?: 0) >= 4) 0.10f else 0f))).toInt().coerceIn(0, 100)
                 val variantLabel = variants.getOrNull(variantIndex)?.label ?: "original"
                 val reasons = buildList {
                     addAll(score.evidence)
@@ -168,25 +164,45 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                 }.distinct()
 
                 Evidence(
-                    itemId=item.id, displayName=item.displayName, filePath=item.filePath,
-                    finalSimilarity=final, finalPercent=(final*100f).toInt().coerceIn(0,100), confidencePercent=confidence,
-                    baseClassicalPercent=base?.percent ?: 0, haarPercent=base?.haarPercent ?: 0,
-                    phashPercent=base?.phashPercent ?: 0, dhashPercent=base?.dhashPercent ?: 0,
-                    colorPercent=base?.colorPercent ?: 0, edgePercent=base?.edgePercent ?: 0,
-                    localPercent=base?.localPercent ?: 0, ransacInliers=base?.ransacInliers ?: 0,
-                    advancedPercent=(score.similarity*100f).toInt().coerceIn(0,100), structurePercent=(score.structure*100f).toInt().coerceIn(0,100),
-                    advancedColorPercent=(score.color*100f).toInt().coerceIn(0,100), spatialColorPercent=(score.spatialColor*100f).toInt().coerceIn(0,100),
-                    texturePercent=(score.texture*100f).toInt().coerceIn(0,100), spatialTexturePercent=(score.spatialTexture*100f).toInt().coerceIn(0,100),
-                    gradientPercent=(score.gradient*100f).toInt().coerceIn(0,100), gradientMagnitudePercent=(score.gradientMagnitude*100f).toInt().coerceIn(0,100),
-                    layoutPercent=(score.layout*100f).toInt().coerceIn(0,100), illuminationPercent=(score.illumination*100f).toInt().coerceIn(0,100),
-                    entropyPercent=(score.entropy*100f).toInt().coerceIn(0,100), aspectPercent=(score.aspect*100f).toInt().coerceIn(0,100),
-                    regionConsistencyPercent=(region.similarity*100f).toInt().coerceIn(0,100), stableRegionPercent=(region.stableRegionRatio*100f).toInt().coerceIn(0,100),
-                    spatialDisagreementPercent=(region.disagreementPenalty*100f).toInt().coerceIn(0,100), structuralConsensusPercent=(structural.similarity*100f).toInt().coerceIn(0,100),
-                    coarseStructurePercent=(structural.coarse*100f).toInt().coerceIn(0,100), fineStructurePercent=(structural.fine*100f).toInt().coerceIn(0,100),
-                    bestQueryVariant=variantLabel, evidenceReasons=reasons
+                    itemId = item.id,
+                    displayName = item.displayName,
+                    filePath = item.filePath,
+                    finalSimilarity = final,
+                    finalPercent = (final * 100f).toInt().coerceIn(0, 100),
+                    confidencePercent = confidence,
+                    baseClassicalPercent = base?.percent ?: 0,
+                    haarPercent = base?.haarPercent ?: 0,
+                    phashPercent = base?.phashPercent ?: 0,
+                    dhashPercent = base?.dhashPercent ?: 0,
+                    colorPercent = base?.colorPercent ?: 0,
+                    edgePercent = base?.edgePercent ?: 0,
+                    localPercent = base?.localPercent ?: 0,
+                    ransacInliers = base?.ransacInliers ?: 0,
+                    advancedPercent = (score.similarity * 100f).toInt().coerceIn(0, 100),
+                    structurePercent = (score.structure * 100f).toInt().coerceIn(0, 100),
+                    advancedColorPercent = (score.color * 100f).toInt().coerceIn(0, 100),
+                    spatialColorPercent = (score.spatialColor * 100f).toInt().coerceIn(0, 100),
+                    texturePercent = (score.texture * 100f).toInt().coerceIn(0, 100),
+                    spatialTexturePercent = (score.spatialTexture * 100f).toInt().coerceIn(0, 100),
+                    gradientPercent = (score.gradient * 100f).toInt().coerceIn(0, 100),
+                    gradientMagnitudePercent = (score.gradientMagnitude * 100f).toInt().coerceIn(0, 100),
+                    layoutPercent = (score.layout * 100f).toInt().coerceIn(0, 100),
+                    illuminationPercent = (score.illumination * 100f).toInt().coerceIn(0, 100),
+                    entropyPercent = (score.entropy * 100f).toInt().coerceIn(0, 100),
+                    aspectPercent = (score.aspect * 100f).toInt().coerceIn(0, 100),
+                    regionConsistencyPercent = (region.similarity * 100f).toInt().coerceIn(0, 100),
+                    stableRegionPercent = (region.stableRegionRatio * 100f).toInt().coerceIn(0, 100),
+                    spatialDisagreementPercent = (region.disagreementPenalty * 100f).toInt().coerceIn(0, 100),
+                    structuralConsensusPercent = (structural.similarity * 100f).toInt().coerceIn(0, 100),
+                    coarseStructurePercent = (structural.coarse * 100f).toInt().coerceIn(0, 100),
+                    fineStructurePercent = (structural.fine * 100f).toInt().coerceIn(0, 100),
+                    bestQueryVariant = variantLabel,
+                    evidenceReasons = reasons
                 )
             }.sortedByDescending { it.finalSimilarity }.take(limit)
-        } finally { original.recycle() }
+        } finally {
+            original.recycle()
+        }
     }
 
     private fun buildQueryVariants(original: Bitmap): List<QueryVariant> {
@@ -200,16 +216,23 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         for (ratio in floatArrayOf(0.92f, 0.82f, 0.72f)) {
             val w = maxOf(1, (original.width * ratio).toInt()); val h = maxOf(1, (original.height * ratio).toInt())
             val left = (original.width - w) / 2; val top = (original.height - h) / 2
-            add("center_crop_${(ratio*100).toInt()}", Bitmap.createBitmap(original, left, top, w, h))
+            add("center_crop_${(ratio * 100).toInt()}", Bitmap.createBitmap(original, left, top, w, h))
         }
         return result
     }
 
     private fun AdvancedVisualFingerprintEntity.toFingerprint() = AdvancedVisualFingerprintEngine.Fingerprint(
-        grayPyramid=grayPyramid, colorMoments=colorMoments, spatialColor=spatialColor,
-        lbpHistogram=lbpHistogram, spatialLbp=spatialLbp, gradientHistogram=gradientHistogram,
-        gradientMagnitude=gradientMagnitude, layoutSignature=layoutSignature,
-        illuminationRobustStructure=illuminationRobustStructure, entropy=entropy, aspectRatio=aspectRatio
+        grayPyramid = grayPyramid,
+        colorMoments = colorMoments,
+        spatialColor = spatialColor,
+        lbpHistogram = lbpHistogram,
+        spatialLbp = spatialLbp,
+        gradientHistogram = gradientHistogram,
+        gradientMagnitude = gradientMagnitude,
+        layoutSignature = layoutSignature,
+        illuminationRobustStructure = illuminationRobustStructure,
+        entropy = entropy,
+        aspectRatio = aspectRatio
     )
 
     override fun close() = Unit
