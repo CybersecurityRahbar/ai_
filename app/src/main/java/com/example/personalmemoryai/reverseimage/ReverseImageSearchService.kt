@@ -232,7 +232,15 @@ class ReverseImageSearchService(context: Context) : AutoCloseable {
     private fun rotate(bitmap: Bitmap, degrees: Int): Bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(degrees.toFloat()) }, true)
     private fun ClassicalVisualFingerprintEntity.toFingerprint(): ClassicalVisualFingerprintEngine.Fingerprint = ClassicalVisualFingerprintEngine.Fingerprint(phash = phash, dhash = dhash, colorHistogram = colorHistogram, edgeHistogram = edgeHistogram, keypoints = localKeypoints, descriptors = localDescriptors, descriptorRows = localDescriptorRows, descriptorCols = localDescriptorCols, descriptorType = localDescriptorType)
     private suspend fun ensurePrivateCopy(item: ReverseImageItemEntity): ReverseImageItemEntity { val existing = item.filePath?.let(::File); if (existing?.isFile == true && existing.length() > 0L) return item; val copied = copyToPrivateLibrary(Uri.parse(item.uri)) ?: throw IllegalStateException("تعذر استعادة النسخة المحلية: ${item.displayName}"); val updated = item.copy(filePath = copied.absolutePath, fileSize = copied.length()); itemDao.upsert(updated); return updated }
-    private fun copyToPrivateLibrary(source: Uri): File? = try { val safeName = displayName(source).replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).ifBlank { "image" }; val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName"); resolver.openInputStream(source)?.use { input -> FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) } } ?: return null; if (target.length() <= 0L) { target.delete(); null } else target } catch (_: Throwable) { null }
+    private fun copyToPrivateLibrary(source: Uri): File? {
+        return try {
+            val safeName = displayName(source).replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).ifBlank { "image" }
+            val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
+            val input = resolver.openInputStream(source) ?: return null
+            input.use { stream -> FileOutputStream(target).use { output -> stream.copyTo(output, 1024 * 1024) } }
+            if (target.length() <= 0L) { target.delete(); null } else target
+        } catch (_: Throwable) { null }
+    }
     private fun displayName(uri: Uri): String = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: uri.lastPathSegment ?: "image"
     private fun fileSize(uri: Uri): Long = resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else 0L } ?: 0L
     override fun close() = Unit
