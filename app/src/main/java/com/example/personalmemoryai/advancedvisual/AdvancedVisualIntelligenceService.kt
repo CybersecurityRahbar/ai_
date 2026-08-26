@@ -59,9 +59,7 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
         try {
             onProgress(0, 1, "تحضير Advanced Visual Intelligence V2")
             val query = engine.fingerprint(queryBitmap)
-            val stored = withContext(Dispatchers.IO) {
-                advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION)
-            }
+            val stored = withContext(Dispatchers.IO) { advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION) }
             if (stored.isEmpty()) return@withContext emptyList()
 
             val baseResults = runCatching {
@@ -79,8 +77,6 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
                 }
             }
 
-            // Preserve recall from both engines: a strong classical candidate must not disappear merely
-            // because its Advanced V2 global score is lower, and vice versa.
             val advancedTop = scored.sortedByDescending { it.second.similarity }.take(64)
             val advancedById = scored.associateBy { it.first.itemId }
             val candidateIds = LinkedHashSet<Long>().apply {
@@ -93,14 +89,12 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
 
             return@withContext candidateIds.mapNotNull { itemId ->
                 val item = items[itemId] ?: return@mapNotNull null
-                val pair = advancedById[itemId] ?: return@mapNotNull null
-                val score = pair.second
+                val score = advancedById[itemId]?.second ?: return@mapNotNull null
                 val base = baseById[itemId]
                 val baseScore = base?.similarity ?: 0f
                 val agreementSignals = listOf(score.structure, score.spatialColor, score.spatialTexture, score.gradient, score.illumination)
                 val consensus = agreementSignals.count { it >= 0.62f }
                 var final = if (base != null) baseScore * 0.58f + score.similarity * 0.42f else score.similarity * 0.70f
-
                 if (consensus <= 1 && final > 0.55f) final *= 0.78f
                 if (score.structure < 0.50f && score.illumination < 0.45f && score.spatialColor > 0.80f) final *= 0.82f
                 if (score.texture > 0.80f && score.structure < 0.45f) final *= 0.90f
@@ -115,6 +109,7 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
                     if (base != null && base.ransacInliers >= 4) add("existing_geometric_match")
                     if (score.spatialColor >= 0.78f) add("spatial_color_consistency")
                     if (score.spatialTexture >= 0.76f) add("regional_texture_consistency")
+                    if (score.gradientMagnitude >= 0.78f) add("gradient_strength_consistency")
                     if (score.illumination >= 0.72f) add("illumination_robust_match")
                     if (consensus >= 3) add("independent_signal_consensus")
                     if (consensus <= 1) add("weak_cross_signal_consensus")
@@ -144,7 +139,7 @@ class AdvancedVisualIntelligenceService(context: Context) : AutoCloseable {
                     texturePercent=(score.texture*100f).toInt().coerceIn(0,100),
                     spatialTexturePercent=(score.spatialTexture*100f).toInt().coerceIn(0,100),
                     gradientPercent=(score.gradient*100f).toInt().coerceIn(0,100),
-                    gradientMagnitudePercent=(score.gradient*100f).toInt().coerceIn(0,100),
+                    gradientMagnitudePercent=(score.gradientMagnitude*100f).toInt().coerceIn(0,100),
                     layoutPercent=(score.layout*100f).toInt().coerceIn(0,100),
                     illuminationPercent=(score.illumination*100f).toInt().coerceIn(0,100),
                     entropyPercent=(score.entropy*100f).toInt().coerceIn(0,100),
