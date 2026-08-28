@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -21,14 +22,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
-/** Durable, streaming and memory-bounded importer for very large local image URI queues. */
+/** Durable, streaming, memory-bounded importer for very large local image URI queues. */
 class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     companion object {
         const val WORK_NAME = "pmai-image-corpus-import"
@@ -43,6 +46,7 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
         private const val NOTIFICATION_ID = 4108
         private const val BATCH_SIZE = 32
         private const val PARALLELISM = 4
+        private const val COPY_RETRIES = 3
     }
 
     private val db by lazy { AppDatabase.getInstance(applicationContext) }
@@ -63,7 +67,7 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
         var added = 0
         var skipped = 0
         var failed = 0
-        val run = diagnostics.begin("REVERSE_IMAGE_IMPORT", mapOf("total" to total.toString(), "streaming" to "true", "batchSize" to BATCH_SIZE.toString(), "parallelism" to PARALLELISM.toString()))
+        val run = diagnostics.begin("REVERSE_IMAGE_IMPORT", mapOf("total" to total.toString(), "streaming" to "true", "batchSize" to BATCH_SIZE.toString(), "parallelism" to PARALLELISM.toString(), "copyRetries" to COPY_RETRIES.toString()))
 
         return try {
             withContext(Dispatchers.IO) {
@@ -81,24 +85,24 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
 
                         val existingUris = itemDao.findByUris(batch).mapTo(HashSet()) { it.uri }
                         skipped += existingUris.size
-                        val candidates = batch.filterNot { existingUris.contains(it) }
+                        val candidates = batch.filterNot(existingUris::contains)
 
                         val converted = coroutineScope {
                             candidates.map { raw ->
                                 async(Dispatchers.IO.limitedParallelism(PARALLELISM)) {
                                     try {
                                         val uri = Uri.parse(raw)
-                                        val localFile = copyToPrivateLibrary(uri) ?: throw IllegalStateException("تعذر نسخ الصورة محليًا: $uri")
+                                        val localFile = copyToPrivateLibraryWithRetry(uri)
                                         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                                         BitmapFactory.decodeFile(localFile.absolutePath, bounds)
                                         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                                             localFile.delete()
-                                            throw IllegalStateException("تعذر فك ترميز الصورة: $uri")
+                                            throw UnsupportedImageException("تعذر فك ترميز الصورة أو أن تنسيقها غير مدعوم: ${displayName(uri)}")
                                         }
                                         ResultItem.Ready(
                                             ReverseImageItemEntity(
                                                 uri = raw,
-                                                displayName = queryDisplayName(uri) ?: (uri.lastPathSegment ?: "image"),
+                                                displayName = displayName(uri),
                                                 filePath = localFile.absolutePath,
                                                 fileSize = localFile.length(),
                                                 width = bounds.outWidth,
@@ -123,7 +127,14 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
                                 if (id > 0L) added++ else ready[index].filePath?.let(::File)?.delete()
                             }
                         }
-                        errors.forEach { diagnostics.begin("REVERSE_IMAGE_IMPORT_ITEM", mapOf("uri" to it.rawUri)).failure("IMPORT_ITEM", it.error) }
+                        errors.forEach { failedItem ->
+                            val severity = when (failedItem.error) {
+                                is UnsupportedImageException -> "UNSUPPORTED_FORMAT"
+                                is SourceAccessException -> "SOURCE_ACCESS"
+                                else -> "IMPORT_ITEM"
+                            }
+                            diagnostics.begin("REVERSE_IMAGE_IMPORT_ITEM", mapOf("uri" to failedItem.rawUri)).failure(severity, failedItem.error)
+                        }
                         failed += errors.size
                         processed += batch.size
                         publishProgress(processed, total, added, skipped, failed)
@@ -135,6 +146,7 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
             Result.success(workDataOf(KEY_TOTAL to total, KEY_PROCESSED to processed, KEY_ADDED to added, KEY_SKIPPED to skipped, KEY_FAILED to failed, KEY_PERCENT to 100))
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
+            run.failure("PIPELINE", t)
             Result.failure(workDataOf("error" to (t.message ?: t.javaClass.simpleName), KEY_TOTAL to total, KEY_PROCESSED to processed, KEY_ADDED to added, KEY_SKIPPED to skipped, KEY_FAILED to failed))
         }
     }
@@ -144,24 +156,56 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
         data class Failed(val rawUri: String, val error: Throwable) : ResultItem
     }
 
+    private class SourceAccessException(message: String, cause: Throwable? = null) : IOException(message, cause)
+    private class UnsupportedImageException(message: String) : IOException(message)
+
     private suspend fun publishProgress(processed: Int, total: Int, added: Int, skipped: Int, failed: Int) {
         val percent = if (total > 0) ((processed * 100L) / total).toInt().coerceIn(0, 100) else 100
         setProgress(workDataOf(KEY_TOTAL to total, KEY_PROCESSED to processed, KEY_ADDED to added, KEY_SKIPPED to skipped, KEY_FAILED to failed, KEY_PERCENT to percent))
         setForeground(createForegroundInfo("استيراد الصور $percent% • $processed/$total"))
     }
 
-    private fun copyToPrivateLibrary(source: Uri): File? = try {
-        val resolver = applicationContext.contentResolver
-        val safeName = (queryDisplayName(source) ?: source.lastPathSegment ?: "image")
-            .replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).ifBlank { "image" }
-        val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
-        resolver.openInputStream(source)?.use { input -> FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) } }
-        if (target.isFile && target.length() > 0L) target else null
-    } catch (_: Throwable) { null }
+    private suspend fun copyToPrivateLibraryWithRetry(source: Uri): File {
+        var lastError: Throwable? = null
+        repeat(COPY_RETRIES) { attempt ->
+            val target = newTargetFile(source)
+            try {
+                val resolver = applicationContext.contentResolver
+                val copied = resolver.openInputStream(source)?.use { input ->
+                    FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) }
+                    true
+                } ?: false
+                if (!copied || !target.isFile || target.length() <= 0L) {
+                    target.delete()
+                    throw IOException("المزوّد لم يعطِ بيانات قابلة للقراءة")
+                }
+                return target
+            } catch (t: Throwable) {
+                target.delete()
+                lastError = t
+                if (attempt + 1 < COPY_RETRIES) delay(80L * (attempt + 1))
+            }
+        }
+        throw SourceAccessException("تعذر قراءة/نسخ المصدر بعد $COPY_RETRIES محاولات: $source", lastError)
+    }
 
-    private fun queryDisplayName(uri: Uri): String? = applicationContext.contentResolver.query(
-        uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null
-    )?.use { if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null }
+    private fun newTargetFile(source: Uri): File {
+        val safeName = displayName(source)
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .take(100)
+            .ifBlank { "image" }
+        return File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
+    }
+
+    private fun displayName(uri: Uri): String = applicationContext.contentResolver.query(
+        uri,
+        arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    )?.use { cursor ->
+        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
+    } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "image"
 
     private fun createForegroundInfo(text: String): ForegroundInfo {
         val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
