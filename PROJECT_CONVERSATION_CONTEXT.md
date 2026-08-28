@@ -2,146 +2,151 @@
 
 ## Purpose
 
-Durable memory for the reverse-image/indexing development conversation. Read this file and `PROJECT_PROGRESS.md` before modifying Reverse Image, shared corpus/indexing, or Advanced Visual Intelligence.
+Durable memory for the reverse-image/indexing/Advanced Visual Intelligence development conversation. Read this file and `PROJECT_PROGRESS.md` before modifying Reverse Image, shared corpus/indexing, or Advanced Visual Intelligence.
 
-## Latest runtime discovery — 2026-08-27
+## Latest device-test checkpoint — 2026-08-28
 
-The first comprehensive device installation exposed a runtime integration defect that CI compilation could not detect.
+The user installed the current build and performed a real Android 12 / SM-G981U test. This is the authoritative runtime checkpoint and overrides assumptions based only on CI.
 
-User action:
-- Opened `ADVANCED VISUAL INTELLIGENCE` and/or `LOCAL REVERSE IMAGE SEARCH`.
-- Pressed `ADD IMAGES TO REVERSE-SEARCH CORPUS`.
-- Application terminated immediately.
+### A. Picker / corpus selection problems found
 
-Diagnostics:
-- `APP_CRASH / UNCAUGHT_EXCEPTION`
-- `android.content.ActivityNotFoundException: No Activity found to handle Intent { (has extras) }`
-- Reverse path: `ReverseImageSearchActivity.onCreate$lambda$3`.
-- Advanced path: `AdvancedVisualIntelligenceActivity.onCreate$lambda$2`.
+1. `OPEN SYSTEM FILES / GALLERY` opened filesystem/document providers but did not expose the expected Samsung Gallery UI. Cause: the current implementation uses `OpenMultipleDocuments(image/*)`, which is a document-provider flow and cannot guarantee that an OEM Gallery app appears. Required solution: add a genuine Gallery/Photo Picker route while retaining the existing Files/document route.
 
-Root cause:
-- `BulkImagePickerActivity` was present in AndroidManifest, but `BulkImagePickerActivity.launchIntent()` returned a bare `Intent()` containing only extras.
-- `ActivityResultContracts.StartActivityForResult` therefore attempted to resolve an implicit intent with no action/component and Android found no handler.
+2. Selecting about 500+ items through the system document route worked.
 
-Fix:
-- Commit `377d7c36a687a04d237652ea4262f5b0f0899013` changed `BulkImagePickerActivity.launchIntent()` to an explicit intent targeting `com.example.personalmemoryai.ui.BulkImagePickerActivity`.
-- Added regression test `app/src/test/java/com/example/personalmemoryai/ui/BulkImagePickerIntentTest.kt` in commit `52dd932401c6ea24a2ef67f2cb0327782c195cbc` to assert the returned Intent component and title extra.
+3. Selecting all 6,000+ images from the in-app picker terminated the app. Root cause: `selectAllMedia()` calls `queryAllUris()` to materialize the complete URI corpus into a `List<String>`, then copies it into `selected`. This violates the large-corpus memory requirement. Required solution: logical Select All state + streamed MediaStore enumeration to the existing `.uris` queue file on submission. Never materialize all URIs for Select All.
 
-Runtime verification requirement:
-- A successful Gradle build cannot prove ActivityResult routing.
-- The next installed APK must explicitly test both Reverse Image and Advanced `ADD IMAGES` buttons and confirm that the in-app bulk picker opens.
+4. In-app media count showed approximately `215,992`, while device storage/media inspection showed approximately `107,994`. Root cause identified in code: `prepareVolumes()` adds `MediaStore.VOLUME_EXTERNAL` and also adds individual external volume names. The aggregate external collection can contain the same media as the per-volume collections, producing near-2x enumeration. Required solution: aggregate OR individual volumes, never both; add unique identity regression coverage.
 
-## New picker requirement — 2026-08-27
+5. Mixed-format/folder import behavior is improved. Invalid/unreadable images now fail item-by-item while other selected items can continue. Preserve this behavior and improve diagnostic failure categories.
 
-The user rejected the current in-app gallery-only bulk picker as the sole image selection experience. Do NOT remove it.
+### B. Shared indexing observations
 
-Required UX:
-- Keep the existing paged local MediaStore picker for large on-device gallery browsing.
-- Add a separate option in the same picker screen named `OPEN SYSTEM FILES / GALLERY`.
-- This option must open Android's native document picker using `ACTION_OPEN_DOCUMENT` with multiple selection semantics so the user can see normal system sources such as Gallery, Files, folders, and document providers.
-- Do not impose an application-level 500 or 1000 image cap on this system route. Provider/UI limits, if any, are platform/provider limits rather than an app-defined cap.
-- Use `ActivityResultContracts.OpenMultipleDocuments()` with MIME `image/*`.
-- For selected document URIs, attempt `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)` where supported, catching provider limitations safely.
-- Convert the selected URIs into the same app-private `.uris` selection queue used by the existing import pipeline. Do not create a second ingestion/indexing path.
-- Return the same `RESULT_QUEUE_FILE` result so Reverse Image and Advanced automatically share the existing `ImageCorpusImportWorker` path.
-- The system picker route must work independently of `READ_MEDIA_IMAGES` permission because `ACTION_OPEN_DOCUMENT` grants access to the selected document provider URIs.
-- Preserve the explicit component fix in `BulkImagePickerActivity.launchIntent()`; never regress to a bare implicit Intent.
+The user observed roughly a 4x improvement in indexing speed compared with the older implementation. This is a real device observation but not a controlled benchmark claim.
 
-Implementation committed:
-- `BulkImagePickerActivity.kt` now registers `ActivityResultContracts.OpenMultipleDocuments()` and launches it from `openSystemImagesButton`.
-- The callback deduplicates URIs, attempts persistent read grants, writes them line-by-line to `reverse_image/selection_queue/*.uris`, and returns the same queue-file result to the parent.
-- `activity_bulk_image_picker.xml` now contains a dedicated `OPEN SYSTEM FILES / GALLERY` button and explanatory subtitle while preserving `SELECT ALL`, `LOAD NEXT 100`, and `ADD SELECTED`.
+Logs demonstrate shared decode, batch size 16, parallelism 4 and durable batch commits. Example: `items=1083`, `indexed=0`, `skipped=1083`, `failed=0` indicates the existing fingerprints were already up to date and recomputation was skipped.
 
-Commits for this addition:
-- Kotlin/system-picker implementation: `f396a51c2563b627f62c8c8c16a0c1ebc234bf50`.
-- Picker UI addition: `367756339658898f9ae39ae4f5f27b13a58466c2`.
+### C. Critical Advanced version correction
 
-## Permanent architecture requirements
+Advanced is currently V2, not V4.
+
+Current source:
+
+`AdvancedVisualFingerprintEngine.ENGINE_VERSION = "ADVANCED-VISUAL-CLASSICAL-V2"`
+
+The seven query variants are therefore correctly reported as `Advanced V2`.
+
+The `...-V4` label in logs refers to the **Classical Reverse Image** engine:
+
+`CLASSICAL-PHASH-DHASH-HSV256-SOBEL-AKAZE-V4`
+
+Do not call Advanced V4 until a real Advanced V4 implementation exists, with a new fingerprint contract, persistence/migration, indexing, query/search, and regression tests.
+
+### D. Advanced vs Reverse Image runtime quality finding
+
+The user observed little visible difference between the Advanced and Local Reverse Image result sets. This does not prove identical algorithms. The current Advanced service intentionally calls the Reverse Image service for 64 classical candidates, computes Advanced V2 against the full Advanced corpus, unions candidate IDs, and fuses the results. Thus the existing strong classical engine can dominate the resulting ordering.
+
+The user also observed that true variants of the queried image often rank highly, but some unrelated or weakly similar images can appear above genuine variants.
+
+Current likely causes requiring measurement:
+
+- global color/texture agreement can be generic;
+- correlated signals are counted too independently;
+- classical and Advanced score scales are heuristic and not calibrated to each other;
+- Advanced calls the classical path with `minimumSimilarity=0.0f`, allowing all 64 classical candidates into fusion;
+- current penalties do not form calibrated reject/gate rules;
+- geometric/local evidence needs stronger authority when demonstrably supported;
+- no explicit match-type classifier exists;
+- no ranking-margin or cluster-coherence gate exists.
+
+Target future ranking architecture:
+
+`broad recall retrieval → signal normalization → correlation control → independent evidence gates → geometric authority → match-type classification → false-positive suppression → final ranking`
+
+Never reduce the existing Reverse Image 64/16 pipeline to gain speed.
+
+### E. Explainability finding
+
+Current `WHY THIS RESULT` displays many component percentages and reason codes, but the user reports that it is not practically useful.
+
+Required new explanation model:
+
+- match type;
+- final score and acceptance band;
+- ranking margin to next candidates;
+- independent evidence count;
+- geometric support;
+- regional support;
+- structural support;
+- color/texture evidence;
+- contradiction/negative evidence;
+- actual weighted independent contributions;
+- why included;
+- why this rank;
+- why not rejected.
+
+The explanation must be reconstructible from real stored decision evidence; it must not be a post-hoc text decoration.
+
+### F. Required next implementation phase
+
+Priority 0 — selection correctness:
+
+1. Fix aggregate/per-volume MediaStore double counting.
+2. Replace Select All materialization with logical Select All + streaming queue writing.
+3. Add genuine Gallery/Photo Picker route and retain Files/document provider route.
+4. Preserve per-item failure isolation and improve failure taxonomy.
+
+Priority 1 — Advanced identity:
+
+5. Keep Advanced labeled V2 until a real V4 engine is implemented; do not fake versioning.
+
+Priority 2 — ranking quality:
+
+6. Normalize signal scales.
+7. Add independence-aware evidence accounting/correlation suppression.
+8. Add explicit match classification.
+9. Add geometric/local authority and rejection logic when strong support exists.
+10. Add negative evidence, ranking margin, and cluster coherence.
+
+Priority 3 — explainability:
+
+11. Persist a reconstructible decision ledger.
+12. Show why included, why this rank, and why not rejected.
+13. Expose actual independent evidence contributions.
+
+Priority 4 — benchmark:
+
+14. Run identical queries through Reverse-only, Advanced-only, and fused modes.
+15. Measure Recall@1/5/10, false positives, ranking position, latency, indexing throughput, memory, failures and explanation correctness.
+
+## Current permanent architecture
 
 - `IntelligenceHomeActivity` is the single Android launcher.
-- `ReverseImageSearchActivity` is an independent top-level feature.
-- `AdvancedVisualIntelligenceActivity` is an independent top-level feature in the same Intelligence Command Center and uses the same PMAI visual design language.
-- Advanced must never be a hidden mode inside Reverse Image and must never create a second application/launcher.
-- Both feature families consume one shared local image corpus/import/decode pipeline. The same image is not fetched/copied/decoded twice merely because two engines need it.
-- Reverse Image and Advanced retain independent versioned feature stores and can be rebuilt independently.
-- Reverse Image algorithms remain unchanged and full strength: DigiKam-style Haar, pHash, dHash, HSV256, spatial Sobel/shape, persisted AKAZE descriptors, AKAZE mutual/RANSAC, SIFT mutual/RANSAC, rotation/crop variants.
-- Reverse Image retrieval coverage is locked: **full corpus → 64 shortlist → AKAZE/RANSAC over all 64 → 16 SIFT/RANSAC → final ranking**.
-- Never lower 64/16 or remove accuracy-bearing stages to solve performance.
-- MobileCLIP/neural semantic search stays postponed.
-- Advanced algorithms must have defined purpose, storage, metric, cost, failure modes, and benchmark value.
-- Advanced result percentages must be reconstructible from real stored evidence; never fabricate explanations.
-- Large-batch selection/import must support 5,000–6,000+ images without huge Intent/list memory loads.
-- Long-running work must survive rotation/background/screen-off/process recreation to the extent Android permits; cancellation is explicit.
+- `LOCAL REVERSE IMAGE SEARCH` remains an independent top-level screen.
+- `ADVANCED VISUAL INTELLIGENCE` remains an independent top-level screen in the same visual design language.
+- Both consume one shared local corpus/import/decode path.
+- Reverse Image retains its own Haar/Classical/AKAZE/SIFT feature stores.
+- Advanced retains an independent Advanced V2 feature store.
+- Reverse Image remains full-strength: DigiKam-style Haar, pHash, dHash, HSV256, spatial Sobel/shape, persisted AKAZE, AKAZE mutual/RANSAC, SIFT mutual/RANSAC, rotation/crop variants.
+- Reverse Image recall pipeline is locked at `full corpus → 64 → AKAZE/RANSAC all 64 → SIFT/RANSAC all 16 → final ranking`.
+- MobileCLIP/neural semantic search remains postponed.
+- Do not duplicate corpus import/decode for Advanced.
+- Do not pass thousands of URIs through an Intent.
+- Do not lower candidate coverage to improve speed.
+- Do not claim confidence is probability.
+- Do not claim performance/accuracy gains without measurement.
+- Every future algorithm must have a defined purpose, representation, metric, cost, failure modes and benchmark value.
 
-## Current architecture and progress
+## Previous runtime incident retained
 
-### Shared ingestion/indexing
+The earlier `ActivityNotFoundException` was caused by `BulkImagePickerActivity.launchIntent()` returning a bare Intent. It was fixed by explicit component routing and a regression test. The current device test did NOT report that crash; the new selection issues above are separate.
 
-`BulkImagePickerActivity` pages MediaStore metadata and writes a queue file in app-private storage. It must launch explicitly from both Reverse and Advanced screens.
+## Documentation checkpoint
 
-`ImageCorpusImportWorker` streams the queue file, processes bounded batches with bounded concurrency, creates durable app-private image copies, validates dimensions using bounds-only decoding, isolates item failures, inserts accepted corpus records in batches, and publishes persistent progress.
+Full device findings are recorded in:
 
-`UnifiedVisualIndexWorker` invokes `OptimizedUnifiedVisualIndexService` as foreground WorkManager work.
+`docs/ADVANCED_DEVICE_TEST_FINDINGS_2026-08-28.md`
 
-The optimized indexer performs one decode per image, computes Haar + Classical V4 + Advanced V2 from the same bitmap, uses bounded four-way CPU parallelism, persists feature batches transactionally, and checkpoints operation state in Room.
+The progress log is updated in:
 
-### Advanced Visual Intelligence
-
-Independent screen, independent V2 feature storage, independent results and explanations. Current engine family includes:
-- multi-scale grayscale structure;
-- global and spatial color;
-- global/spatial LBP texture;
-- gradient orientation and magnitude;
-- spatial layout/edge signature;
-- illumination-robust structure;
-- entropy and aspect ratio;
-- regional consistency;
-- multiscale structural consensus;
-- 7 query variants: original, 90°, 180°, 270°, center crops 92/82/72%;
-- cross-signal contradiction penalties;
-- confidence separated from similarity;
-- expandable `WHY THIS RESULT` evidence panel.
-
-Advanced retrieval unions Advanced candidates with candidates from the existing Classical/Haar path before final fusion so one engine cannot suppress recall from the other.
-
-## Device testing state
-
-The user has now begun runtime testing. The first discovered fatal error was the bulk-picker ActivityNotFoundException above. It was fixed by explicit component routing.
-
-The next requested change is to restore the old Android system file/gallery chooser as an additional option, not as a replacement. The system route is now implemented in the picker and is awaiting CI validation and device verification.
-
-## Build status
-
-CI #149 successfully built and uploaded a debug APK after the explicit bulk-picker Intent fix. The system-picker commits above require a new CI validation. A green build proves compilation/package correctness but does not prove runtime integration.
-
-## Required next sequence
-
-1. CI for the system-picker addition.
-2. Install that exact APK.
-3. Test `ADD IMAGES` from both Reverse Image and Advanced.
-4. Inside `BulkImagePickerActivity`, test both picker routes:
-   - existing paged local gallery (`SELECT ALL` / `LOAD NEXT 100` / `ADD SELECTED`);
-   - new `OPEN SYSTEM FILES / GALLERY` multi-select route.
-5. From the native chooser, select images from Gallery and from a Files/folder provider where available; verify return and queue/import.
-6. Test large multi-select without an app-defined cap.
-7. Test import worker and shared index start/resume.
-8. Test rotation, screen-off, backgrounding and process recreation.
-9. Test repeated searches and result display.
-10. Test Advanced explainability/evidence.
-11. Only after runtime stability, execute the full accuracy/performance benchmark.
-
-## Permanent rules
-
-- **999 is valid and intentional.**
-- Never reduce Reverse Image 64 shortlist or 16 SIFT.
-- Never weaken/remove Haar/pHash/dHash/HSV256/Sobel/AKAZE/RANSAC/SIFT in the existing Reverse Image engine.
-- Never create a second launcher/application.
-- Never make Advanced a hidden sub-mode.
-- Never make the user import/fetch/decode the corpus twice.
-- Never put thousands of URIs into an Intent.
-- Never let one bad media item abort a large batch.
-- Never let normal Activity destruction cancel durable indexing.
-- Never call an aggregate score Haar.
-- Never call `confidencePercent` a probability.
-- Never claim accuracy or performance improvement without measurement.
-- Never add algorithms merely for novelty; every engine must have a defined role, representation, metric, cost, and benchmark value.
+`PROJECT_PROGRESS.md`
