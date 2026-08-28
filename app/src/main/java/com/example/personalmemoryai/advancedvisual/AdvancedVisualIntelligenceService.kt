@@ -77,7 +77,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         }
         try {
             val variants = buildQueryVariants(original)
-            onProgress(0, variants.size, "تحضير ${variants.size} نسخ استعلام Advanced V2")
+            onProgress(0, variants.size, "تحضير ${variants.size} نسخ استعلام ${AdvancedVisualFingerprintEngine.ENGINE_VERSION}")
             val stored = withContext(Dispatchers.IO) { advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION) }
             if (stored.isEmpty()) return@withContext emptyList()
 
@@ -105,7 +105,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
                     val current = bestById[itemId]
                     if (current == null || score.similarity > current.second.similarity) bestById[itemId] = variantIndex to score
                 }
-                onProgress(variantIndex + 1, variants.size, "Advanced V2 variant ${variant.label} • full corpus")
+                onProgress(variantIndex + 1, variants.size, "${AdvancedVisualFingerprintEngine.ENGINE_VERSION} variant ${variant.label} • full corpus")
             }
 
             variants.filter { it.bitmap != null && it.bitmap !== original }.forEach { it.bitmap!!.recycle() }
