@@ -4,6 +4,8 @@ import android.content.ContentResolver
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualFingerprintEngine
 import com.example.personalmemoryai.advancedvisual.AdvancedVisualFingerprintEntity
@@ -21,7 +23,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
@@ -101,9 +105,23 @@ class OptimizedUnifiedVisualIndexService(context: Context) : AutoCloseable {
     private suspend fun ensurePrivateCopy(item:ReverseImageItemEntity):ReverseImageItemEntity{
         val existing=item.filePath?.let(::File);if(existing?.isFile==true&&existing.length()>0L)return item
         val source=Uri.parse(item.uri);val safeName=displayName(source).replace(Regex("[^A-Za-z0-9._-]"),"_").take(100).ifBlank{"image"};val target=File(libraryDirectory,"${UUID.randomUUID()}_$safeName")
-        withContext(Dispatchers.IO){resolver.openInputStream(source)?.use{input->FileOutputStream(target).use{output->input.copyTo(output,1024*1024)}}?:throw IllegalStateException("تعذر قراءة المصدر: ${item.uri}")}
+        withContext(Dispatchers.IO){openBestEffortStream(source)?.use{input->FileOutputStream(target).use{output->input.copyTo(output,1024*1024)}}?:throw IllegalStateException("تعذر قراءة المصدر: ${item.uri}")}
         if(!target.isFile||target.length()<=0L){target.delete();throw IllegalStateException("تعذر إنشاء النسخة المحلية: ${item.displayName}")}
         val updated=item.copy(filePath=target.absolutePath,fileSize=target.length());withContext(Dispatchers.IO){itemDao.upsert(updated)};return updated
+    }
+
+    private fun openBestEffortStream(source: Uri): InputStream? {
+        if (source.scheme == "file") return FileInputStream(File(source.path ?: return null))
+        try { resolver.openInputStream(source)?.let { return it } } catch (_: Throwable) { }
+        if (source.authority == "com.android.externalstorage.documents" && DocumentsContract.isDocumentUri(appContext, source)) {
+            return try {
+                val id=DocumentsContract.getDocumentId(source);val split=id.split(':',limit=2)
+                if(split.size==2&&split[0].equals("primary",true)) {
+                    val candidate=File(Environment.getExternalStorageDirectory(),Uri.decode(split[1]));if(candidate.isFile) FileInputStream(candidate) else null
+                } else null
+            } catch (_:Throwable){null}
+        }
+        return null
     }
     private fun displayName(uri:Uri):String=resolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use{if(it.moveToFirst()&&!it.isNull(0))it.getString(0)else null}?:uri.lastPathSegment?:"image"
     override fun close()=Unit
