@@ -8,6 +8,9 @@ import android.content.pm.ServiceInfo
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
@@ -24,7 +27,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
@@ -43,6 +48,7 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
         private const val NOTIFICATION_ID = 4108
         private const val BATCH_SIZE = 32
         private const val PARALLELISM = 4
+        private const val COPY_BUFFER = 1024 * 1024
     }
 
     private val db by lazy { AppDatabase.getInstance(applicationContext) }
@@ -81,38 +87,9 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
 
                         val existingUris = itemDao.findByUris(batch).mapTo(HashSet()) { it.uri }
                         skipped += existingUris.size
-                        val candidates = batch.filterNot { existingUris.contains(it) }
-
+                        val candidates = batch.filterNot(existingUris::contains)
                         val converted = coroutineScope {
-                            candidates.map { raw ->
-                                async(Dispatchers.IO.limitedParallelism(PARALLELISM)) {
-                                    try {
-                                        val uri = Uri.parse(raw)
-                                        val localFile = copyToPrivateLibrary(uri) ?: throw IllegalStateException("تعذر نسخ الصورة محليًا: $uri")
-                                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                        BitmapFactory.decodeFile(localFile.absolutePath, bounds)
-                                        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-                                            localFile.delete()
-                                            throw IllegalStateException("تعذر فك ترميز الصورة: $uri")
-                                        }
-                                        ResultItem.Ready(
-                                            ReverseImageItemEntity(
-                                                uri = raw,
-                                                displayName = queryDisplayName(uri) ?: (uri.lastPathSegment ?: "image"),
-                                                filePath = localFile.absolutePath,
-                                                fileSize = localFile.length(),
-                                                width = bounds.outWidth,
-                                                height = bounds.outHeight,
-                                                mimeType = applicationContext.contentResolver.getType(uri),
-                                                sourceModifiedAt = null
-                                            )
-                                        )
-                                    } catch (t: Throwable) {
-                                        if (t is kotlinx.coroutines.CancellationException) throw t
-                                        ResultItem.Failed(raw, t)
-                                    }
-                                }
-                            }.awaitAll()
+                            candidates.map { raw -> async(Dispatchers.IO.limitedParallelism(PARALLELISM)) { importOne(raw) } }.awaitAll()
                         }
 
                         val ready = converted.mapNotNull { (it as? ResultItem.Ready)?.entity }
@@ -123,7 +100,7 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
                                 if (id > 0L) added++ else ready[index].filePath?.let(::File)?.delete()
                             }
                         }
-                        errors.forEach { diagnostics.begin("REVERSE_IMAGE_IMPORT_ITEM", mapOf("uri" to it.rawUri)).failure("IMPORT_ITEM", it.error) }
+                        errors.forEach { diagnostics.begin("REVERSE_IMAGE_IMPORT_ITEM", mapOf("uri" to it.rawUri)).failure(it.stage, it.error) }
                         failed += errors.size
                         processed += batch.size
                         publishProgress(processed, total, added, skipped, failed)
@@ -141,7 +118,87 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
 
     private sealed interface ResultItem {
         data class Ready(val entity: ReverseImageItemEntity) : ResultItem
-        data class Failed(val rawUri: String, val error: Throwable) : ResultItem
+        data class Failed(val rawUri: String, val stage: String, val error: Throwable) : ResultItem
+    }
+
+    private fun importOne(raw: String): ResultItem {
+        val uri = Uri.parse(raw)
+        return try {
+            val localFile = tryCopyWithRetry(uri)
+                ?: return ResultItem.Failed(raw, "COPY_FAILED", IllegalStateException("تعذر قراءة المصدر أو نسخه محليًا: $uri"))
+
+            val dimensions = decodeDimensions(localFile)
+            if (dimensions == null) {
+                val ext = localFile.extension.lowercase().ifBlank { "unknown" }
+                localFile.delete()
+                return ResultItem.Failed(raw, "UNSUPPORTED_OR_CORRUPT_$ext", IllegalStateException("تعذر فك ترميز الصورة ($ext): $uri"))
+            }
+
+            ResultItem.Ready(ReverseImageItemEntity(
+                uri = raw,
+                displayName = queryDisplayName(uri) ?: localFile.nameWithoutExtension.ifBlank { "image" },
+                filePath = localFile.absolutePath,
+                fileSize = localFile.length(),
+                width = dimensions.first,
+                height = dimensions.second,
+                mimeType = applicationContext.contentResolver.getType(uri) ?: guessMime(localFile),
+                sourceModifiedAt = null
+            ))
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
+            ResultItem.Failed(raw, "IMPORT_FAILED", t)
+        }
+    }
+
+    private fun tryCopyWithRetry(source: Uri): File? {
+        repeat(3) { attempt ->
+            try { copyToPrivateLibrary(source)?.let { return it } } catch (_: Throwable) { }
+            if (attempt < 2) Thread.sleep(75L * (attempt + 1))
+        }
+        return null
+    }
+
+    private fun copyToPrivateLibrary(source: Uri): File? {
+        val safeName = (queryDisplayName(source) ?: source.lastPathSegment ?: "image")
+            .replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).ifBlank { "image" }
+        val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
+        openBestEffortStream(source)?.use { input -> FileOutputStream(target).use { output -> input.copyTo(output, COPY_BUFFER) } } ?: return null
+        return if (target.isFile && target.length() > 0L) target else null
+    }
+
+    private fun openBestEffortStream(source: Uri): InputStream? {
+        if (source.scheme == "file") return FileInputStream(File(source.path ?: return null))
+        try { applicationContext.contentResolver.openInputStream(source)?.let { return it } } catch (_: Throwable) { }
+        if (source.authority == "com.android.externalstorage.documents" && DocumentsContract.isDocumentUri(applicationContext, source)) {
+            return try {
+                val documentId = DocumentsContract.getDocumentId(source)
+                val split = documentId.split(':', limit = 2)
+                if (split.size == 2 && split[0].equals("primary", ignoreCase = true)) {
+                    val candidate = File(Environment.getExternalStorageDirectory(), Uri.decode(split[1]))
+                    if (candidate.isFile) FileInputStream(candidate) else null
+                } else null
+            } catch (_: Throwable) { null }
+        }
+        return null
+    }
+
+    private fun decodeDimensions(file: File): Pair<Int, Int>? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        return if (bounds.outWidth > 0 && bounds.outHeight > 0) bounds.outWidth to bounds.outHeight else null
+    }
+
+    private fun guessMime(file: File): String? = when (file.extension.lowercase()) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        "bmp" -> "image/bmp"
+        "heic" -> "image/heic"
+        "heif" -> "image/heif"
+        "tif", "tiff" -> "image/tiff"
+        "avif" -> "image/avif"
+        else -> null
     }
 
     private suspend fun publishProgress(processed: Int, total: Int, added: Int, skipped: Int, failed: Int) {
@@ -150,18 +207,7 @@ class ImageCorpusImportWorker(appContext: Context, params: WorkerParameters) : C
         setForeground(createForegroundInfo("استيراد الصور $percent% • $processed/$total"))
     }
 
-    private fun copyToPrivateLibrary(source: Uri): File? = try {
-        val resolver = applicationContext.contentResolver
-        val safeName = (queryDisplayName(source) ?: source.lastPathSegment ?: "image")
-            .replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).ifBlank { "image" }
-        val target = File(libraryDirectory, "${UUID.randomUUID()}_$safeName")
-        resolver.openInputStream(source)?.use { input -> FileOutputStream(target).use { output -> input.copyTo(output, 1024 * 1024) } }
-        if (target.isFile && target.length() > 0L) target else null
-    } catch (_: Throwable) { null }
-
-    private fun queryDisplayName(uri: Uri): String? = applicationContext.contentResolver.query(
-        uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null
-    )?.use { if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null }
+    private fun queryDisplayName(uri: Uri): String? = applicationContext.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null }
 
     private fun createForegroundInfo(text: String): ForegroundInfo {
         val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
