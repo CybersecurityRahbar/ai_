@@ -19,6 +19,7 @@ import android.widget.CheckBox
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -29,9 +30,6 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.personalmemoryai.R
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -40,8 +38,18 @@ import java.io.FileOutputStream
 import java.util.UUID
 
 /**
- * Large-scale image selector. It keeps native Gallery, native System Files,
- * folder/tree import, and the in-app MediaStore browser as separate acquisition paths.
+ * Large-scale image selector.
+ *
+ * Acquisition paths are deliberately separated:
+ * - Gallery: OEM media picker via ACTION_PICK when available.
+ * - Photo Picker: modern Android photo-selection contract.
+ * - Files: system document provider for ordinary multi-selection.
+ * - Folder: SAF tree selection with streaming enumeration for thousands of images.
+ * - In-app: memory-bounded MediaStore browser with logical Select All.
+ *
+ * Important: no large selection is returned through an Activity Intent when a
+ * scalable folder/tree path can be used instead. This avoids Binder/ClipData
+ * pressure for 5,000–10,000+ item selections.
  */
 class BulkImagePickerActivity : AppCompatActivity() {
     companion object {
@@ -50,9 +58,10 @@ class BulkImagePickerActivity : AppCompatActivity() {
         private const val REQUEST_MEDIA_PERMISSION = 7301
         private const val EXTRA_TITLE = "title"
         private const val SOURCE_GALLERY = 0
-        private const val SOURCE_FILES = 1
-        private const val SOURCE_FOLDER = 2
-        private const val SOURCE_IN_APP = 3
+        private const val SOURCE_PHOTO_PICKER = 1
+        private const val SOURCE_FILES = 2
+        private const val SOURCE_FOLDER = 3
+        private const val SOURCE_IN_APP = 4
 
         fun launchIntent(title: String = "SELECT LOCAL IMAGES"): Intent = Intent().apply {
             setClassName(
@@ -77,7 +86,6 @@ class BulkImagePickerActivity : AppCompatActivity() {
     private var offset = 0
     private var loading = false
     private var allSelected = false
-    private var volumeIndex = 0
     private var allMediaCount = 0L
     private var sortMode = SortMode.MODIFIED_NEWEST
     private lateinit var adapter: ImagePickerAdapter
@@ -87,12 +95,13 @@ class BulkImagePickerActivity : AppCompatActivity() {
         lifecycleScope.launch {
             setBusy(true)
             try {
-                val distinct = uris.distinct()
-                val file = writePreparedUriQueue(distinct)
-                completeWithQueue(file, "تم تجهيز ${distinct.size} صورة من ملفات النظام.")
+                val file = writePreparedUriQueue(uris.asSequence())
+                completeWithQueue(file, "تم تجهيز ${uris.size} صورة من ملفات النظام.")
             } catch (t: Throwable) {
                 showError("تعذر تجهيز الصور من ملفات النظام: ${t.message ?: "خطأ غير محدد"}")
-            } finally { setBusy(false) }
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
@@ -103,12 +112,28 @@ class BulkImagePickerActivity : AppCompatActivity() {
         lifecycleScope.launch {
             setBusy(true)
             try {
-                val distinct = uris.distinct()
-                val file = writePreparedUriQueue(distinct)
-                completeWithQueue(file, "تم تجهيز ${distinct.size} صورة من الاستوديو.")
+                val file = writePreparedUriQueue(uris.asSequence())
+                completeWithQueue(file, "تم تجهيز ${uris.size} صورة من الاستوديو.")
             } catch (t: Throwable) {
                 showError("تعذر تجهيز صور الاستوديو: ${t.message ?: "خطأ غير محدد"}")
-            } finally { setBusy(false) }
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private val photoPicker = registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(150)) { uris ->
+        if (uris.isNullOrEmpty()) return@registerForActivityResult
+        lifecycleScope.launch {
+            setBusy(true)
+            try {
+                val file = writePreparedUriQueue(uris.asSequence())
+                completeWithQueue(file, "تم تجهيز ${uris.size} صورة من منتقي الصور.")
+            } catch (t: Throwable) {
+                showError("تعذر تجهيز صور منتقي الصور: ${t.message ?: "خطأ غير محدد"}")
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
@@ -117,19 +142,31 @@ class BulkImagePickerActivity : AppCompatActivity() {
         lifecycleScope.launch {
             setBusy(true)
             try {
-                try { contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: SecurityException) { }
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        treeUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: SecurityException) {
+                    // Some providers do not expose persistable permissions; the worker
+                    // still attempts best-effort reads item-by-item.
+                }
                 val file = withContext(Dispatchers.IO) { writeTreeQueue(treeUri) }
-                completeWithQueue(file, "تم تجهيز صور المجلد بطريقة تيارية مناسبة للآلاف.")
+                completeWithQueue(file, "تم تجهيز صور المجلد ببث تياري مناسب للآلاف.")
             } catch (t: Throwable) {
                 showError("تعذر قراءة المجلد: ${t.message ?: "خطأ غير محدد"}")
-            } finally { setBusy(false) }
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_bulk_image_picker)
-        findViewById<TextView>(R.id.titleText).text = intent.getStringExtra(EXTRA_TITLE) ?: "SELECT LOCAL IMAGES"
+        findViewById<TextView>(R.id.titleText).text =
+            intent.getStringExtra(EXTRA_TITLE) ?: "SELECT LOCAL IMAGES"
+
         adapter = ImagePickerAdapter { row, checked ->
             val key = row.uri.toString()
             if (allSelected) {
@@ -140,6 +177,7 @@ class BulkImagePickerActivity : AppCompatActivity() {
             row.checked = checked
             updateSummary()
         }
+
         findViewById<RecyclerView>(R.id.imagesRecyclerView).apply {
             layoutManager = GridLayoutManager(this@BulkImagePickerActivity, 3)
             adapter = this@BulkImagePickerActivity.adapter
@@ -149,20 +187,25 @@ class BulkImagePickerActivity : AppCompatActivity() {
         findViewById<View>(R.id.loadMoreButton).setOnClickListener { loadPage() }
         findViewById<View>(R.id.selectAllButton).setOnClickListener { selectAllMedia() }
         findViewById<View>(R.id.doneButton).setOnClickListener { finishWithSelection() }
+
         if (hasMediaPermission()) prepareVolumes() else requestMediaPermission()
     }
 
     private fun showSourceChooser() {
         AlertDialog.Builder(this)
             .setTitle("مصدر الصور")
-            .setItems(arrayOf(
-                "الاستوديو / Gallery — اختيار صور",
-                "ملفات النظام — اختيار صور",
-                "اختيار مجلد كامل — الأفضل لآلاف الصور",
-                "المنتقي المدمج — تصفح كل الصور داخل التطبيق"
-            )) { _, which ->
+            .setItems(
+                arrayOf(
+                    "الاستوديو / Gallery — معرض الجهاز",
+                    "Photo Picker — منتقي الصور الحديث",
+                    "ملفات النظام — اختيار صور",
+                    "مجلد من الملفات — بث جميع الصور للآلاف",
+                    "المنتقي المدمج — تصفح الصور داخل التطبيق"
+                )
+            ) { _, which ->
                 when (which) {
                     SOURCE_GALLERY -> openNativeGallery()
+                    SOURCE_PHOTO_PICKER -> openPhotoPicker()
                     SOURCE_FILES -> systemImagesPicker.launch(arrayOf("image/*"))
                     SOURCE_FOLDER -> folderPicker.launch(null)
                     SOURCE_IN_APP -> prepareVolumes()
@@ -171,39 +214,94 @@ class BulkImagePickerActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun openNativeGallery() {
-        val intent = Intent(Intent.ACTION_PICK).apply {
-            data = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            type = "image/*"
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+    private fun openPhotoPicker() {
+        try {
+            photoPicker.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+        } catch (_: Throwable) {
+            openNativeGallery()
         }
-        if (packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY).isNotEmpty()) galleryPicker.launch(intent)
-        else {
-            Toast.makeText(this, "لا يوجد تطبيق Gallery متعدد الاختيار؛ تم فتح المنتقي المدمج.", Toast.LENGTH_LONG).show()
-            prepareVolumes()
+    }
+
+    private fun openNativeGallery() {
+        val candidates = listOf(
+            Intent(Intent.ACTION_PICK).apply {
+                data = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                type = "image/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            },
+            Intent(Intent.ACTION_GET_CONTENT).apply {
+                type = "image/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                addCategory(Intent.CATEGORY_OPENABLE)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        )
+        val resolved = candidates.firstOrNull { candidate ->
+            packageManager.queryIntentActivities(candidate, PackageManager.MATCH_DEFAULT_ONLY).isNotEmpty()
+        }
+        if (resolved != null) {
+            try {
+                galleryPicker.launch(resolved)
+                return
+            } catch (_: Throwable) {
+                // Continue to modern Photo Picker / in-app fallback.
+            }
+        }
+        try {
+            photoPicker.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+        } catch (_: Throwable) {
+            Toast.makeText(
+                this,
+                "تعذر فتح معرض الجهاز؛ استخدم Photo Picker أو ملفات النظام أو اختيار المجلد.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
     private fun hasMediaPermission(): Boolean {
-        val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+        val permission = if (Build.VERSION.SDK_INT >= 33) {
+            Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
         return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestMediaPermission() {
-        val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+        val permission = if (Build.VERSION.SDK_INT >= 33) {
+            Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
         ActivityCompat.requestPermissions(this, arrayOf(permission), REQUEST_MEDIA_PERMISSION)
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_MEDIA_PERMISSION && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) prepareVolumes()
-        else Toast.makeText(this, "يمكنك استخدام Gallery أو Files أو اختيار مجلد حتى بدون المنتقي المدمج.", Toast.LENGTH_LONG).show()
+        if (requestCode == REQUEST_MEDIA_PERMISSION && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            prepareVolumes()
+        } else {
+            Toast.makeText(
+                this,
+                "يمكنك استخدام Gallery أو Photo Picker أو Files أو اختيار مجلد حتى بدون تصفح MediaStore.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
+    /** Use the aggregate external MediaStore collection, never aggregate + per-volume together. */
     private fun prepareVolumes() {
         volumes.clear()
-        if (Build.VERSION.SDK_INT >= 29) volumes += MediaStore.getExternalVolumeNames(this).toList() else volumes += MediaStore.VOLUME_EXTERNAL
-        volumeIndex = 0
+        volumes += if (Build.VERSION.SDK_INT >= 29) MediaStore.VOLUME_EXTERNAL else MediaStore.VOLUME_EXTERNAL
         offset = 0
         allSelected = false
         allMediaCount = 0L
@@ -228,23 +326,22 @@ class BulkImagePickerActivity : AppCompatActivity() {
         }
         findViewById<TextView>(R.id.sortButtonLabel).text = sortMode.label
         offset = 0
-        volumeIndex = 0
         rows.clear()
         adapter.submit(rows)
         loadPage()
     }
 
     private fun loadPage() {
-        if (loading || volumeIndex >= volumes.size) return
+        if (loading || volumes.isEmpty()) return
         loading = true
         lifecycleScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) { queryPage(volumes[volumeIndex], offset, PAGE_SIZE) }
+                val result = withContext(Dispatchers.IO) {
+                    queryPage(volumes.first(), offset, PAGE_SIZE)
+                }
                 if (result.isEmpty()) {
-                    volumeIndex++
-                    offset = 0
                     loading = false
-                    if (volumeIndex < volumes.size) loadPage() else updateSummary()
+                    updateSummary()
                     return@launch
                 }
                 result.forEach { it.checked = isSelected(it.uri) }
@@ -262,24 +359,49 @@ class BulkImagePickerActivity : AppCompatActivity() {
 
     private fun queryPage(volume: String, start: Int, limit: Int): List<ImageRow> {
         val collection = MediaStore.Images.Media.getContentUri(volume)
-        val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.SIZE, MediaStore.Images.Media.WIDTH, MediaStore.Images.Media.HEIGHT)
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.SIZE,
+            MediaStore.Images.Media.WIDTH,
+            MediaStore.Images.Media.HEIGHT
+        )
         val out = ArrayList<ImageRow>(limit)
         if (Build.VERSION.SDK_INT >= 26) {
             val args = Bundle().apply {
                 putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
                 putInt(ContentResolver.QUERY_ARG_OFFSET, start)
                 putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, sortMode.columns)
-                putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, if (sortMode.descending) ContentResolver.QUERY_SORT_DIRECTION_DESCENDING else ContentResolver.QUERY_SORT_DIRECTION_ASCENDING)
+                putInt(
+                    ContentResolver.QUERY_ARG_SORT_DIRECTION,
+                    if (sortMode.descending) {
+                        ContentResolver.QUERY_SORT_DIRECTION_DESCENDING
+                    } else {
+                        ContentResolver.QUERY_SORT_DIRECTION_ASCENDING
+                    }
+                )
             }
-            contentResolver.query(collection, projection, args, null)?.use { cursor -> readRows(cursor, collection, out) }
+            contentResolver.query(collection, projection, args, null)?.use { cursor ->
+                readRows(cursor, collection, out)
+            }
         } else {
             val direction = if (sortMode.descending) "DESC" else "ASC"
-            contentResolver.query(collection, projection, null, null, "${sortMode.columns.first()} $direction LIMIT $limit OFFSET $start")?.use { cursor -> readRows(cursor, collection, out) }
+            contentResolver.query(
+                collection,
+                projection,
+                null,
+                null,
+                "${sortMode.columns.first()} $direction LIMIT $limit OFFSET $start"
+            )?.use { cursor -> readRows(cursor, collection, out) }
         }
         return out
     }
 
-    private fun readRows(cursor: android.database.Cursor, collection: Uri, out: MutableList<ImageRow>) {
+    private fun readRows(
+        cursor: android.database.Cursor,
+        collection: Uri,
+        out: MutableList<ImageRow>
+    ) {
         val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
         val nameIndex = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
         val sizeIndex = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
@@ -287,30 +409,37 @@ class BulkImagePickerActivity : AppCompatActivity() {
         val heightIndex = cursor.getColumnIndex(MediaStore.Images.Media.HEIGHT)
         while (cursor.moveToNext()) {
             val id = cursor.getLong(idIndex)
-            out += ImageRow(Uri.withAppendedPath(collection, id.toString()), cursor.getString(nameIndex) ?: "image_$id",
+            out += ImageRow(
+                Uri.withAppendedPath(collection, id.toString()),
+                cursor.getString(nameIndex) ?: "image_$id",
                 if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else 0L,
                 if (widthIndex >= 0 && !cursor.isNull(widthIndex)) cursor.getInt(widthIndex) else 0,
-                if (heightIndex >= 0 && !cursor.isNull(heightIndex)) cursor.getInt(heightIndex) else 0)
+                if (heightIndex >= 0 && !cursor.isNull(heightIndex)) cursor.getInt(heightIndex) else 0
+            )
         }
     }
 
     private fun queryMediaCount(): Long {
-        var total = 0L
-        for (volume in volumes) {
-            val collection = MediaStore.Images.Media.getContentUri(volume)
-            contentResolver.query(collection, arrayOf(MediaStore.Images.Media._ID), null, null, null)?.use { total += it.count.toLong() }
-        }
-        return total
+        val collection = MediaStore.Images.Media.getContentUri(volumes.first())
+        contentResolver.query(
+            collection,
+            arrayOf(MediaStore.Images.Media._ID),
+            null,
+            null,
+            null
+        )?.use { return it.count.toLong() }
+        return 0L
     }
 
+    /** Logical selection only. No URI list is materialized for Select All. */
     private fun selectAllMedia() {
         lifecycleScope.launch {
-            allMediaCount = withContext(Dispatchers.IO) { queryMediaCount() }
             if (allSelected) {
                 allSelected = false
                 selected.clear()
                 excludedFromAll.clear()
             } else {
+                allMediaCount = withContext(Dispatchers.IO) { queryMediaCount() }
                 allSelected = true
                 selected.clear()
                 excludedFromAll.clear()
@@ -321,55 +450,97 @@ class BulkImagePickerActivity : AppCompatActivity() {
         }
     }
 
-    private fun isSelected(uri: Uri): Boolean = if (allSelected) !excludedFromAll.contains(uri.toString()) else selected.contains(uri.toString())
-    private fun selectedCount(): Long = if (allSelected) (allMediaCount - excludedFromAll.size).coerceAtLeast(0L) else selected.size.toLong()
+    private fun isSelected(uri: Uri): Boolean =
+        if (allSelected) !excludedFromAll.contains(uri.toString()) else selected.contains(uri.toString())
 
-    private suspend fun writePreparedUriQueue(uris: Collection<Uri>): File {
+    private fun selectedCount(): Long =
+        if (allSelected) {
+            (allMediaCount - excludedFromAll.size).coerceAtLeast(0L)
+        } else {
+            selected.size.toLong()
+        }
+
+    /**
+     * Streams selected URIs to disk one-by-one. This avoids building another
+     * in-memory List of prepared/staged URIs after ActivityResult has returned.
+     */
+    private suspend fun writePreparedUriQueue(uris: Sequence<Uri>): File {
         val dir = File(filesDir, "reverse_image/selection_queue").apply { mkdirs() }
         val file = File(dir, "${UUID.randomUUID()}.uris")
-        val dispatcher = Dispatchers.IO.limitedParallelism(4)
-        val entries = coroutineScope { uris.map { uri -> async(dispatcher) { prepareQueueEntry(uri) } }.awaitAll() }
-        withContext(Dispatchers.IO) { file.bufferedWriter(Charsets.UTF_8).use { writer -> entries.forEach { writer.appendLine(it) } } }
+        withContext(Dispatchers.IO) {
+            file.bufferedWriter(Charsets.UTF_8).use { writer ->
+                for (uri in uris.distinct()) {
+                    val prepared = prepareQueueEntry(uri)
+                    writer.appendLine(prepared)
+                }
+            }
+        }
         return file
     }
 
     private fun prepareQueueEntry(uri: Uri): String {
-        try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); return uri.toString() }
-        catch (_: SecurityException) { }
-        catch (_: UnsupportedOperationException) { }
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            return uri.toString()
+        } catch (_: SecurityException) {
+        } catch (_: UnsupportedOperationException) {
+        }
         val staged = stageUri(uri)
         return if (staged != null) Uri.fromFile(staged).toString() else uri.toString()
     }
 
     private fun stageUri(uri: Uri): File? = try {
         val dir = File(filesDir, "reverse_image/staging").apply { mkdirs() }
-        val name = queryDisplayName(uri)?.replace(Regex("[^A-Za-z0-9._-]"), "_")?.take(100).orEmpty().ifBlank { "image" }
+        val name = queryDisplayName(uri)
+            ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            ?.take(100)
+            .orEmpty()
+            .ifBlank { "image" }
         val target = File(dir, "${UUID.randomUUID()}_$name")
         val input = openBestEffortStream(uri) ?: return null
-        input.use { stream -> FileOutputStream(target).use { output -> stream.copyTo(output, 1024 * 1024) } }
+        input.use { stream ->
+            FileOutputStream(target).use { output ->
+                stream.copyTo(output, 1024 * 1024)
+            }
+        }
         if (target.isFile && target.length() > 0L) target else null
-    } catch (_: Throwable) { null }
+    } catch (_: Throwable) {
+        null
+    }
 
     private fun openBestEffortStream(uri: Uri): java.io.InputStream? {
         if (uri.scheme == "file") return FileInputStream(File(uri.path ?: return null))
-        return try { contentResolver.openInputStream(uri) } catch (_: Throwable) { null }
+        return try {
+            contentResolver.openInputStream(uri)
+        } catch (_: Throwable) {
+            null
+        }
     }
 
-    private suspend fun writeSelectionFile(): File = if (allSelected) writeAllMediaQueue() else writePreparedUriQueue(selected.map(Uri::parse))
+    private suspend fun writeSelectionFile(): File =
+        if (allSelected) writeAllMediaQueue() else writePreparedUriQueue(selected.asSequence().map(Uri::parse))
 
+    /** Stream MediaStore IDs directly to disk; never build a 100k URI list. */
     private suspend fun writeAllMediaQueue(): File {
         val dir = File(filesDir, "reverse_image/selection_queue").apply { mkdirs() }
         val file = File(dir, "${UUID.randomUUID()}.uris")
         withContext(Dispatchers.IO) {
             file.bufferedWriter(Charsets.UTF_8).use { writer ->
-                for (volume in volumes) {
-                    val collection = MediaStore.Images.Media.getContentUri(volume)
-                    contentResolver.query(collection, arrayOf(MediaStore.Images.Media._ID), null, null, "${MediaStore.Images.Media._ID} ASC")?.use { cursor ->
-                        val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                        while (cursor.moveToNext()) {
-                            val uri = Uri.withAppendedPath(collection, cursor.getLong(idIndex).toString())
-                            if (!excludedFromAll.contains(uri.toString())) writer.appendLine(uri.toString())
-                        }
+                val collection = MediaStore.Images.Media.getContentUri(volumes.first())
+                contentResolver.query(
+                    collection,
+                    arrayOf(MediaStore.Images.Media._ID),
+                    null,
+                    null,
+                    "${MediaStore.Images.Media._ID} ASC"
+                )?.use { cursor ->
+                    val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                    while (cursor.moveToNext()) {
+                        val uri = Uri.withAppendedPath(collection, cursor.getLong(idIndex).toString())
+                        if (!excludedFromAll.contains(uri.toString())) writer.appendLine(uri.toString())
                     }
                 }
             }
@@ -377,10 +548,15 @@ class BulkImagePickerActivity : AppCompatActivity() {
         return file
     }
 
+    /** Recursively enumerate a SAF tree and stream image URIs to the queue. */
     private suspend fun writeTreeQueue(treeUri: Uri): File {
         val dir = File(filesDir, "reverse_image/selection_queue").apply { mkdirs() }
         val file = File(dir, "${UUID.randomUUID()}.uris")
-        withContext(Dispatchers.IO) { file.bufferedWriter(Charsets.UTF_8).use { writer -> enumerateTree(treeUri) { writer.appendLine(it.toString()) } } }
+        withContext(Dispatchers.IO) {
+            file.bufferedWriter(Charsets.UTF_8).use { writer ->
+                enumerateTree(treeUri) { writer.appendLine(it.toString()) }
+            }
+        }
         return file
     }
 
@@ -392,7 +568,11 @@ class BulkImagePickerActivity : AppCompatActivity() {
             val parentId = stack.removeLast()
             if (!visited.add(parentId)) continue
             val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
-            val projection = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val projection = arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME
+            )
             contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
                 val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -401,8 +581,11 @@ class BulkImagePickerActivity : AppCompatActivity() {
                     val childId = cursor.getString(idIndex)
                     val mime = cursor.getString(mimeIndex).orEmpty()
                     val name = cursor.getString(nameIndex).orEmpty()
-                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) stack.add(childId)
-                    else if (isImageMimeOrName(mime, name)) onImage(DocumentsContract.buildDocumentUriUsingTree(treeUri, childId))
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        stack.add(childId)
+                    } else if (isImageMimeOrName(mime, name)) {
+                        onImage(DocumentsContract.buildDocumentUriUsingTree(treeUri, childId))
+                    }
                 }
             }
         }
@@ -411,14 +594,21 @@ class BulkImagePickerActivity : AppCompatActivity() {
     private fun isImageMimeOrName(mime: String, name: String): Boolean {
         if (mime.startsWith("image/")) return true
         val lower = name.lowercase()
-        return listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif", ".tif", ".tiff", ".avif").any(lower::endsWith)
+        return listOf(
+            ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
+            ".heic", ".heif", ".tif", ".tiff", ".avif"
+        ).any(lower::endsWith)
     }
 
     private fun extractUris(data: Intent?): List<Uri> {
         if (data == null) return emptyList()
         val out = ArrayList<Uri>()
         data.data?.let(out::add)
-        data.clipData?.let { clip -> for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let(out::add) }
+        data.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i).uri?.let(out::add)
+            }
+        }
         return out.distinct()
     }
 
@@ -441,12 +631,16 @@ class BulkImagePickerActivity : AppCompatActivity() {
                 completeWithQueue(file, "تم تجهيز $count صورة للاستيراد الخلفي.")
             } catch (t: Throwable) {
                 showError("تعذر حفظ الاختيارات: ${t.message ?: "خطأ غير محدد"}")
-            } finally { setBusy(false) }
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
     private fun updateSummary() {
-        findViewById<TextView>(R.id.summaryText).text = "VISIBLE ${rows.size} • SELECTED ${selectedCount()} • TOTAL $allMediaCount • ${if (allSelected) "ALL MEDIA SELECTED" else "PAGED LOCAL GALLERY"}"
+        findViewById<TextView>(R.id.summaryText).text =
+            "VISIBLE ${rows.size} • SELECTED ${selectedCount()} • TOTAL $allMediaCount • " +
+                if (allSelected) "ALL MEDIA SELECTED" else "PAGED LOCAL GALLERY"
     }
 
     private fun setBusy(value: Boolean) {
@@ -457,28 +651,64 @@ class BulkImagePickerActivity : AppCompatActivity() {
         findViewById<View>(R.id.doneButton).isEnabled = !value
     }
 
-    private fun queryDisplayName(uri: Uri): String? = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null }
+    private fun queryDisplayName(uri: Uri): String? = contentResolver.query(
+        uri,
+        arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    )?.use {
+        if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null
+    }
 
     private fun showError(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         findViewById<TextView>(R.id.summaryText).text = message
     }
 
-    data class ImageRow(val uri: Uri, val name: String, val size: Long, val width: Int, val height: Int, var checked: Boolean = false)
+    data class ImageRow(
+        val uri: Uri,
+        val name: String,
+        val size: Long,
+        val width: Int,
+        val height: Int,
+        var checked: Boolean = false
+    )
 
-    private class ImagePickerAdapter(private val onChecked: (ImageRow, Boolean) -> Unit) : RecyclerView.Adapter<ImagePickerAdapter.Holder>() {
+    private class ImagePickerAdapter(
+        private val onChecked: (ImageRow, Boolean) -> Unit
+    ) : RecyclerView.Adapter<ImagePickerAdapter.Holder>() {
         private var items: List<ImageRow> = emptyList()
-        fun submit(next: List<ImageRow>) { items = next.toList(); notifyDataSetChanged() }
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder = Holder(LayoutInflater.from(parent.context).inflate(R.layout.item_bulk_image_picker, parent, false), onChecked)
+
+        fun submit(next: List<ImageRow>) {
+            items = next.toList()
+            notifyDataSetChanged()
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder = Holder(
+            LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_bulk_image_picker, parent, false),
+            onChecked
+        )
+
         override fun onBindViewHolder(holder: Holder, position: Int) = holder.bind(items[position])
         override fun getItemCount(): Int = items.size
 
-        class Holder(view: View, private val listener: (ImageRow, Boolean) -> Unit) : RecyclerView.ViewHolder(view) {
+        class Holder(
+            view: View,
+            private val listener: (ImageRow, Boolean) -> Unit
+        ) : RecyclerView.ViewHolder(view) {
             private val image: ImageView = view.findViewById(R.id.thumbnailImage)
             private val check: CheckBox = view.findViewById(R.id.checkBox)
             private val name: TextView = view.findViewById(R.id.nameText)
             private var current: ImageRow? = null
-            init { check.setOnCheckedChangeListener { _, checked -> current?.let { listener(it, checked) } } }
+
+            init {
+                check.setOnCheckedChangeListener { _, checked ->
+                    current?.let { listener(it, checked) }
+                }
+            }
+
             fun bind(row: ImageRow) {
                 current = null
                 name.text = row.name
@@ -491,10 +721,21 @@ class BulkImagePickerActivity : AppCompatActivity() {
                     val expected = uri.toString()
                     Thread {
                         val bitmap = try {
-                            if (Build.VERSION.SDK_INT >= 29) view.context.contentResolver.loadThumbnail(uri, Size(320, 320), null)
-                            else view.context.contentResolver.openInputStream(uri)?.use { input -> BitmapFactory.Options().apply { inSampleSize = 4 }.let { options -> BitmapFactory.decodeStream(input, null, options) } }
-                        } catch (_: Throwable) { null }
-                        view.post { if (view.tag == expected && bitmap != null) view.setImageBitmap(bitmap) }
+                            if (Build.VERSION.SDK_INT >= 29) {
+                                view.context.contentResolver.loadThumbnail(uri, Size(320, 320), null)
+                            } else {
+                                view.context.contentResolver.openInputStream(uri)?.use { input ->
+                                    BitmapFactory.Options().apply { inSampleSize = 4 }.let { options ->
+                                        BitmapFactory.decodeStream(input, null, options)
+                                    }
+                                }
+                            }
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        view.post {
+                            if (view.tag == expected && bitmap != null) view.setImageBitmap(bitmap)
+                        }
                     }.start()
                 }
                 current = row
