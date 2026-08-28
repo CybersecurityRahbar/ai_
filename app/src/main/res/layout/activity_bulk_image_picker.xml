@@ -34,7 +34,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="9dp"
-            android:text="OPEN SYSTEM FILES / GALLERY"
+            android:text="CHOOSE IMAGE SOURCE"
             android:textColor="#49D9FF"
             android:textStyle="bold"
             android:background="@drawable/bg_intel_button" />
@@ -42,7 +42,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="3dp"
-            android:text="Files • Gallery • folders • document providers • multi-select"
+            android:text="Gallery / Studio • System Files • Folder / large corpus • in-app MediaStore"
             android:textColor="#7DAEA2"
             android:textSize="8sp" />
         <LinearLayout
@@ -64,7 +64,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:layout_marginStart="6dp"
-                android:text="LOAD NEXT 100"
+                android:text="LOAD NEXT"
                 android:textColor="#49D9FF"
                 android:background="@drawable/bg_intel_button" />
             <Button
@@ -77,6 +77,13 @@
                 android:textColor="#7DFF19"
                 android:background="@drawable/bg_intel_button" />
         </LinearLayout>
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="For thousands of images, SELECT FOLDER avoids a huge URI handoff and is the safe bulk path."
+            android:textColor="#7DAEA2"
+            android:textSize="8sp" />
     </LinearLayout>
 
     <androidx.recyclerview.widget.RecyclerView
