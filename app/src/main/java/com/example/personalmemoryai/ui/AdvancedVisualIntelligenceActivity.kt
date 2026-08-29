@@ -21,7 +21,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -107,7 +106,7 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
                 binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
                 binding.counterText.text = "نجح ${p.getInt(UnifiedVisualIndexWorker.KEY_INDEXED, 0)} • تخطي ${p.getInt(UnifiedVisualIndexWorker.KEY_SKIPPED, 0)} • فشل ${p.getInt(UnifiedVisualIndexWorker.KEY_FAILED, 0)}"
                 binding.statusText.text = when (info.state) {
-                    WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> "الفهرسة المشتركة في الخلفية • Haar + Classical V4 + Advanced Visual"
+                    WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> "الفهرسة المشتركة في الخلفية • Haar + Classical V4 + Advanced Visual V2 / Fusion V4"
                     WorkInfo.State.SUCCEEDED -> "اكتمل الفهرس المشترك لجميع المحركات."
                     WorkInfo.State.FAILED -> "فشل الفهرس: ${info.outputData.getString("error") ?: "خطأ غير محدد"}"
                     WorkInfo.State.CANCELLED -> "تم إلغاء الفهرسة."
@@ -181,14 +180,14 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
                         binding.progressBar.progress = percent
                         binding.progressPercentText.text = String.format(Locale.US, "%d%%  •  %d/%d", percent, processed, total)
                         binding.statusText.text = stage
-                        binding.counterText.text = "Advanced evidence fusion • threshold ${String.format(Locale.US, "%.0f", threshold * 100)}%"
+                        binding.counterText.text = "${AdvancedVisualIntelligenceService.FUSION_VERSION} • threshold ${String.format(Locale.US, "%.0f", threshold * 100)}%"
                     }
                 }
                 adapter.submitList(results)
                 binding.progressBar.progress = 100
                 binding.progressPercentText.text = "100%  •  اكتمل"
-                binding.statusText.text = if (results.isEmpty()) "لا توجد نتائج فوق العتبة الحالية." else "اكتمل البحث • كل نتيجة تحمل تفسيرًا لمصدر التشابه."
-                binding.counterText.text = "${results.size} نتيجة قابلة للتفسير"
+                binding.statusText.text = if (results.isEmpty()) "لا توجد نتائج فوق العتبة الحالية." else "اكتمل البحث • كل نتيجة تحمل دليلًا رقميًا لمصدر التشابه."
+                binding.counterText.text = "${results.size} نتيجة • ${AdvancedVisualIntelligenceService.FUSION_VERSION}"
             } catch (t: Throwable) {
                 if (t !is kotlinx.coroutines.CancellationException) showError("تعذر تنفيذ Advanced Visual Intelligence: ${t.message}")
             } finally { setBusy(false) }
@@ -199,7 +198,7 @@ class AdvancedVisualIntelligenceActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val corpus = withContext(Dispatchers.IO) { com.example.personalmemoryai.reverseimage.ReverseImageSearchService(applicationContext).use { it.itemCount() } }
             val advanced = service.fingerprintCount()
-            binding.indexCountText.text = "SHARED CORPUS: $corpus • ADVANCED INDEX: $advanced"
+            binding.indexCountText.text = "SHARED CORPUS: $corpus • ADVANCED FEATURES V2 • ${AdvancedVisualIntelligenceService.FUSION_VERSION}: $advanced"
         }
     }
 
