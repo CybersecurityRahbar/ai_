@@ -1,0 +1,5 @@
+numpy==1.26.4
+tflite==2.10.0
+tensorflow-cpu==2.16.1
+tokenizers==0.21.2
+Pillow==11.3.0
