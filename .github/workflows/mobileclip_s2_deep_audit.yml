@@ -1,0 +1,59 @@
+name: MobileCLIP S2 Deep Audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/mobileclip_s2_deep_audit.yml'
+      - 'tools/mobileclip_audit/**'
+      - '.audit/mobileclip_s2/**'
+      - 'docs/context/**'
+
+permissions:
+  contents: read
+
+jobs:
+  deep-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: tools/mobileclip_audit/requirements.txt
+
+      - name: Install audit dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r tools/mobileclip_audit/requirements.txt
+
+      - name: Download MobileCLIP S2 assets
+        env:
+          HF_BASE: https://huggingface.co/plainhub/mobileclip-s2-tflite/resolve/main
+        run: |
+          set -euo pipefail
+          mkdir -p .audit/mobileclip_s2
+          curl -L --fail --retry 3 --retry-delay 2 "$HF_BASE/mobileclip_s2_image.tflite?download=true" -o .audit/mobileclip_s2/mobileclip_s2_image.tflite
+          curl -L --fail --retry 3 --retry-delay 2 "$HF_BASE/mobileclip_s2_text.tflite?download=true" -o .audit/mobileclip_s2/mobileclip_s2_text.tflite
+          curl -L --fail --retry 3 --retry-delay 2 "$HF_BASE/tokenizer.json?download=true" -o .audit/mobileclip_s2/tokenizer.json
+
+      - name: Run structural, tokenizer, and inference audit
+        run: |
+          python tools/mobileclip_audit/deep_audit.py \
+            --image-model .audit/mobileclip_s2/mobileclip_s2_image.tflite \
+            --text-model .audit/mobileclip_s2/mobileclip_s2_text.tflite \
+            --tokenizer .audit/mobileclip_s2/tokenizer.json \
+            --out .audit/mobileclip_s2/report
+
+      - name: Upload Deep Audit bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobileclip-s2-deep-audit
+          path: .audit/mobileclip_s2/report/
+          if-no-files-found: error
+          retention-days: 30
