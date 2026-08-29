@@ -146,8 +146,32 @@ Required decision record:
 - Do not claim performance or accuracy gains without measurement.
 - Every new algorithm must have a defined purpose, representation, metric, cost, failure modes and benchmark value.
 
+## MobileCLIP-S2 contract verification checkpoint — 2026-08-29
+
+The user asked whether the MobileCLIP audit had actually inspected the tensor contract and tokenizer rather than relying on thousands of audit-log lines. The audit workflow downloaded and hashed three artifacts:
+
+- `.audit/mobileclip_s2/mobileclip_s2_image.tflite` — SHA-256 `9190906f0af7c7da7fb64635332d739ace538a0421aacda912a8abe2f946c027`
+- `.audit/mobileclip_s2/mobileclip_s2_text.tflite` — SHA-256 `92eba285a505df19f13126d373773714b4aae57863c7a6ba277d562ff7ad7182`
+- `.audit/mobileclip_s2/tokenizer.json` — SHA-256 `166a5e8118fe3aa2f60a1877925a4dd5168ce93c58dd5efabc32a9a9eb8335ec`
+
+The audit also showed the files were real downloaded binaries, approximately 138 MiB image model, 243 MiB text model, and 1.7 MiB tokenizer JSON. The audit bundle was uploaded as `mobileclip-s2-audit-bundle.zip`.
+
+Verified contract facts from the generated contract/audit inspection:
+
+- Image encoder input shape: `[1, 3, 256, 256]`, `float32`.
+- Image encoder output shape: `[1, 512]`, `float32`.
+- Text encoder input shape: `[1, 77]`, `int64`.
+- Text encoder output shape: `[1, 512]`, `float32`.
+- TFLite schema version reported as 3.
+- Tokenizer vocabulary size reported as 49,408 and BPE merges as 48,894.
+
+Important correction: `tokenizer.json` by itself does not expose a complete HuggingFace-style definition of every special-token/padding behavior. Therefore Android integration must not infer CLIP tokenization rules from the raw BPE vocab/merges alone. The compatible tokenization contract must explicitly define the CLIP start/end tokens, context length 77, padding/truncation policy, and any other preprocessing required by the actual MobileCLIP text model.
+
+The user explicitly instructed that conversation text, decisions, research findings, and answers must be durably recorded in GitHub so that the repository is the operational project memory rather than relying on ChatGPT conversation memory.
+
 ## Documentation files
 
 - `PROJECT_PLAN.md` — architecture and roadmap.
 - `PROJECT_PROGRESS.md` — chronological engineering progress.
 - `docs/ADVANCED_DEVICE_TEST_FINDINGS_2026-08-28.md` — authoritative device findings and regression requirements.
+- `docs/MOBILECLIP_S2_AUDIT_VERIFIED.md` — MobileCLIP-S2 binary/tensor/tokenizer audit conclusions.
