@@ -5,17 +5,31 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import com.example.personalmemoryai.database.AppDatabase
-import com.example.personalmemoryai.reverseimage.ReverseImageSearchService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlin.math.sqrt
 
-/** Independent Advanced search service with multi-variant query analysis and explainable fusion. */
+/**
+ * Independent Advanced Visual Intelligence search.
+ *
+ * The Advanced section intentionally does NOT call the classical ReverseImageSearchService
+ * to rank candidates. It uses only the Advanced visual corpus, then applies spatial-region
+ * and multiscale structural verification before its final Fusion V4 score.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AdvancedVisualIntelligenceService(context: android.content.Context) : AutoCloseable {
+    companion object {
+        const val FUSION_VERSION = "ADVANCED-VISUAL-FUSION-V4"
+        const val QUERY_VARIANTS = 7
+        private const val CANDIDATE_LIMIT = 64
+        private const val PARALLELISM = 4
+    }
+
     private val appContext = context.applicationContext
     private val database = AppDatabase.getInstance(appContext)
     private val advancedDao = database.advancedVisualFingerprintDao()
@@ -23,7 +37,7 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
     private val engine = AdvancedVisualFingerprintEngine()
     private val regionVerifier = AdvancedRegionConsistencyVerifier()
     private val structuralConsensus = AdvancedStructuralConsensusEngine()
-    private val cpuDispatcher = Dispatchers.Default.limitedParallelism(4)
+    private val cpuDispatcher = Dispatchers.Default.limitedParallelism(PARALLELISM)
 
     data class Evidence(
         val itemId: Long,
@@ -62,7 +76,16 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         val evidenceReasons: List<String>
     )
 
-    private data class QueryVariant(val label: String, val fingerprint: AdvancedVisualFingerprintEngine.Fingerprint, val bitmap: Bitmap?)
+    private data class QueryVariant(
+        val label: String,
+        val fingerprint: AdvancedVisualFingerprintEngine.Fingerprint
+    )
+
+    private data class Candidate(
+        val itemId: Long,
+        val variantIndex: Int,
+        val score: AdvancedVisualFingerprintEngine.Score
+    )
 
     suspend fun fingerprintCount(): Long = withContext(Dispatchers.IO) { advancedDao.count() }
 
@@ -72,151 +95,215 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         minimumSimilarity: Float = 0.35f,
         onProgress: (processed: Int, total: Int, stage: String) -> Unit = { _, _, _ -> }
     ): List<Evidence> = withContext(Dispatchers.Default) {
-        val original = appContext.contentResolver.openInputStream(queryUri).use { input ->
+        val resolver = appContext.contentResolver
+        val original = resolver.openInputStream(queryUri).use { input ->
             requireNotNull(BitmapFactory.decodeStream(input)) { "تعذر قراءة صورة البحث المتقدم: $queryUri" }
         }
         try {
             val variants = buildQueryVariants(original)
-            onProgress(0, variants.size, "تحضير ${variants.size} نسخ استعلام ${AdvancedVisualFingerprintEngine.ENGINE_VERSION}")
-            val stored = withContext(Dispatchers.IO) { advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION) }
+            onProgress(0, QUERY_VARIANTS, "$FUSION_VERSION • تحضير $QUERY_VARIANTS نسخ استعلام")
+
+            val stored = withContext(Dispatchers.IO) {
+                advancedDao.getAll(AdvancedVisualFingerprintEngine.ENGINE_VERSION)
+            }
             if (stored.isEmpty()) return@withContext emptyList()
 
-            val storedById = stored.associateBy { it.itemId }
-            val storedFingerprints = stored.associate { it.itemId to it.toFingerprint() }
-            val baseResults = runCatching {
-                ReverseImageSearchService(appContext).use { service -> service.search(queryUri, limit = 64, minimumSimilarity = 0f) }
-            }.getOrDefault(emptyList())
-            val baseById = baseResults.associateBy { it.item.id }
+            val fingerprints = stored.associate { it.itemId to it.toFingerprint() }
+            val bestById = HashMap<Long, Candidate>(stored.size)
 
-            val bestById = HashMap<Long, Pair<Int, AdvancedVisualFingerprintEngine.Score>>()
             for ((variantIndex, variant) in variants.withIndex()) {
-                val variantResults = coroutineScope {
+                coroutineContext.ensureActive()
+                val scored = coroutineScope {
                     stored.chunked(128).map { chunk ->
                         async(cpuDispatcher) {
                             chunk.map { entity ->
-                                val target = storedFingerprints[entity.itemId] ?: entity.toFingerprint()
-                                val score = engine.compare(variant.fingerprint, target)
-                                Triple(entity.itemId, score, variantIndex)
-                            }
+                                val target = fingerprints[entity.itemId] ?: return@map null
+                                Candidate(entity.itemId, variantIndex, engine.compare(variant.fingerprint, target))
+                            }.filterNotNull()
                         }
                     }.awaitAll().flatten()
                 }
-                for ((itemId, score, _) in variantResults) {
-                    val current = bestById[itemId]
-                    if (current == null || score.similarity > current.second.similarity) bestById[itemId] = variantIndex to score
+                for (candidate in scored) {
+                    val current = bestById[candidate.itemId]
+                    if (current == null || candidate.score.similarity > current.score.similarity) {
+                        bestById[candidate.itemId] = candidate
+                    }
                 }
-                onProgress(variantIndex + 1, variants.size, "${AdvancedVisualFingerprintEngine.ENGINE_VERSION} variant ${variant.label} • full corpus")
-            }
-
-            variants.filter { it.bitmap != null && it.bitmap !== original }.forEach { it.bitmap!!.recycle() }
-
-            val advancedTop = bestById.entries.sortedByDescending { it.value.second.similarity }.take(64)
-            val candidateIds = LinkedHashSet<Long>().apply {
-                baseResults.forEach { add(it.item.id) }
-                advancedTop.forEach { add(it.key) }
-            }
-            val items = withContext(Dispatchers.IO) { itemDao.getByIds(candidateIds.toList()).associateBy { it.id } }
-
-            return@withContext candidateIds.mapNotNull { itemId ->
-                val item = items[itemId] ?: return@mapNotNull null
-                val entry = bestById[itemId] ?: return@mapNotNull null
-                val variantIndex = entry.first
-                val score = entry.second
-                val base = baseById[itemId]
-                val targetFingerprint = storedFingerprints[itemId] ?: storedById[itemId]?.toFingerprint() ?: return@mapNotNull null
-                val queryFingerprint = variants.getOrNull(variantIndex)?.fingerprint ?: return@mapNotNull null
-                val region = regionVerifier.compare(queryFingerprint, targetFingerprint)
-                val structural = structuralConsensus.compare(queryFingerprint, targetFingerprint)
-                val agreementSignals = listOf(score.structure, score.spatialColor, score.spatialTexture, score.gradient, score.illumination, region.similarity, structural.similarity)
-                val consensus = agreementSignals.count { it >= 0.62f }
-                var final = if (base != null) base.similarity * 0.58f + score.similarity * 0.42f else score.similarity * 0.70f
-                final = final * 0.86f + region.similarity * 0.08f + structural.similarity * 0.06f
-                if (consensus <= 1 && final > 0.55f) final *= 0.78f
-                if (score.structure < 0.50f && score.illumination < 0.45f && score.spatialColor > 0.80f) final *= 0.82f
-                if (score.texture > 0.80f && score.structure < 0.45f) final *= 0.90f
-                if (base != null && base.ransacInliers == 0 && score.structure < 0.50f) final *= 0.90f
-                if (region.stableRegionRatio < 0.25f && final > 0.58f) final *= 0.86f
-                if (region.disagreementPenalty > 0.40f && final > 0.62f) final *= 0.90f
-                if (structural.fine < 0.42f && structural.coarse > 0.70f) final *= 0.88f
-                if (consensus >= 5 && region.stableRegionRatio >= 0.60f && structural.similarity >= 0.70f) final = (final + 0.025f).coerceAtMost(1f)
-                final = final.coerceIn(0f, 1f)
-                if (final < minimumSimilarity) return@mapNotNull null
-
-                val consensusRatio = consensus.toFloat() / agreementSignals.size.toFloat()
-                val confidence = (100f * (consensusRatio * 0.45f + region.stableRegionRatio * 0.25f + structural.similarity * 0.20f + (if ((base?.ransacInliers ?: 0) >= 4) 0.10f else 0f))).toInt().coerceIn(0, 100)
-                val variantLabel = variants.getOrNull(variantIndex)?.label ?: "original"
-                val reasons = buildList {
-                    addAll(score.evidence)
-                    addAll(region.evidence)
-                    addAll(structural.evidence)
-                    if (base != null && base.percent >= 85) add("strong_existing_classical_agreement")
-                    if (base != null && base.ransacInliers >= 4) add("existing_geometric_match")
-                    if (score.spatialColor >= 0.78f) add("spatial_color_consistency")
-                    if (score.spatialTexture >= 0.76f) add("regional_texture_consistency")
-                    if (score.gradientMagnitude >= 0.78f) add("gradient_strength_consistency")
-                    if (score.illumination >= 0.72f) add("illumination_robust_match")
-                    if (consensus >= 5) add("strong_independent_signal_consensus") else if (consensus >= 3) add("independent_signal_consensus") else add("weak_cross_signal_consensus")
-                    if (variantLabel != "original") add("best_match_from_query_variant")
-                    if (base == null) add("advanced_only_candidate")
-                    if (region.stableRegionRatio < 0.25f) add("low_stable_region_coverage")
-                    if (region.disagreementPenalty > 0.40f) add("spatial_evidence_conflict")
-                    if (structural.fine < 0.42f && structural.coarse > 0.70f) add("fine_structure_conflict")
-                }.distinct()
-
-                Evidence(
-                    itemId = item.id,
-                    displayName = item.displayName,
-                    filePath = item.filePath,
-                    finalSimilarity = final,
-                    finalPercent = (final * 100f).toInt().coerceIn(0, 100),
-                    confidencePercent = confidence,
-                    baseClassicalPercent = base?.percent ?: 0,
-                    haarPercent = base?.haarPercent ?: 0,
-                    phashPercent = base?.phashPercent ?: 0,
-                    dhashPercent = base?.dhashPercent ?: 0,
-                    colorPercent = base?.colorPercent ?: 0,
-                    edgePercent = base?.edgePercent ?: 0,
-                    localPercent = base?.localPercent ?: 0,
-                    ransacInliers = base?.ransacInliers ?: 0,
-                    advancedPercent = (score.similarity * 100f).toInt().coerceIn(0, 100),
-                    structurePercent = (score.structure * 100f).toInt().coerceIn(0, 100),
-                    advancedColorPercent = (score.color * 100f).toInt().coerceIn(0, 100),
-                    spatialColorPercent = (score.spatialColor * 100f).toInt().coerceIn(0, 100),
-                    texturePercent = (score.texture * 100f).toInt().coerceIn(0, 100),
-                    spatialTexturePercent = (score.spatialTexture * 100f).toInt().coerceIn(0, 100),
-                    gradientPercent = (score.gradient * 100f).toInt().coerceIn(0, 100),
-                    gradientMagnitudePercent = (score.gradientMagnitude * 100f).toInt().coerceIn(0, 100),
-                    layoutPercent = (score.layout * 100f).toInt().coerceIn(0, 100),
-                    illuminationPercent = (score.illumination * 100f).toInt().coerceIn(0, 100),
-                    entropyPercent = (score.entropy * 100f).toInt().coerceIn(0, 100),
-                    aspectPercent = (score.aspect * 100f).toInt().coerceIn(0, 100),
-                    regionConsistencyPercent = (region.similarity * 100f).toInt().coerceIn(0, 100),
-                    stableRegionPercent = (region.stableRegionRatio * 100f).toInt().coerceIn(0, 100),
-                    spatialDisagreementPercent = (region.disagreementPenalty * 100f).toInt().coerceIn(0, 100),
-                    structuralConsensusPercent = (structural.similarity * 100f).toInt().coerceIn(0, 100),
-                    coarseStructurePercent = (structural.coarse * 100f).toInt().coerceIn(0, 100),
-                    fineStructurePercent = (structural.fine * 100f).toInt().coerceIn(0, 100),
-                    bestQueryVariant = variantLabel,
-                    evidenceReasons = reasons
+                onProgress(
+                    variantIndex + 1,
+                    QUERY_VARIANTS,
+                    "$FUSION_VERSION • ${variant.label} • full advanced corpus"
                 )
-            }.sortedByDescending { it.finalSimilarity }.take(limit)
+            }
+
+            val topCandidates = bestById.values
+                .sortedWith(compareByDescending<Candidate> { it.score.similarity }
+                    .thenByDescending { it.score.structure }
+                    .thenByDescending { it.score.spatialColor }
+                    .thenByDescending { it.score.spatialTexture })
+                .take(CANDIDATE_LIMIT)
+
+            val items = withContext(Dispatchers.IO) {
+                itemDao.getByIds(topCandidates.map { it.itemId }).associateBy { it.id }
+            }
+
+            val results = coroutineScope {
+                topCandidates.map { candidate ->
+                    async(cpuDispatcher) {
+                        coroutineContext.ensureActive()
+                        val item = items[candidate.itemId] ?: return@async null
+                        val target = fingerprints[candidate.itemId] ?: return@async null
+                        val query = variants[candidate.variantIndex].fingerprint
+                        val score = candidate.score
+                        val region = regionVerifier.compare(query, target)
+                        val structural = structuralConsensus.compare(query, target)
+                        val coherence = signalCoherence(
+                            score.structure,
+                            score.spatialColor,
+                            score.texture,
+                            score.gradient,
+                            score.layout,
+                            score.illumination
+                        )
+                        val harmonic = harmonicMean(
+                            score.structure,
+                            score.spatialColor,
+                            score.texture,
+                            score.gradient,
+                            score.layout
+                        )
+
+                        var final = (
+                            score.similarity * 0.44f +
+                                harmonic * 0.22f +
+                                coherence * 0.10f +
+                                region.similarity * 0.14f +
+                                structural.similarity * 0.10f
+                            ).coerceIn(0f, 1f)
+
+                        if (coherence < 0.42f && final > 0.58f) final *= 0.82f
+                        if (region.stableRegionRatio < 0.25f && final > 0.58f) final *= 0.84f
+                        if (region.disagreementPenalty > 0.40f && final > 0.62f) final *= 0.88f
+                        if (structural.fine < 0.42f && structural.coarse > 0.70f) final *= 0.87f
+                        if (score.spatialColor > 0.82f && score.structure < 0.48f) final *= 0.80f
+                        if (score.texture > 0.82f && score.structure < 0.45f) final *= 0.88f
+                        if (score.structure >= 0.80f && score.gradient >= 0.74f && region.stableRegionRatio >= 0.65f && structural.similarity >= 0.72f) {
+                            final = (final + 0.025f).coerceAtMost(1f)
+                        }
+                        final = final.coerceIn(0f, 1f)
+                        if (final < minimumSimilarity) return@async null
+
+                        val independent = listOf(
+                            score.structure,
+                            score.spatialColor,
+                            score.texture,
+                            score.gradient,
+                            score.illumination,
+                            region.similarity,
+                            structural.similarity
+                        )
+                        val independentConsensus = independent.count { it >= 0.62f }
+                        val confidence = (
+                            independentConsensus / independent.size.toFloat() * 45f +
+                                coherence * 20f +
+                                region.stableRegionRatio * 20f +
+                                structural.similarity * 15f
+                            ).toInt().coerceIn(0, 100)
+
+                        val variantLabel = variants[candidate.variantIndex].label
+                        val reasons = buildList {
+                            add("multi-scale structure ${pct(score.structure)}%")
+                            add("spatial color ${pct(score.spatialColor)}%")
+                            add("LBP texture ${pct(score.spatialTexture)}%")
+                            add("gradient ${pct(score.gradient)}%")
+                            add("layout ${pct(score.layout)}%")
+                            add("illumination ${pct(score.illumination)}%")
+                            add("region consistency ${pct(region.similarity)}%")
+                            add("stable regions ${pct(region.stableRegionRatio)}%")
+                            add("multiscale consensus ${pct(structural.similarity)}%")
+                            add("signal coherence ${pct(coherence)}%")
+                            if (independentConsensus >= 5) add("strong independent-signal consensus")
+                            else if (independentConsensus >= 3) add("moderate independent-signal consensus")
+                            else add("weak independent-signal consensus")
+                            if (region.disagreementPenalty > 0.40f) add("spatial evidence conflict reduced the score")
+                            if (structural.fine < 0.42f && structural.coarse > 0.70f) add("fine structure disagreed despite coarse agreement")
+                            if (variantLabel != "original") add("best evidence came from query variant: $variantLabel")
+                        }.distinct()
+
+                        Evidence(
+                            itemId = item.id,
+                            displayName = item.displayName,
+                            filePath = item.filePath,
+                            finalSimilarity = final,
+                            finalPercent = pct(final),
+                            confidencePercent = confidence,
+                            baseClassicalPercent = 0,
+                            haarPercent = 0,
+                            phashPercent = 0,
+                            dhashPercent = 0,
+                            colorPercent = 0,
+                            edgePercent = 0,
+                            localPercent = 0,
+                            ransacInliers = 0,
+                            advancedPercent = pct(score.similarity),
+                            structurePercent = pct(score.structure),
+                            advancedColorPercent = pct(score.color),
+                            spatialColorPercent = pct(score.spatialColor),
+                            texturePercent = pct(score.texture),
+                            spatialTexturePercent = pct(score.spatialTexture),
+                            gradientPercent = pct(score.gradient),
+                            gradientMagnitudePercent = pct(score.gradientMagnitude),
+                            layoutPercent = pct(score.layout),
+                            illuminationPercent = pct(score.illumination),
+                            entropyPercent = pct(score.entropy),
+                            aspectPercent = pct(score.aspect),
+                            regionConsistencyPercent = pct(region.similarity),
+                            stableRegionPercent = pct(region.stableRegionRatio),
+                            spatialDisagreementPercent = pct(region.disagreementPenalty),
+                            structuralConsensusPercent = pct(structural.similarity),
+                            coarseStructurePercent = pct(structural.coarse),
+                            fineStructurePercent = pct(structural.fine),
+                            bestQueryVariant = variantLabel,
+                            evidenceReasons = reasons
+                        )
+                    }
+                }.awaitAll().filterNotNull()
+            }
+
+            results.sortedWith(
+                compareByDescending<Evidence> { it.finalSimilarity }
+                    .thenByDescending { it.confidencePercent }
+                    .thenByDescending { it.structuralConsensusPercent }
+                    .thenByDescending { it.regionConsistencyPercent }
+            ).take(limit)
         } finally {
             original.recycle()
         }
     }
 
     private fun buildQueryVariants(original: Bitmap): List<QueryVariant> {
-        val result = ArrayList<QueryVariant>(7)
-        fun add(label: String, bitmap: Bitmap) { result += QueryVariant(label, engine.fingerprint(bitmap), bitmap) }
-        add("original", original)
+        val result = ArrayList<QueryVariant>(QUERY_VARIANTS)
+        result += QueryVariant("original", engine.fingerprint(original))
         for (angle in intArrayOf(90, 180, 270)) {
             val matrix = Matrix().apply { postRotate(angle.toFloat()) }
-            add("rotation_${angle}", Bitmap.createBitmap(original, 0, 0, original.width, original.height, matrix, true))
+            val rotated = Bitmap.createBitmap(original, 0, 0, original.width, original.height, matrix, true)
+            try {
+                result += QueryVariant("rotation_$angle", engine.fingerprint(rotated))
+            } finally {
+                rotated.recycle()
+            }
         }
         for (ratio in floatArrayOf(0.92f, 0.82f, 0.72f)) {
-            val w = maxOf(1, (original.width * ratio).toInt()); val h = maxOf(1, (original.height * ratio).toInt())
-            val left = (original.width - w) / 2; val top = (original.height - h) / 2
-            add("center_crop_${(ratio * 100).toInt()}", Bitmap.createBitmap(original, left, top, w, h))
+            val width = maxOf(1, (original.width * ratio).toInt())
+            val height = maxOf(1, (original.height * ratio).toInt())
+            val left = (original.width - width) / 2
+            val top = (original.height - height) / 2
+            val crop = Bitmap.createBitmap(original, left, top, width, height)
+            try {
+                result += QueryVariant("center_crop_${(ratio * 100).toInt()}", engine.fingerprint(crop))
+            } finally {
+                crop.recycle()
+            }
         }
         return result
     }
@@ -234,6 +321,21 @@ class AdvancedVisualIntelligenceService(context: android.content.Context) : Auto
         entropy = entropy,
         aspectRatio = aspectRatio
     )
+
+    private fun pct(value: Float): Int = (value * 100f).toInt().coerceIn(0, 100)
+
+    private fun harmonicMean(vararg values: Float): Float {
+        if (values.isEmpty() || values.any { it <= 0f }) return 0f
+        val denominator = values.sumOf { (1.0 / it.coerceAtLeast(1e-4f)).toDouble() }
+        return (values.size.toDouble() / denominator).toFloat().coerceIn(0f, 1f)
+    }
+
+    private fun signalCoherence(vararg values: Float): Float {
+        if (values.isEmpty()) return 0f
+        val mean = values.average().toFloat()
+        val variance = values.map { (it - mean) * (it - mean) }.average().toFloat()
+        return (1f - sqrt(variance)).coerceIn(0f, 1f)
+    }
 
     override fun close() = Unit
 }
