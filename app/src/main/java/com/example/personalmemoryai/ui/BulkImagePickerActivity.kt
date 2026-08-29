@@ -301,7 +301,7 @@ class BulkImagePickerActivity : AppCompatActivity() {
     /** Use the aggregate external MediaStore collection, never aggregate + per-volume together. */
     private fun prepareVolumes() {
         volumes.clear()
-        volumes += if (Build.VERSION.SDK_INT >= 29) MediaStore.VOLUME_EXTERNAL else MediaStore.VOLUME_EXTERNAL
+        volumes += MediaStore.VOLUME_EXTERNAL
         offset = 0
         allSelected = false
         allMediaCount = 0L
@@ -492,7 +492,7 @@ class BulkImagePickerActivity : AppCompatActivity() {
         return if (staged != null) Uri.fromFile(staged).toString() else uri.toString()
     }
 
-    private fun stageUri(uri: Uri): File? = try {
+    private fun stageUri(uri: Uri): File? {
         val dir = File(filesDir, "reverse_image/staging").apply { mkdirs() }
         val name = queryDisplayName(uri)
             ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
@@ -500,21 +500,31 @@ class BulkImagePickerActivity : AppCompatActivity() {
             .orEmpty()
             .ifBlank { "image" }
         val target = File(dir, "${UUID.randomUUID()}_$name")
-        val input = openBestEffortStream(uri) ?: return null
-        input.use { stream ->
-            FileOutputStream(target).use { output ->
-                stream.copyTo(output, 1024 * 1024)
+        return try {
+            val input = openBestEffortStream(uri) ?: return null
+            input.use { stream ->
+                FileOutputStream(target).use { output ->
+                    stream.copyTo(output, 1024 * 1024)
+                }
             }
+            if (target.isFile && target.length() > 0L) target else null
+        } catch (_: Throwable) {
+            target.delete()
+            null
         }
-        if (target.isFile && target.length() > 0L) target else null
-    } catch (_: Throwable) {
-        null
     }
 
     private fun openBestEffortStream(uri: Uri): java.io.InputStream? {
-        if (uri.scheme == "file") return FileInputStream(File(uri.path ?: return null))
+        if (uri.scheme == "file") {
+            return FileInputStream(File(uri.path ?: return null))
+        }
+        try {
+            contentResolver.openInputStream(uri)?.let { return it }
+        } catch (_: Throwable) {
+        }
         return try {
-            contentResolver.openInputStream(uri)
+            val descriptor = contentResolver.openFileDescriptor(uri, "r") ?: return null
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor)
         } catch (_: Throwable) {
             null
         }
@@ -540,7 +550,9 @@ class BulkImagePickerActivity : AppCompatActivity() {
                     val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                     while (cursor.moveToNext()) {
                         val uri = Uri.withAppendedPath(collection, cursor.getLong(idIndex).toString())
-                        if (!excludedFromAll.contains(uri.toString())) writer.appendLine(uri.toString())
+                        if (!excludedFromAll.contains(uri.toString())) {
+                            writer.appendLine(uri.toString())
+                        }
                     }
                 }
             }
