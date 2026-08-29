@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -27,26 +27,6 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Repair malformed stageUri function if needed
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('app/src/main/java/com/example/personalmemoryai/ui/BulkImagePickerActivity.kt')
-          text = p.read_text()
-          old_header = '    private fun stageUri(uri: Uri): File? = try {\n'
-          if old_header not in text:
-              print('stageUri already has block-body syntax; no repair needed.')
-          else:
-              new_header = '    private fun stageUri(uri: Uri): File? {\n        return try {\n'
-              text = text.replace(old_header, new_header, 1)
-              old_tail = '''    } catch (_: Throwable) {\n        null\n    }\n\n    private fun openBestEffortStream'''
-              new_tail = '''        } catch (_: Throwable) {\n            null\n        }\n    }\n\n    private fun openBestEffortStream'''
-              if old_tail not in text:
-                  raise SystemExit('stageUri tail not found; refusing to modify source')
-              p.write_text(text.replace(old_tail, new_tail, 1))
-              print('stageUri repaired in CI workspace.')
-          PY
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
