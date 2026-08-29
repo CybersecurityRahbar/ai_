@@ -101,18 +101,26 @@ Then cosine similarity / ranking for semantic retrieval.
 
 The long-term project direction is a shared AI visual core where semantic embeddings, reverse-image signals, advanced visual analysis, and face embeddings can share decoding/caching/index infrastructure instead of repeatedly decoding the same image.
 
+### New action taken in this turn
+The user explicitly asked that the assistant itself download and inspect the model artifacts rather than requiring the user to download them.
+
+The local container cannot resolve `huggingface.co`, so direct binary download from this execution environment failed. The assistant therefore added a GitHub Actions based controlled acquisition/audit path instead of falsely claiming to possess the model bytes:
+- `tools/mobileclip_audit.py` — mechanically audits local TFLite FlatBuffers using the Python `tflite` schema parser and parses `tokenizer.json`, emitting hashes, graph/subgraph/tensor metadata, and tokenizer contract metadata.
+- `.github/workflows/mobileclip-s2-audit.yml` — GitHub-hosted runner downloads the exact three files from the public Hugging Face repository, computes SHA-256 values, runs the binary/tokenizer audit, and uploads the entire audit bundle as a GitHub Actions artifact.
+
+The workflow is deliberately artifact-based rather than committing 398+ MB of model binaries into the source tree. This avoids pretending the repository has the binaries until they are actually downloaded and preserves the repo for source/history while still placing the acquired files in GitHub Actions storage for inspection.
+
+### Current status of this turn
+- Candidate package confirmed from Hugging Face public metadata.
+- Exact SHA-256 values confirmed from the public file pages.
+- Local direct download attempted and failed because this runtime cannot resolve the Hugging Face hostname.
+- GitHub repository permission is available with push rights.
+- Audit tooling has been committed to `main`.
+- The binary audit still needs a successful GitHub Actions run before exact tensor-contract values can be claimed.
+- The user requires that this conversation turn and future project-related turns remain recorded in this ledger.
+
 ### User’s requested future workflow
 - Import the complete model package after app installation, as done previously with MobileCLIP.
 - Rebuild/rework the semantic system rather than keeping the current image-only implementation as the final design.
 - Preserve the previous project context and all subsequent investigation results in this repository ledger.
 - The user explicitly requires project conversation context to be recorded in this GitHub ledger as an ongoing rule.
-
-### Search evidence captured on 2026-08-29
-- Hugging Face `plainhub/mobileclip-s2-tflite` tree lists exactly `mobileclip_s2_image.tflite`, `mobileclip_s2_text.tflite`, and `tokenizer.json` together.
-- Hugging Face file pages expose the remote SHA-256 values above for both TFLite files.
-- Hugging Face model tree states the base model is `apple/MobileCLIP-S2`.
-- Official Apple MobileCLIP-S2 configuration exposes 512-D embeddings, 256x256 image input, 77-token text context, and 49,408 vocabulary size.
-- Official Apple MobileCLIP code demonstrates paired image/text encoders with normalized feature comparison in a shared embedding space.
-
-### Current conclusion
-This is the strongest match to the user’s remembered full MobileCLIP-S2 TFLite package. It is suitable as the leading candidate, but it is NOT yet production-approved until the two binary TFLite graphs and tokenizer are downloaded and mechanically validated against the Android runtime contract.
