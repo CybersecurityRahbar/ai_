@@ -28,23 +28,24 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Repair malformed stageUri function
+      - name: Repair malformed stageUri function if needed
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('app/src/main/java/com/example/personalmemoryai/ui/BulkImagePickerActivity.kt')
           text = p.read_text()
           old_header = '    private fun stageUri(uri: Uri): File? = try {\n'
-          new_header = '    private fun stageUri(uri: Uri): File? {\n        return try {\n'
           if old_header not in text:
-              raise SystemExit('stageUri header not found; refusing to modify source')
-          text = text.replace(old_header, new_header, 1)
-          old_tail = '''    } catch (_: Throwable) {\n        null\n    }\n\n    private fun openBestEffortStream'''
-          new_tail = '''        } catch (_: Throwable) {\n            null\n        }\n    }\n\n    private fun openBestEffortStream'''
-          if old_tail not in text:
-              raise SystemExit('stageUri tail not found; refusing to modify source')
-          text = text.replace(old_tail, new_tail, 1)
-          p.write_text(text)
+              print('stageUri already has block-body syntax; no repair needed.')
+          else:
+              new_header = '    private fun stageUri(uri: Uri): File? {\n        return try {\n'
+              text = text.replace(old_header, new_header, 1)
+              old_tail = '''    } catch (_: Throwable) {\n        null\n    }\n\n    private fun openBestEffortStream'''
+              new_tail = '''        } catch (_: Throwable) {\n            null\n        }\n    }\n\n    private fun openBestEffortStream'''
+              if old_tail not in text:
+                  raise SystemExit('stageUri tail not found; refusing to modify source')
+              p.write_text(text.replace(old_tail, new_tail, 1))
+              print('stageUri repaired in CI workspace.')
           PY
 
       - name: Make Gradle wrapper executable
@@ -52,19 +53,6 @@ jobs:
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
-
-      - name: Commit source repair
-        if: success()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/com/example/personalmemoryai/ui/BulkImagePickerActivity.kt
-          if git diff --cached --quiet; then
-            echo "No source repair needed."
-          else
-            git commit -m "fix(picker): correct stageUri block body"
-            git push
-          fi
 
       - name: Upload debug APK
         if: success()
