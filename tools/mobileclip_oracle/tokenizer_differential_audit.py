@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MobileCLIP-S2 tokenizer differential audit.
 
-Compares the official Apple/OpenCLIP CLIP tokenizer with the exact
+Compares the official Apple MobileCLIP-S2 tokenizer with the exact
 third-party `tokenizer.json` on a deterministic corpus. The audit respects
 any post-processor already present in the tokenizer JSON and reports the
 first token-ID divergence, including special-token handling.
@@ -43,9 +43,9 @@ TEXTS = [
 ]
 
 
-def load_openclip(model_name: str):
-    import open_clip
-    return open_clip.get_tokenizer(model_name)
+def load_apple_mobileclip_tokenizer():
+    import mobileclip
+    return mobileclip.get_tokenizer("mobileclip_s2")
 
 
 def apple_ids(tokenizer: Any, text: str) -> list[int]:
@@ -61,8 +61,7 @@ def third_party_ids(tok: Tokenizer, text: str) -> tuple[list[int], dict[str, Any
     sot = int(vocab.get("<start_of_text>", SOT_FALLBACK))
     eot = int(vocab.get("<end_of_text>", EOT_FALLBACK))
 
-    # The previous audit manually added SOT/EOT unconditionally. That can
-    # double-wrap a tokenizer JSON whose post-processor already adds them.
+    # Respect a post-processor if it already inserted the CLIP special tokens.
     has_special_wrapper = (
         len(raw_ids) >= 2 and raw_ids[0] == sot and raw_ids[-1] == eot
     )
@@ -93,11 +92,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--third-party-tokenizer", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--apple-model", default="ViT-B-16")
     args = ap.parse_args()
 
     third = Tokenizer.from_file(str(args.third_party_tokenizer))
-    apple = load_openclip(args.apple_model)
+    apple = load_apple_mobileclip_tokenizer()
 
     cases: list[dict[str, Any]] = []
     divergent = 0
@@ -107,7 +105,7 @@ def main() -> int:
         d = first_diff(a, b)
         case: dict[str, Any] = {
             "text": text,
-            "apple_ids": a,
+            "apple_mobileclip_s2_ids": a,
             "third_party_ids": b,
             "ids_equal": d is None,
             "third_party_encoding": meta,
@@ -122,9 +120,9 @@ def main() -> int:
         cases.append(case)
 
     report = {
-        "format": "mobileclip-s2-tokenizer-differential-v2",
+        "format": "mobileclip-s2-tokenizer-differential-v3",
         "context_length": CONTEXT,
-        "apple_tokenizer": args.apple_model,
+        "apple_tokenizer": "mobileclip_s2",
         "third_party_tokenizer": str(args.third_party_tokenizer),
         "third_party_contract": {
             "vocab_size": len(third.get_vocab()),
@@ -146,8 +144,9 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    print("MobileCLIP S2 Tokenizer Differential Audit V2")
+    print("MobileCLIP S2 Tokenizer Differential Audit V3")
     print("==============================================")
+    print("Reference: Apple mobileclip.get_tokenizer(\"mobileclip_s2\")")
     print(f"Cases: {len(TEXTS)}")
     print(f"Divergent: {divergent}")
     for case in cases:
