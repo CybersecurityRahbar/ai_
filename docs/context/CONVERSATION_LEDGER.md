@@ -150,14 +150,88 @@ The V2 test is intentionally stricter than the previous audit. A successful resu
 
 The audit should not claim production semantic quality from one diagram test alone. Passing V2 is a gate for functional compatibility, not a benchmark of broad model accuracy.
 
-### Exact current user request recorded
+### Exact prior user request recorded
 The user requested:
 "حسنا قم بالاختبار والتنفيذ \nثانيا دخلت الى المستودع ولك لم اجد الكثير من الردود والاجوبه والاساله التي نتداولها هنا وهذا يدل انك لم تكن ترسل كل شيئ الى جيت هاب ولذلك اريد ان تجعل لك قاعده انه ماتم تداوله في المحادثه هنا يتم رفعه الى قسم docs هل فهمت الان ابدا العمل"
 
 Meaning captured for durable project memory: run the stronger MobileCLIP validation and establish/maintain a durable repository record of substantive project conversation context under `docs/context`, so future work can reconstruct goals, decisions, errors, fixes, and test evidence.
 
-### Current status after implementation
+### Prior status after implementation
 - V2 audit code is committed.
 - V2 workflow is committed.
-- The final hardened workflow change should automatically launch the V2 audit because `.github/workflows/mobileclip_s2_deep_audit.yml` is a push trigger path.
-- The GitHub Actions result is the authoritative next gate. The model remains unapproved for Android production integration until V2 produces a passing report.
+- The model remains unapproved for Android production integration until the stronger V2 gate passes.
+
+## 2026-08-30 21:55 +03:00 — Full repository/session re-audit and durable ledger enforcement
+
+### User request (verbatim)
+"حسنا الان اعد المراجعه لانه تم اضافه اشياء وتعديل اشياء اعمل مراجعه شامله بالكامل وايضا ملف session-1788115451049.md الذي في جذر المشروع لانه يحتوي على كامل المحادثه السابقه والاوامر والاساله والاجوبه واين توقفنا بالضبط وايضا راجع مجلد docs وماداخله بشكل كامل وايضا راجع ملفات المشروع بشكل اضافي لتعرف ماذا عملنا واين توقفنا هيا انطلق ولاتنسا رفع اي شيئ نقوم به هنا اي شيئ ارسله لك واي شيئ تجيبني هل فهمت انا لا اريد اذكيرك في كل رساله هل فهمت وسوف اراجع المستودع وارى في مجلد docs هل انت اضفت ملف سياق المحادثه وهل قمت باضافه اخر طلب مني واخر جواب منك بشكل كامل بالتاريخ والساعه في ملف واحد فقط لكل طلب وجواب يتم اضافته الى هذا الملف هل فهمت الان قم بعمل المطلوب واعط اكبر جهد لك واكبر سياق واكبر تفكير"
+
+### Repository/session review performed
+The current `main` tree was re-read. The root now contains `session-1788115451049.md`, and the GitHub commit immediately preceding this re-audit (`e6f66c7ec924a4e142f8838a354b7e4e86abb547`, 2026-08-30 18:50:43Z) added that session file. Its current repository size is about 637,852 bytes, making it a substantial conversation artifact rather than a small summary.
+
+The session was sampled across its chronological range, including early DigiKam/reverse-image discussions, the 999-image classical engine work, the Advanced Visual section and its CI fixes, the large-selection/picker failures, the creation of Advanced V2/Region/Structural/Fusion work, the face/person identity redesign, the MobileCLIP package search, the binary-audit design, the actual Deep Audit run, and the subsequent MobileCLIP V2 failure diagnosis. The session's latest available material confirms that the dialogue had reached the MobileCLIP audit/validation path after the face/person architecture had been specified, rather than reaching a completed implementation of the new Face Identity engine.
+
+### Current `docs` and `docs/context` contents verified
+The root `docs` directory currently contains:
+- `ADVANCED_DEVICE_TEST_ANALYSIS_ADDENDUM_2026-08-28.md`
+- `ADVANCED_DEVICE_TEST_FINDINGS_2026-08-28.md`
+- `ADVANCED_VISUAL_FINAL_BENCHMARK_PLAN.md`
+- `CONVERSATION_CONTEXT.md`
+- `CONVERSATION_CONTEXT_TURN_2026-08-28_PICKER_FIX.md`
+- `CONVERSATION_TURN_LEDGER.md`
+- `FACE_IDENTITY_DEVICE_BENCHMARK_2026-08-29.md`
+- `FACE_IDENTITY_VISUAL_MEMORY_ENGINE_V1_SPEC.md`
+- `MOBILECLIP_S2_AUDIT_VERIFIED.md`
+- `context/`
+
+`docs/context` currently contains:
+- `2026-08-29_mobileclip_deep_audit_checkpoint.md`
+- `2026-08-30_mobileclip_failure_diagnosis_2.md`
+- `2026-08-30_mobileclip_v2_failed_run_analysis.md`
+- `CONVERSATION_LEDGER.md`
+- `CONVERSATION_LEDGER_RULE.md`
+
+The ledger rule was also reviewed. It requires every substantive project turn to be appended with request/message, assistant work/findings, relevant research/verification, failures/fixes, and current objective/next action. This turn is being appended to that same single conversational ledger rather than creating another per-turn transcript file.
+
+### Important source-code verification performed
+The current Android manifest was rechecked. `IntelligenceHomeActivity` is the only `MAIN/LAUNCHER`; `ReverseImageSearchActivity`, `AdvancedVisualIntelligenceActivity`, `BulkImagePickerActivity`, face screens and other feature activities are non-exported. The previous duplicate-launcher defect is therefore not present in the current source.
+
+`AdvancedVisualIntelligenceService.kt` was rechecked. It defines `FUSION_VERSION = "ADVANCED-VISUAL-FUSION-V4"`, uses the independent Advanced corpus, seven query variants, region consistency and multiscale structural consensus, and does NOT route ranking through `ReverseImageSearchService`. Its feature extractor remains V2; V4 denotes the fusion/ranking layer. The current seven variants are original, 90/180/270 degree rotations, and 92/82/72 percent center crops; horizontal flip is not currently one of these whole-image variants.
+
+`BulkImagePickerActivity.kt` was rechecked. It currently exposes five acquisition routes: OEM/system Gallery, modern Photo Picker, system Files, Folder/Tree for scalable large corpora, and the in-app MediaStore browser. It uses `MediaStore.VOLUME_EXTERNAL` only, logical Select All, disk-backed `.uris` queues, and folder/tree streaming. The system multi-document path still receives its ActivityResult/ClipData in memory, so Folder/Tree remains the correct mechanism for many-thousand selections.
+
+`ImageCorpusImportWorker.kt` was rechecked. It uses durable WorkManager execution, batching, per-item isolation, provider read retries, descriptor fallback, and primary external-storage fallback for relevant document URIs. Unsupported/corrupt images and source/provider failures are classified separately from the overall batch.
+
+`AppDatabase.kt` was rechecked at version 12. Advanced V2 fingerprint persistence is represented in the schema, including spatial color, spatial LBP, gradient magnitude, and illumination-robust structure fields. Migration `11 -> 12` recreates the Advanced fingerprint table, which implies a deliberate reindex requirement after that schema-breaking change.
+
+### Face/person state verified against actual code
+`FaceEntity` models a face occurrence rather than claiming real-world identity. `EmbeddingEntity` already records model/version/dimension/normalization metadata. `PersonEntity` is a logical visual cluster, not an automatically verified identity.
+
+`FaceAnalysisService` currently runs detector, crop, quality, landmark shape, pose estimation, and all configured identity models while isolating individual model failures. `FaceIndexingService` persists per-face model embeddings plus landmark shape embeddings.
+
+`FaceSearchService` still searches mainly per stored face embedding and groups by `face.id`; it does not yet perform full person-level multi-prototype ranking, open-set margin logic, local facial-part identity evidence, or a true person prototype bank. `PersonClusteringService` has a preliminary diversity-limited template mechanism with a maximum of 12 templates, but it is not yet the complete Face Identity & Visual Memory V1 specified in `FACE_IDENTITY_VISUAL_MEMORY_ENGINE_V1_SPEC.md`.
+
+### MobileCLIP state verified against actual code and audit tooling
+The current semantic implementation remains image-only in `SemanticSearchService.kt`; text inference remains deferred at runtime. `MobileClipModelManager.kt` still represents a single imported TFLite image model path rather than the complete Image + Text + Tokenizer package.
+
+The current Deep Audit tooling structurally inspects FlatBuffers, validates the expected contracts, parses the tokenizer, performs non-zero output checks, and runs the diagram-based cross-modal ranking gate. However, `.github/workflows/mobileclip_s2_deep_audit.yml` still downloads the third-party Hugging Face package from mutable `resolve/main` instead of a fixed model revision, which is a reproducibility defect.
+
+The durable MobileCLIP failure analyses establish that the V2 audit must not be bypassed. A historical audit failure included a text SHA-256 failure and cross-modal semantic-ranking failure. The current public text hash matches the expected value now, so that historical hash failure alone does not prove permanent binary corruption. The decisive next experiment is an oracle comparison between the exact third-party TFLite image/text pair and the official Apple MobileCLIP-S2 PyTorch reference using the same deterministic image and prompt set, with exact hashes/revision recorded.
+
+### Where the project is actually stopped now
+The project is NOT stopped at a completed Face Identity engine and is NOT approved to integrate MobileCLIP yet.
+
+The immediate authoritative gate is:
+
+`MobileCLIP S2 Deep Audit V2 → fixed provenance/revision → exact binary/tokenizer contract → runtime non-zero outputs → official PyTorch oracle comparison → cross-modal semantic validation`
+
+Only after that gate is resolved should the Android Semantic Runtime be redesigned for Image + Text. The next major architecture stream after that remains implementation of Face Identity & Visual Memory V1, beginning with an end-to-end audit of the existing face detector/alignment/model/database/UI stack rather than inventing an unvalidated model.
+
+### Durable context rule confirmed in this turn
+For every substantive future project turn, conversational context will be appended to **only** `docs/context/CONVERSATION_LEDGER.md`. Each entry must contain the timestamp, user request, assistant findings/decision/work, relevant evidence, unresolved items, and next action. No new per-turn conversation-history file should be created. Existing specialized technical documents remain project references, while this ledger is the single ongoing request/response history.
+
+### Repository change for this turn
+The current re-audit record is being committed to:
+`docs/context/CONVERSATION_LEDGER.md`
+
+No application source code is being changed by this re-audit. No new algorithm is being claimed as implemented. The existing rules remain: one launcher, independent Reverse/Advanced/Face/Semantic engines, shared corpus/decode where appropriate, no recall reduction, no invented models, and no production MobileCLIP approval before the semantic gate passes.
