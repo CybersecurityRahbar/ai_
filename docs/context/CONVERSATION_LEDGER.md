@@ -127,7 +127,9 @@ These references are from Apple’s public repository/model documentation and sh
 ### Deep Audit V2 implementation
 The repository audit was strengthened in commit `20c1c54407e2dbe274f2b725ca4f4fc858b5370b` and the workflow in commit `215c80185e7755ee0a675bbf51c57c6f8acd0afc`.
 
-`tools/mobileclip_audit/deep_audit.py` now:
+`tools/mobileclip_audit/deep_audit.py` was subsequently hardened in commit `86a144797a1755e9bd796e6d00bd41cee6c8ecdc` to use value-based dtype validation and a clean expected-hash table.
+
+The audit now:
 - records the exact FlatBuffer contract
 - verifies the expected model/tokenizer SHA-256 hashes
 - verifies image `[1,3,256,256] FLOAT32` input and `[1,512]` output
@@ -141,7 +143,7 @@ The repository audit was strengthened in commit `20c1c54407e2dbe274f2b725ca4f4fc
 - performs a deterministic cross-modal semantic ranking test using the official Apple repository’s `docs/fig_accuracy_latency.png` reference diagram and prompts including `a diagram`, `a dog`, and `a cat`
 - writes `mobileclip_s2_contract.json` as a V2 contract and `mobileclip_s2_deep_audit.json` as the runtime/semantic report
 
-`.github/workflows/mobileclip_s2_deep_audit.yml` now additionally downloads the official Apple reference diagram and runs the V2 semantic checks. The workflow remains artifact-based and does not commit the 398+ MB TFLite model files into source control.
+`.github/workflows/mobileclip_s2_deep_audit.yml` was strengthened in commit `9a62008811c23f551b82e31e89fc50e23c49d5d5` to download the official Apple reference diagram and run the V2 semantic checks, while deliberately excluding `docs/context/**` from the workflow trigger so conversation-ledger updates do not launch needless model downloads/audits.
 
 ### Important correctness note about the V2 test
 The V2 test is intentionally stricter than the previous audit. A successful result would establish much stronger evidence that the tokenizer + text encoder + image encoder actually form a usable cross-modal MobileCLIP pipeline. A failure must block Android integration until the root cause is understood.
@@ -157,5 +159,5 @@ Meaning captured for durable project memory: run the stronger MobileCLIP validat
 ### Current status after implementation
 - V2 audit code is committed.
 - V2 workflow is committed.
-- GitHub Actions should now execute the stronger audit automatically because the workflow itself and audit tool paths changed.
-- The next authoritative result is the new `MobileCLIP S2 Deep Audit V2` workflow artifact/report. Until that result is available, MobileCLIP must remain unapproved for Android production integration.
+- The final hardened workflow change should automatically launch the V2 audit because `.github/workflows/mobileclip_s2_deep_audit.yml` is a push trigger path.
+- The GitHub Actions result is the authoritative next gate. The model remains unapproved for Android production integration until V2 produces a passing report.
