@@ -84,6 +84,7 @@ jobs:
             --apple-checkpoint .audit/mobileclip_s2_oracle/mobileclip_s2.pt \
             --out .audit/mobileclip_s2_oracle/report
 
+      # ORACLE-V1: deterministic parity diagnostic. Keep the report even when numerical parity is poor.
       - name: Upload Deep Oracle report only
         uses: actions/upload-artifact@v4
         with:
