@@ -46,6 +46,7 @@ jobs:
 
       - name: Download exact model assets with fixed provenance
         env:
+          APPLE_REF: aecfb5453d022e9deff12f81a150ea8f35194baa
           HF_REVISION: 868dc14eb50de4a8347714b019aae242a0778675
           APPLE_CHECKPOINT: https://docs-assets.developer.apple.com/ml-research/datasets/mobileclip/mobileclip_s2.pt
         run: |
@@ -86,11 +87,12 @@ jobs:
 
       # ORACLE-V1: deterministic parity diagnostic. Keep the report even when numerical parity is poor.
       - name: Upload Deep Oracle report only
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mobileclip-s2-deep-oracle-report
           path: |
             .audit/mobileclip_s2_oracle/report/mobileclip_s2_oracle_report.json
             .audit/mobileclip_s2_oracle/report/SUMMARY.txt
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
