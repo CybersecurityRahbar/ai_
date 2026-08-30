@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""MobileCLIP-S2 tokenizer differential audit.
-
-Compares the exact tokenizer used by Apple's pinned MobileCLIP-S2 reference
-against the bundled third-party tokenizer.json. The audit distinguishes:
-- tokenization/BPE divergence,
-- vocabulary-ID remapping,
-- special-token/post-processor differences,
-- truncation/padding differences.
-"""
+"""MobileCLIP-S2 tokenizer differential audit."""
 from __future__ import annotations
 
 import argparse
@@ -41,7 +33,27 @@ def apple_ids(tokenizer: Any, text: str) -> list[int]:
     return [int(v) for v in x[0].tolist()]
 
 
-def apple_encoder(tokenizer: Any) -> dict[str, int]:
+def resolve_openclip_tokenizer(tokenizer: Any) -> Any:
+    """Resolve a possibly-callable OpenCLIP tokenizer wrapper to SimpleTokenizer."""
+    if hasattr(tokenizer, "encoder") and hasattr(tokenizer, "decoder"):
+        return tokenizer
+    globals_dict = getattr(tokenizer, "__globals__", None)
+    if isinstance(globals_dict, dict):
+        candidate = globals_dict.get("_tokenizer")
+        if candidate is not None and hasattr(candidate, "encoder") and hasattr(candidate, "decoder"):
+            return candidate
+    try:
+        import open_clip.tokenizer as tokenizer_module
+        candidate = getattr(tokenizer_module, "_tokenizer", None)
+        if candidate is not None and hasattr(candidate, "encoder") and hasattr(candidate, "decoder"):
+            return candidate
+    except Exception:
+        pass
+    raise TypeError("Could not resolve Apple/OpenCLIP tokenizer to a vocabulary-bearing tokenizer")
+
+
+def apple_encoder(tokenizer_wrapper: Any) -> dict[str, int]:
+    tokenizer = resolve_openclip_tokenizer(tokenizer_wrapper)
     return {str(k): int(v) for k, v in tokenizer.encoder.items()}
 
 
@@ -78,13 +90,9 @@ def first_diff(a: list[int], b: list[int]) -> int | None:
 def tokenizer_json_contract(path: Path) -> dict[str, Any]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     model = raw.get("model") or {}
-    normalizer = raw.get("normalizer")
-    pre_tokenizer = raw.get("pre_tokenizer")
-    post_processor = raw.get("post_processor")
-    decoder = raw.get("decoder")
-    added = raw.get("added_tokens") or []
     vocab = model.get("vocab") or {}
     merges = model.get("merges") or []
+    added = raw.get("added_tokens") or []
     return {
         "root_keys": sorted(raw.keys()),
         "model_type": model.get("type"),
@@ -92,10 +100,10 @@ def tokenizer_json_contract(path: Path) -> dict[str, Any]:
         "model_vocab_sample": list(vocab.items())[:8],
         "merges_count": len(merges),
         "merges_sample": merges[:8],
-        "normalizer": normalizer,
-        "pre_tokenizer": pre_tokenizer,
-        "post_processor": post_processor,
-        "decoder": decoder,
+        "normalizer": raw.get("normalizer"),
+        "pre_tokenizer": raw.get("pre_tokenizer"),
+        "post_processor": raw.get("post_processor"),
+        "decoder": raw.get("decoder"),
         "added_tokens": added,
         "added_tokens_count": len(added),
     }
@@ -127,10 +135,11 @@ def main() -> int:
 
     third = Tokenizer.from_file(str(args.third_party_tokenizer))
     apple_wrapper = load_apple_mobileclip_tokenizer()
-    # Apple's ClipTokenizer exposes the OpenCLIP SimpleTokenizer as .tokenizer.
-    apple = getattr(apple_wrapper, "tokenizer", apple_wrapper)
-    apple_vocab = apple_encoder(apple)
+    apple = resolve_openclip_tokenizer(apple_wrapper)
+    apple_vocab = apple_encoder(apple_wrapper)
+    apple_decoder = {int(v): str(k) for k, v in apple_vocab.items()}
     third_vocab = {str(k): int(v) for k, v in third.get_vocab().items()}
+    third_decoder = {int(v): str(k) for k, v in third_vocab.items()}
 
     cases: list[dict[str, Any]] = []
     divergent = 0
@@ -139,7 +148,6 @@ def main() -> int:
         a = apple_ids(apple_wrapper, text)
         b, meta = third_party_ids(third, text)
         d = first_diff(a, b)
-        # Compare the human-readable OpenCLIP token strings when possible.
         case: dict[str, Any] = {
             "text": text,
             "apple_ids": a,
@@ -152,15 +160,14 @@ def main() -> int:
             case["first_difference_index"] = d
             case["apple_id_at_first_difference"] = a[d]
             case["third_party_id_at_first_difference"] = b[d]
-            apple_token_for_id = getattr(apple, "decoder", {}).get(a[d])
-            third_token_for_id = next((k for k, v in third_vocab.items() if v == b[d]), None)
+            apple_token_for_id = apple_decoder.get(int(a[d]))
+            third_token_for_id = third_decoder.get(int(b[d]))
             case["apple_token_at_first_difference"] = apple_token_for_id
             case["third_party_token_at_first_difference"] = third_token_for_id
-            if apple_token_for_id is not None and apple_token_for_id == third_token_for_id:
+            same_token = apple_token_for_id is not None and apple_token_for_id == third_token_for_id
+            case["token_string_same_but_id_differs"] = same_token
+            if same_token:
                 token_string_aligned += 1
-                case["token_string_same_but_id_differs"] = True
-            else:
-                case["token_string_same_but_id_differs"] = False
         cases.append(case)
 
     contract = tokenizer_json_contract(args.third_party_tokenizer)
