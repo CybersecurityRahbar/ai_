@@ -6,8 +6,6 @@ on:
     paths:
       - '.github/workflows/mobileclip_s2_deep_audit.yml'
       - 'tools/mobileclip_audit/**'
-      - '.audit/mobileclip_s2/**'
-      - 'docs/context/**'
 
 permissions:
   contents: read
