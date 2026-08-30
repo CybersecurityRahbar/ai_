@@ -54,62 +54,88 @@ The successful run proved:
 
 This strongly isolated the remaining issue to tokenization or token-sequence construction rather than the image TFLite model or text TFLite model.
 
-### Methodological correction before tokenizer verdict
-A review of the first tokenizer differential implementation found two issues that had to be eliminated before declaring the third-party tokenizer wrong:
-1. The first differential script manually wrapped `Tokenizer.encode()` with SOT/EOT, even though the JSON may have a post-processor that already inserts them.
-2. The differential script used generic OpenCLIP `ViT-B-16` tokenization as its default Apple reference instead of the official Apple MobileCLIP-S2 tokenizer.
-
-Therefore the tokenizer verdict from the first differential attempt is explicitly NOT authoritative.
-
-### Corrected tokenizer differential audit
-`tools/mobileclip_oracle/tokenizer_differential_audit.py` was corrected to:
-- use `mobileclip.get_tokenizer("mobileclip_s2")` as the Apple reference;
-- respect existing special-token post-processing in `tokenizer.json`;
-- record raw token IDs, raw token strings, SOT/EOT IDs, post-processor state, and first divergence index;
-- compare a deterministic corpus containing English, capitalization, punctuation, Arabic, digits, symbols, and multiword prompts.
-
-The corrected audit is configured in `.github/workflows/mobileclip_s2_tokenizer_differential_audit.yml`, which pins the Apple reference commit and the exact Hugging Face tokenizer revision and uploads the JSON report even if the differential check fails.
-
-### User model-download confirmation
-The user confirmed downloading the MobileCLIP image TFLite and text TFLite models to the phone and asked to continue verification. The assistant confirmed that both TFLite binaries should be kept and not replaced; the unresolved artifact is the tokenizer contract.
-
 ## 2026-08-30 23:13 +03:00 — Tokenizer Differential Audit V3 result
 
 ### User-provided run result
-The user shared `MobileCLIP S2 Tokenizer Differential Audit V3` run #3. The job failed because 18 of 19 deterministic test strings diverged from Apple, while the empty string matched. Every non-empty case diverged at sequence index 1; examples included Apple token `320` vs third-party tokens `2486`, `4775`, `546`, `34304`, etc. The output reported `specials_already_present=False` for the divergent cases.
+The user shared `MobileCLIP S2 Tokenizer Differential Audit V3` run #3. The job failed because 18 of 19 deterministic test strings diverged from Apple, while the empty string matched. Every non-empty case diverged at sequence index 1. The preliminary V3 method had manually handled special tokens and was not yet sufficient to distinguish the cause.
 
 ### Interpretation
-The V3 result is strong evidence that the third-party `tokenizer.json` produces incompatible token IDs for ordinary text, but it does not by itself establish why. It could be a vocabulary-ID remapping, a different BPE vocabulary/merge set, different normalization/pre-tokenization, or a special-token/padding convention difference. Because the text TFLite model is numerically identical to Apple when fed Apple IDs, changing the Text TFLite binary is not justified.
+The V3 result was evidence of tokenizer incompatibility but not yet root-cause proof.
 
-### Apple reference verification
-The pinned Apple source was inspected directly. `mobileclip.get_tokenizer("mobileclip_s2")` constructs `ClipTokenizer`, which in turn uses `open_clip.get_tokenizer(model_name)` and defaults to `ViT-B-16` unless a specific tokenizer name is supplied. Therefore the V3 statement that the reference is Apple `mobileclip.get_tokenizer("mobileclip_s2")` is correct and internally resolves through the OpenCLIP tokenizer used by Apple's MobileCLIP implementation. Apple source also documents that the tokenizer's empty-string result supplies SOT/EOT and that the model consumes fixed-length context tensors.
+## 2026-08-30 23:20 +03:00 — Tokenizer Differential Audit V4 result and root-cause isolation
 
-## 2026-08-30 23:13 +03:00 — Tokenizer Differential Audit V4 implementation
+### User-provided run result
+The user shared the V4 Actions output. It reported:
+- `Cases: 19`
+- `Divergent: 18`
+- `Apple vocab: 49408`
+- `Third-party vocab: 49408`
+- `Common token strings: 49408`
+- `Same token->ID mappings: 49408`
+- `Remapped common tokens: 0`
+- `Apple-only tokens: 0`
+- `Third-only tokens: 0`
+
+For every non-empty case the first divergence was index `1`, and token strings themselves differed, e.g. Apple `a</w>` vs third-party `adi`, Apple `two</w>` vs third-party `two`, and Apple `hello</w>` vs third-party `hello`.
+
+### Root-cause conclusion
+This is not a vocabulary-ID remapping problem. The entire 49,408-token vocabulary has identical token→ID mappings. The incompatibility is in tokenizer algorithm/configuration, especially word-boundary/pre-tokenization/BPE semantics. The Text TFLite binary remains approved because it matches Apple under Apple token IDs.
+
+## 2026-08-30 23:22 +03:00 — User requests complete remaining-error review
 
 ### User request
-The user instructed: continue the audit.
+The user shared another tokenizer audit failure and asked why the errors were not fully fixed and requested a complete review of remaining errors.
 
 ### Work performed
-The V3 result showed all non-empty strings diverging at index 1, so a deeper audit was implemented instead of immediately declaring the tokenizer corrupt.
+The V4 script/CI path was reviewed instead of treating the red workflow as evidence that the model was broken. The tokenizer parity failure is intentionally a data/parity gate, while earlier runtime exceptions had already been fixed.
 
-`tools/mobileclip_oracle/tokenizer_differential_audit.py` was upgraded to V4 in commit `3a8c0e6544faa2ed0f88b7b904cedfc0936345e3`. The V4 audit now:
-- compares Apple MobileCLIP-S2's actual tokenizer wrapper;
-- preserves tokenizer-native special-token handling;
-- compares final token IDs and first divergence;
-- resolves token strings at the first differing IDs when possible;
-- compares the complete Apple token-string → ID vocabulary mapping against the third-party mapping;
-- counts common token strings with identical IDs versus common token strings with different IDs;
-- counts Apple-only and third-party-only token strings;
-- inspects the third-party `tokenizer.json` model type, vocabulary size, merges count/sample, normalizer, pre-tokenizer, post-processor, decoder, and added tokens;
-- keeps the deterministic multilingual/punctuation corpus used by V3.
+A three-way audit was added comparing:
+1. Apple MobileCLIP-S2 runtime tokenizer;
+2. exact third-party tokenizer JSON;
+3. official Apple MobileCLIP-S2/OpenCLIP tokenizer JSON.
 
-The V4 goal is to distinguish a pure ID remapping from a genuinely different tokenization/BPE algorithm. If token strings match while IDs differ, the third-party artifact may contain the right segmentation but the wrong vocabulary index assignment for the TFLite text model. If token strings themselves differ, the BPE/normalizer/pre-tokenizer contract is different.
+## 2026-08-30 — User-provided V6 tokenizer audit result
 
-### Workflow status
-The tokenizer differential workflow is configured to run on changes to the tokenizer audit workflow/script and is pinned to the same Apple commit and Hugging Face revision. The V4 script change also triggered the broader Deep Oracle workflow because its path is watched by that workflow. The latest GitHub push at commit `3a8c0e6544faa2ed0f88b7b904cedfc0936345e3` showed the MobileCLIP Deep Oracle workflow in progress; the tokenizer differential run for the V4 change is expected to run from the matching push trigger.
+### User-provided run result
+The user shared `MobileCLIP S2 Tokenizer Differential Audit V6` output. The workflow completed the tokenization comparison and reported:
+- `Third-party divergent cases: 18 / 19`
+- Apple vocabulary size `49408`; third-party vocabulary size `49408`
+- all `49408` token strings were common
+- all `49408` token→ID mappings were identical
+- zero remapped, Apple-only, or third-only tokens
+- representative divergence: Apple `a</w>` vs JSON `adi`, Apple `two</w>` vs JSON `two`, Apple `hello</w>` vs JSON `hello`
 
-### Current gate
-No tokenizer replacement or Android semantic integration is approved yet. The exact V4 report is the next evidence required. The binary evidence remains strong: Image TFLite and Text TFLite are numerically compatible with Apple's reference under identical input contracts. The remaining investigation is strictly tokenizer parity and sequence construction.
+### Important tooling gap discovered
+Although the V6 implementation accepted `--official-apple-tokenizer`, the console output only printed the third-party comparison. Therefore a green/red workflow state did not visibly prove the official Apple JSON result. The script needed to print and evaluate the official Apple JSON parity explicitly.
+
+### Remediation
+`tools/mobileclip_oracle/tokenizer_differential_audit.py` was updated to V7 in commit `257d107f7abb550189f536c7b831830cef5e966e`.
+The V7 behavior:
+- compares both third-party and official Apple tokenizer JSON against the authoritative Apple runtime;
+- prints official Apple JSON divergence count;
+- records a production tokenizer verdict;
+- treats third-party divergence as expected diagnostic evidence when official Apple JSON matches the runtime;
+- keeps the workflow red only when official Apple JSON itself diverges or when the official JSON was not supplied.
+
+The workflow already passes `--official-apple-tokenizer` and pins Apple MobileCLIP source plus the exact Hugging Face revisions. The next run must therefore provide the missing decisive number: `Official Apple JSON divergent cases: 0 / 19` or a concrete divergence requiring further investigation.
+
+### Current technical state
+- `mobileclip_s2_image.tflite`: keep; Deep Oracle proved numerical compatibility with Apple.
+- `mobileclip_s2_text.tflite`: keep; Deep Oracle proved numerical compatibility with Apple under identical token IDs.
+- Third-party `tokenizer.json`: not approved for Android production tokenization because its execution differs from Apple despite identical vocabulary mapping.
+- Official Apple tokenizer JSON: awaiting the V7 three-way parity result.
+- Android semantic Image↔Text integration: still blocked pending tokenizer parity.
 
 ### Next action
-Retrieve the V4 tokenizer differential report and determine whether the third-party JSON has the same token strings/BPE semantics with different IDs, or a fundamentally different tokenizer contract. Then use that evidence to choose the minimal safe fix before enabling the Android Image + Text semantic runtime.
+Run the V7 tokenizer differential workflow, read the report/artifact, verify official Apple JSON parity, then lock the Android tokenizer implementation and rerun the full end-to-end Deep Oracle with the selected tokenizer before resuming semantic search integration.
+
+## 2026-08-30 — Current user turn
+
+### User request
+The user asked to inspect the latest V6 workflow output and continue the audit, with emphasis on why the errors remain and on identifying every remaining issue before proceeding.
+
+### Assistant finding/work
+The latest V6 output is not evidence that the TFLite models are wrong. The vocabulary comparison is exact, while segmentation differs. The actual remaining CI issue is therefore tokenizer parity plus insufficient visibility of the official Apple JSON result in the console output. The audit script was hardened to print and evaluate both JSON variants explicitly and to distinguish a deliberate parity finding from an implementation crash.
+
+### Current gate
+Do not replace either TFLite binary. Do not enable Android semantic search yet. The decisive next evidence is the V7 three-way report, specifically the official Apple JSON divergence count and its token-by-token result.
