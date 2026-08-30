@@ -15,7 +15,7 @@ permissions:
 jobs:
   deep-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,18 +42,26 @@ jobs:
           curl -L --fail --retry 3 --retry-delay 2 "$HF_BASE/mobileclip_s2_text.tflite?download=true" -o .audit/mobileclip_s2/mobileclip_s2_text.tflite
           curl -L --fail --retry 3 --retry-delay 2 "$HF_BASE/tokenizer.json?download=true" -o .audit/mobileclip_s2/tokenizer.json
 
-      - name: Run structural, tokenizer, and inference audit
+      - name: Download deterministic semantic reference image
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 --retry-delay 2 \
+            'https://raw.githubusercontent.com/apple/ml-mobileclip/main/docs/fig_accuracy_latency.png' \
+            -o .audit/mobileclip_s2/reference_diagram.png
+
+      - name: Run structural, tokenizer, runtime, and semantic audit
         run: |
           python tools/mobileclip_audit/deep_audit.py \
             --image-model .audit/mobileclip_s2/mobileclip_s2_image.tflite \
             --text-model .audit/mobileclip_s2/mobileclip_s2_text.tflite \
             --tokenizer .audit/mobileclip_s2/tokenizer.json \
+            --semantic-image .audit/mobileclip_s2/reference_diagram.png \
             --out .audit/mobileclip_s2/report
 
       - name: Upload Deep Audit bundle
         uses: actions/upload-artifact@v4
         with:
-          name: mobileclip-s2-deep-audit
+          name: mobileclip-s2-deep-audit-v2
           path: .audit/mobileclip_s2/report/
           if-no-files-found: error
           retention-days: 30
