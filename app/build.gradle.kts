@@ -1,3 +1,6 @@
+import java.net.URI
+import java.io.InputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -21,7 +24,7 @@ val prepareMobileClipTokenizer by tasks.registering {
             val target = dir.resolve(name)
             if (target.exists() && target.length() > 0L) return@forEach
             val temp = dir.resolve(".$name.download")
-            java.net.URI(mobileClipTokenizerUrls.getValue(name)).toURL().openStream().use { input ->
+            URI(mobileClipTokenizerUrls.getValue(name)).toURL().openStream().use { input: InputStream ->
                 temp.outputStream().use { output -> input.copyTo(output) }
             }
             if (temp.length() == 0L) error("Downloaded empty MobileCLIP tokenizer asset: $name")
