@@ -4,6 +4,44 @@ plugins {
     id("kotlin-kapt")
 }
 
+val mobileClipTokenizerAssets = layout.projectDirectory.dir("src/main/assets/models/semantic/openclip")
+val mobileClipTokenizerFiles = listOf("vocab.json", "merges.txt")
+val mobileClipTokenizerRef = "a406a1bd0b882b27509e608f3cb199de52010c4d"
+val mobileClipTokenizerUrls = mapOf(
+    "vocab.json" to "https://huggingface.co/apple/MobileCLIP-S2-OpenCLIP/resolve/$mobileClipTokenizerRef/vocab.json?download=true",
+    "merges.txt" to "https://huggingface.co/apple/MobileCLIP-S2-OpenCLIP/resolve/$mobileClipTokenizerRef/merges.txt?download=true"
+)
+
+val prepareMobileClipTokenizer by tasks.registering {
+    outputs.files(mobileClipTokenizerFiles.map { mobileClipTokenizerAssets.file(it) })
+    doLast {
+        val dir = mobileClipTokenizerAssets.asFile
+        dir.mkdirs()
+        mobileClipTokenizerFiles.forEach { name ->
+            val target = dir.resolve(name)
+            if (target.exists() && target.length() > 0L) return@forEach
+            val temp = dir.resolve(".$name.download")
+            java.net.URI(mobileClipTokenizerUrls.getValue(name)).toURL().openStream().use { input ->
+                temp.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (temp.length() == 0L) error("Downloaded empty MobileCLIP tokenizer asset: $name")
+            if (!temp.renameTo(target)) {
+                temp.copyTo(target, overwrite = true)
+                temp.delete()
+            }
+        }
+        dir.resolve("PROVENANCE.txt").writeText(
+            "MobileCLIP-S2 OpenCLIP tokenizer assets\n" +
+                "source=apple/MobileCLIP-S2-OpenCLIP\n" +
+                "revision=$mobileClipTokenizerRef\n" +
+                "runtime=OpenAI/OpenCLIP SimpleTokenizer semantics\n",
+            Charsets.UTF_8
+        )
+    }
+}
+
+tasks.named("preBuild").configure { dependsOn(prepareMobileClipTokenizer) }
+
 android {
     namespace = "com.example.personalmemoryai"
     compileSdk = 35
@@ -44,9 +82,6 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.35")
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
 
-    // Bundled on-device pose model for static-image body/pose evidence.
     implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
-
-    // Classical local-feature computer vision only; no neural inference.
     implementation("org.opencv:opencv:4.13.0")
 }
