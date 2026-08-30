@@ -4,6 +4,7 @@
 - Treat durable project context as a first-class requirement.
 - Every project-related conversation turn, investigation, decision, experiment result, error, correction, and architectural decision should be recorded in the repository so future work does not lose context.
 - This ledger is an ongoing project memory, not a substitute for source code or test evidence.
+- Each future project-related assistant turn should append the substantive user request, the assistant's resulting decisions/findings, tests performed, and concrete repository changes. Full verbatim historical conversation is only possible when that text is available to the assistant; unavailable earlier text must not be fabricated.
 
 ## 2026-08-29 — Semantic Search / MobileCLIP model discovery and audit
 
@@ -101,26 +102,60 @@ Then cosine similarity / ranking for semantic retrieval.
 
 The long-term project direction is a shared AI visual core where semantic embeddings, reverse-image signals, advanced visual analysis, and face embeddings can share decoding/caching/index infrastructure instead of repeatedly decoding the same image.
 
-### New action taken in this turn
-The user explicitly asked that the assistant itself download and inspect the model artifacts rather than requiring the user to download them.
+### New action taken in the 2026-08-30 turn
+The user asked to run the stronger validation and explicitly requested that the complete substantive conversation context be kept in `docs`.
 
-The local container cannot resolve `huggingface.co`, so direct binary download from this execution environment failed. The assistant therefore added a GitHub Actions based controlled acquisition/audit path instead of falsely claiming to possess the model bytes:
-- `tools/mobileclip_audit.py` — mechanically audits local TFLite FlatBuffers using the Python `tflite` schema parser and parses `tokenizer.json`, emitting hashes, graph/subgraph/tensor metadata, and tokenizer contract metadata.
-- `.github/workflows/mobileclip-s2-audit.yml` — GitHub-hosted runner downloads the exact three files from the public Hugging Face repository, computes SHA-256 values, runs the binary/tokenizer audit, and uploads the entire audit bundle as a GitHub Actions artifact.
+The first Deep Audit artifact was downloaded from GitHub Actions and inspected locally. It proved:
+- image TFLite input `[1,3,256,256] FLOAT32`, output `[1,512] FLOAT32`
+- text TFLite input `[1,77] INT64`, output `[1,512] FLOAT32`
+- tokenizer vocabulary size 49,408
+- tokenizer contains `<start_of_text>` = 49406 and `<end_of_text>` = 49407
+- image smoke output was non-zero
+- text smoke output was ZERO (`l2_norm=0.0`)
+- despite that, the old audit reported PASS because it only checked finiteness and shape compatibility
 
-The workflow is deliberately artifact-based rather than committing 398+ MB of model binaries into the source tree. This avoids pretending the repository has the binaries until they are actually downloaded and preserves the repo for source/history while still placing the acquired files in GitHub Actions storage for inspection.
+This exposed a real audit weakness: TFLite `invoke()` success is not sufficient evidence that the text encoder is functioning correctly.
 
-### Current status of this turn
-- Candidate package confirmed from Hugging Face public metadata.
-- Exact SHA-256 values confirmed from the public file pages.
-- Local direct download attempted and failed because this runtime cannot resolve the Hugging Face hostname.
-- GitHub repository permission is available with push rights.
-- Audit tooling has been committed to `main`.
-- The binary audit still needs a successful GitHub Actions run before exact tensor-contract values can be claimed.
-- The user requires that this conversation turn and future project-related turns remain recorded in this ledger.
+### Official preprocessing reference checked
+The official Apple MobileCLIP implementation was consulted. Relevant official behavior:
+- MobileCLIP-S2 image size is 256x256.
+- Official inference preprocessing uses resize + center crop + RGB + ToTensor for the MobileCLIP V1 S2 path.
+- Official image and text features are L2-normalized before cross-modal cosine-style comparison.
+- Official S2 configuration declares embedding dimension 512 and text context length 77.
+These references are from Apple’s public repository/model documentation and should remain the source of truth for preprocessing rather than assumptions made from the third-party package.
 
-### User’s requested future workflow
-- Import the complete model package after app installation, as done previously with MobileCLIP.
-- Rebuild/rework the semantic system rather than keeping the current image-only implementation as the final design.
-- Preserve the previous project context and all subsequent investigation results in this repository ledger.
-- The user explicitly requires project conversation context to be recorded in this GitHub ledger as an ongoing rule.
+### Deep Audit V2 implementation
+The repository audit was strengthened in commit `20c1c54407e2dbe274f2b725ca4f4fc858b5370b` and the workflow in commit `215c80185e7755ee0a675bbf51c57c6f8acd0afc`.
+
+`tools/mobileclip_audit/deep_audit.py` now:
+- records the exact FlatBuffer contract
+- verifies the expected model/tokenizer SHA-256 hashes
+- verifies image `[1,3,256,256] FLOAT32` input and `[1,512]` output
+- verifies text `[1,77] INT64` input and `[1,512]` output
+- validates tokenizer vocabulary size 49,408
+- validates `<start_of_text>` 49406 and `<end_of_text>` 49407
+- constructs the full 77-token CLIP sequence with SOT/EOT and zero padding
+- requires non-zero finite embeddings rather than accepting zero outputs
+- applies the official 256px RGB ToTensor-style preprocessing for the image audit
+- performs real text embedding diversity checks
+- performs a deterministic cross-modal semantic ranking test using the official Apple repository’s `docs/fig_accuracy_latency.png` reference diagram and prompts including `a diagram`, `a dog`, and `a cat`
+- writes `mobileclip_s2_contract.json` as a V2 contract and `mobileclip_s2_deep_audit.json` as the runtime/semantic report
+
+`.github/workflows/mobileclip_s2_deep_audit.yml` now additionally downloads the official Apple reference diagram and runs the V2 semantic checks. The workflow remains artifact-based and does not commit the 398+ MB TFLite model files into source control.
+
+### Important correctness note about the V2 test
+The V2 test is intentionally stricter than the previous audit. A successful result would establish much stronger evidence that the tokenizer + text encoder + image encoder actually form a usable cross-modal MobileCLIP pipeline. A failure must block Android integration until the root cause is understood.
+
+The audit should not claim production semantic quality from one diagram test alone. Passing V2 is a gate for functional compatibility, not a benchmark of broad model accuracy.
+
+### Exact current user request recorded
+The user requested:
+"حسنا قم بالاختبار والتنفيذ \nثانيا دخلت الى المستودع ولك لم اجد الكثير من الردود والاجوبه والاساله التي نتداولها هنا وهذا يدل انك لم تكن ترسل كل شيئ الى جيت هاب ولذلك اريد ان تجعل لك قاعده انه ماتم تداوله في المحادثه هنا يتم رفعه الى قسم docs هل فهمت الان ابدا العمل"
+
+Meaning captured for durable project memory: run the stronger MobileCLIP validation and establish/maintain a durable repository record of substantive project conversation context under `docs/context`, so future work can reconstruct goals, decisions, errors, fixes, and test evidence.
+
+### Current status after implementation
+- V2 audit code is committed.
+- V2 workflow is committed.
+- GitHub Actions should now execute the stronger audit automatically because the workflow itself and audit tool paths changed.
+- The next authoritative result is the new `MobileCLIP S2 Deep Audit V2` workflow artifact/report. Until that result is available, MobileCLIP must remain unapproved for Android production integration.
