@@ -146,7 +146,15 @@ class SemanticSearchService(context: Context) : AutoCloseable {
         ensureModel()
         val vector = encoder.encode(Uri.parse(image.uri))
         require(vector.isNotEmpty() && vector.all(Float::isFinite)) { "MobileCLIP produced an invalid embedding" }
-        EmbeddingEntity(AppleMobileClipImageEncoder.OWNER_TYPE, image.id, vector, vector.size, AppleMobileClipImageEncoder.MODEL_NAME, AppleMobileClipImageEncoder.MODEL_VERSION, true)
+        EmbeddingEntity(
+            ownerType = AppleMobileClipImageEncoder.OWNER_TYPE,
+            ownerId = image.id,
+            vector = vector,
+            dimension = vector.size,
+            modelName = AppleMobileClipImageEncoder.MODEL_NAME,
+            modelVersion = AppleMobileClipImageEncoder.MODEL_VERSION,
+            normalized = true
+        )
     }
 
     suspend fun indexImageAndStore(image: ImageEntity): Long {
