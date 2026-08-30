@@ -127,3 +127,30 @@ Inspected the current Android semantic stack and implemented the Image+Text Mobi
 
 ### Next action
 Validate the current main branch with Android Build. Any compile/runtime error discovered there must be fixed before adding the tokenizer golden test and declaring the semantic path production-ready.
+
+## 2026-08-30 — Build correction and tokenizer hardening
+### User request
+Continue the implementation and close the remaining semantic verification issues.
+
+### Findings
+- GitHub Actions run `235` (`33334427738`) failed before Kotlin source compilation because `app/build.gradle.kts` used `java.net.URI(...)` inside the Gradle Kotlin DSL task, producing `Unresolved reference: net` and an `openStream().use` type inference error.
+- The Android semantic code itself had already progressed to `AppleMobileClipImageEncoder`, separate text/image managers, `searchByText()`, and staged import behavior.
+- Official Apple/OpenCLIP preprocessing was independently reverified from the current upstream config: image size 256, resize mode `shortest`, bilinear interpolation, mean `[0,0,0]`, std `[1,1,1]`. citeturn579102search0turn579102search2
+- OpenAI/OpenCLIP tokenizer reference confirms `basic_clean`, whitespace normalization, CLIP regex tokenization, byte-to-unicode mapping, BPE, SOT/EOT and 77-token context. citeturn513547search0turn513547search2
+
+### Corrections committed
+- `742ab16a826e779dda66eee98c0ed0676a6b5ef0` — fixed Gradle Kotlin DSL by explicitly importing `java.net.URI` and `java.io.InputStream` for tokenizer asset preparation.
+- `80c2d5790ebfac496f66b7fb27e1bf0c9c782c9d` — tightened `OpenClipTokenizer.kt`: removed unused imports, added explicit special-token handling, preserved 77-token output, and aligned cleaning/BPE structure more closely with OpenCLIP.
+
+### CI evidence after correction
+- New Android Build run `241` (`33334777025`) for commit `742ab16...` passed the previously failing Gradle-script phase and reached `Build debug APK`.
+- New Android Build run `242` (`33334816450`) was automatically triggered by the tokenizer hardening commit and was still in progress when this ledger entry was written.
+- Therefore the Gradle-script failure is fixed, but final Android build success is not yet proven.
+
+### Current gate
+Do not claim production readiness yet. The current order remains:
+1. finish/review Android Build run `242`;
+2. add deterministic Kotlin tokenizer golden-parity tests against verified Apple token IDs;
+3. run Android Text TFLite smoke inference and validate non-zero finite 512-D output;
+4. run controlled end-to-end Text→Image ranking;
+5. only then unlock semantic production status.
