@@ -1,141 +1,129 @@
 # Durable Conversation Ledger
 
-## Policy established by the user
-- Treat durable project context as a first-class requirement.
-- Every project-related conversation turn, investigation, decision, experiment result, error, correction, and architectural decision should be recorded in the repository so future work does not lose context.
-- This ledger is an ongoing project memory, not a substitute for source code or test evidence.
-- Each future project-related assistant turn should append the substantive user request, the assistant's resulting decisions/findings, tests performed, and concrete repository changes. Full verbatim historical conversation is only possible when that text is available to the assistant; unavailable earlier text must not be fabricated.
+## User policy
+This file is the single ongoing durable conversation ledger for the project. Each substantive project-related turn, investigation, decision, experiment result, error, correction, architectural decision, and concrete repository change must be recorded here with date/time and a clear next action. The full historical conversation remains in the root `session-1788115451049.md`; this ledger is the concise operational memory and must never invent unavailable history.
 
-## 2026-08-29 — Semantic Search / MobileCLIP model discovery and audit
+## Project baseline
+Personal Memory AI is a local-first Android intelligence/search system. Major established subsystems are:
+- Local Reverse Image Search: Haar, pHash, dHash, HSV, Sobel, AKAZE/RANSAC, SIFT/RANSAC. Its candidate and verification pipeline is protected from regressions.
+- Advanced Visual Intelligence: Advanced feature extractor V2 plus independent Fusion V4. It is intentionally separate from Reverse Image Search.
+- Shared local indexing/import: durable WorkManager/foreground processing, shared image decode, per-item failure isolation, MediaStore aggregate `VOLUME_EXTERNAL` enumeration, and scalable Folder/Tree import for very large selections.
+- Face/Vision: MediaPipe detection/landmarks, quality/pose/shape evidence, MobileFaceNet, optional FaceNet-512, and initial person clustering. The new Face Identity & Visual Memory V1 architecture is specified but not yet a completed person-level multi-prototype engine.
+- Semantic Search: MobileCLIP-S2 Image↔Text is the active integration track.
 
-### User objective
-Reactivate the previously disabled semantic image/text search system in the Android Personal Memory AI project.
-Use a MobileCLIP model with a matching text encoder and tokenizer. The user specifically remembers a Hugging Face package containing:
-- MobileCLIP image model
-- MobileCLIP text encoder/model
-- tokenizer
-- both model towers in `.tflite` format
-The intended deployment pattern is: build the Android application first, then import the full model package on the phone, validate it, and use it locally.
+## MobileCLIP-S2 verified provenance
+Candidate package: `plainhub/mobileclip-s2-tflite`
+Pinned HF revision: `868dc14eb50de4a8347714b019aae242a0778675`
+Image TFLite SHA-256: `9190906f0af7c7da7fb64635332d739ace538a0421aacda912a8abe2f946c027`
+Text TFLite SHA-256: `92eba285a505df19f13126d373773714b4aae57863c7a6ba277d562ff7ad718`
+Third-party tokenizer SHA-256: `166a5e8118fe3aa2f60a1877925a4dd5168ce93c58dd5efabc32a9a9eb8335ec`
+Official Apple MobileCLIP source commit used by the oracle: `aecfb5453d022e9deff12f81a150ea8f35194baa`
+Official Apple `MobileCLIP-S2-OpenCLIP` tokenizer revision: `a406a1bd0b882b27509e608f3cb199de52010c4d`
 
-### Durable technical history retained
-- Exact candidate package: `plainhub/mobileclip-s2-tflite`.
-- Pinned package revision used by audits: `868dc14eb50de4a8347714b019aae242a0778675`.
-- Image TFLite SHA-256: `9190906f0af7c7da7fb64635332d739ace538a0421aacda912a8abe2f946c027`.
-- Text TFLite SHA-256: `92eba285a505df19f13126d373773714b4aae57863c7a6ba277d562ff7ad718`.
-- Tokenizer SHA-256 observed in CI: `166a5e8118fe3aa2f60a1877925a4dd5168ce93c58dd5efabc32a9a9eb8335ec`.
-- Official Apple MobileCLIP reference commit used by the oracle: `aecfb5453d022e9deff12f81a150ea8f35194baa`.
-- Official S2 contracts established previously: 512-D shared embedding, 256x256 image input, 77-token text context, vocab size 49,408, SOT 49,406 and EOT 49,407.
+Verified model contracts: shared embedding dimension 512; image input 1×3×256×256 FLOAT32 in the oracle; text input 1×77 INT64; text/image output 512-D FLOAT32; context length 77; vocabulary size 49,408; SOT 49,406; EOT 49,407. Apple’s OpenCLIP reference uses shortest-side resize to 256, center crop to 256×256, raw RGB float input with mean 0/std 1, and the CLIP/OpenCLIP BPE tokenizer.
 
-## 2026-08-30 21:55 +03:00 — Full repository/session re-audit and durable ledger enforcement
+## 2026-08-30 — Deep Oracle V1 result
+The successful Apple-vs-TFLite oracle established:
+- Image Apple vs Image TFLite normalized cosine: `1.000000000`.
+- Text TFLite matches Apple PyTorch at approximately 1e-6 scale when fed Apple’s exact token IDs (for example `a diagram` max absolute difference `1.90735e-06`; `a dog` `6.67572e-06`; `a cat` `2.86102e-06`).
+- Using the third-party tokenizer produced different text embeddings and wrong cross-modal top-1 ranking.
+Conclusion: neither TFLite binary should be replaced. The remaining problem was tokenizer behavior.
 
+## 2026-08-30 — Tokenizer differential investigation
+V3/V4/V6/V7 progressively isolated the tokenizer issue.
+
+Final V7 result from GitHub Actions:
+- Third-party `plainhub/tokenizer.json`: `18 / 19` test cases divergent from Apple runtime.
+- All `49,408 / 49,408` vocabulary token strings are common.
+- All `49,408 / 49,408` token→ID mappings are identical.
+- Zero remapped, Apple-only, or third-party-only tokens.
+- Representative segmentation differences: Apple `a</w>` vs third-party `adi`, Apple `two</w>` vs `two`, Apple `hello</w>` vs `hello`.
+- Official Apple tokenizer JSON: `0 / 19` divergent cases.
+- Production verdict: `USE_OFFICIAL_APPLE_JSON_OR_FAITHFUL_OPENCLIP_IMPLEMENTATION`.
+
+Artifact: `mobileclip-s2-tokenizer-differential-report`, ID `9738443724`, digest `0fd380ffc72e9416a0c9f0d0bf9df31c0fb435bf8dd76d11d00417cc5e903e08`.
+
+Therefore the production decision is locked: keep both TFLite towers; do not use the third-party tokenizer JSON as the Android production tokenizer; reproduce Apple/OpenCLIP tokenizer semantics locally.
+
+## 2026-08-30 — Android semantic implementation started
+The semantic subsystem was upgraded from an image-only placeholder to a two-tower runtime:
+
+### Tokenizer
+`app/src/main/java/com/example/personalmemoryai/semantic/OpenClipTokenizer.kt`
+- Loads official Apple/OpenCLIP `vocab.json` and `merges.txt` as application assets.
+- Uses CLIP-style regex tokenization, byte-to-unicode conversion, BPE ranks, SOT/EOT, 77-token padding/truncation.
+- Assets are prepared by Gradle from pinned Apple revision `a406a1bd0b882b27509e608f3cb199de52010c4d` so runtime remains offline.
+
+### Text model
+`MobileClipTextModelManager.kt`
+- Imports `mobileclip_s2_text.tflite` into private app storage.
+- Validates INT64 `[1,77]` input and FLOAT32 512-D output.
+- Performs finite/non-zero health validation before activation.
+
+`MobileClipTextEncoder.kt`
+- Runs the verified Text TFLite tower with tokenizer-produced INT64 IDs.
+- Normalizes the 512-D output.
+
+### Image model
+`MobileClipModelManager.kt`
+- Canonical image file is now `mobileclip_s2_image.tflite`; legacy `mobileclip_s2_fp16.tflite` remains recognized for compatibility.
+
+`AppleMobileClipImageEncoder.kt`
+- Added as the production semantic image path.
+- Matches Apple/OpenCLIP preprocessing: shortest-side resize, centered 256×256 crop, RGB `[0,1]`, no CLIP mean/std normalization.
+
+### Search service
+`SemanticSearchService.kt`
+- Owns separate image and text model managers.
+- Retains the existing image-import API for compatibility.
+- Adds explicit `importImageModel()` and `importTextModel()`.
+- Adds `ensureTextModel()`, text-model status/size accessors, and `searchByText()`.
+- Text search performs `text query → OpenCLIP tokenizer → Text TFLite → normalized 512-D → cosine against persisted IMAGE embeddings`.
+- Existing image→image semantic search remains available.
+- No Room schema migration is required for text queries because only query embeddings are computed transiently.
+
+### Main UI behavior
+`MainActivity.kt` now stages the existing import button:
+1. first import selects/validates the Image TFLite tower;
+2. pressing the same button again imports the Text TFLite tower;
+3. when Text TFLite is installed, the existing text search button automatically performs MobileCLIP Text→Image semantic search; otherwise it preserves the legacy OCR/object keyword search.
+This avoids adding a parallel UI flow while keeping backward compatibility.
+
+### Documentation
+`app/src/main/assets/models/semantic/README.md` now documents the two separate TFLite towers, their contracts, the production tokenizer decision, and the offline runtime flow.
+
+## Important current limitation
+The Android OpenCLIP tokenizer implementation is intentionally a faithful Kotlin implementation using official Apple vocab/merges, but it has not yet been proven token-for-token against Apple runtime on-device. In particular, Android does not provide Python `ftfy`; the current implementation uses Android HTML decoding, whitespace normalization, NFC normalization and lowercasing. A dedicated Kotlin golden-parity test still needs to be added before calling Android semantic search production-equivalent.
+
+## Current CI / verification gate
+The Android build is required to validate the newly added Kotlin classes and generated tokenizer assets. Do not claim production readiness until the build passes and the Android tokenizer receives golden parity coverage. After that:
+1. run/review Android build;
+2. add deterministic tokenizer golden tests based on the verified Apple IDs;
+3. perform Android Text TFLite smoke test;
+4. perform end-to-end Text→Image ranking against a controlled corpus;
+5. only then enable the semantic subsystem as production-ready.
+
+## User model-download state
+The user confirmed downloading both `mobileclip_s2_image.tflite` and `mobileclip_s2_text.tflite` to the phone. They should be kept; no binary replacement is currently justified.
+
+## 2026-08-30 — Current continuation
 ### User request
-The user requested a full re-audit of the repository, the root `session-1788115451049.md`, all `docs` recursively, and the actual source tree; the user also established that substantive conversation context must be kept in the single central ledger `docs/context/CONVERSATION_LEDGER.md` with timestamps, request, response/work, evidence, unresolved issues, and next action.
+Continue the project after the tokenizer parity decision and proceed with implementation.
 
-### Result
-The current repository was re-read. The root session file is a large historical conversation artifact. The current docs and source confirmed that Reverse Image, Advanced Visual, shared indexing/import, and face infrastructure exist; the new Face Identity V1 is specified but not complete; MobileCLIP remains gated on semantic validation. The duplicate-launcher issue is already fixed, the Picker has five routes with Folder/Tree as the scalable path, and MediaStore uses aggregate external volume only.
+### Assistant work
+Inspected the current Android semantic stack and implemented the Image+Text MobileCLIP runtime, official OpenCLIP tokenizer asset preparation, text-to-image semantic retrieval, staged model import behavior, and Apple-compatible image preprocessing. The old `TextEncoder` placeholder contract was updated to describe the installed implementation. The semantic README was synchronized with the verified two-tower architecture.
 
-The authoritative next gate was set as:
-`MobileCLIP S2 Deep Audit V2 → fixed provenance/revision → exact binary/tokenizer contract → runtime non-zero outputs → official PyTorch oracle comparison → cross-modal semantic validation`.
-
-## 2026-08-30 23:02 +03:00 — Deep Oracle Audit and tokenizer investigation
-
-### User request
-The user selected the next step: execute a Deep Oracle Audit comparing Apple PyTorch MobileCLIP-S2 against the third-party TFLite image/text models on identical inputs and report the actual numerical differences.
-
-### Execution and failure correction
-The first Oracle workflow run failed before the oracle program started because `APPLE_REF` was not defined in the asset-download step while the shell used `set -euo pipefail`. The download itself had otherwise succeeded. The workflow was corrected by defining `APPLE_REF` in that step, after which the successful Oracle run completed.
-
-### Deep Oracle V1 result
-The successful run proved:
-- Image Apple vs TFLite normalized cosine: `1.000000000`.
-- Text TFLite matches Apple PyTorch to approximately `1e-6` scale when the TFLite model is fed the exact token IDs produced by Apple MobileCLIP.
-- For example: `a diagram` cosine `1.000000062`, max absolute difference `1.90735e-06`; `a dog` cosine `1.000000104`, max absolute difference `6.67572e-06`; `a cat` cosine `0.999999994`, max absolute difference `2.86102e-06`.
-- Using the third-party tokenizer output caused divergent text embeddings and wrong top-1 ranking (`screenshot` instead of Apple's `diagram`).
-
-This strongly isolated the remaining issue to tokenization or token-sequence construction rather than the image TFLite model or text TFLite model.
-
-## 2026-08-30 23:13 +03:00 — Tokenizer Differential Audit V3 result
-
-### User-provided run result
-The user shared `MobileCLIP S2 Tokenizer Differential Audit V3` run #3. The job failed because 18 of 19 deterministic test strings diverged from Apple, while the empty string matched. Every non-empty case diverged at sequence index 1. The preliminary V3 method had manually handled special tokens and was not yet sufficient to distinguish the cause.
-
-### Interpretation
-The V3 result was evidence of tokenizer incompatibility but not yet root-cause proof.
-
-## 2026-08-30 23:20 +03:00 — Tokenizer Differential Audit V4 result and root-cause isolation
-
-### User-provided run result
-The user shared the V4 Actions output. It reported:
-- `Cases: 19`
-- `Divergent: 18`
-- `Apple vocab: 49408`
-- `Third-party vocab: 49408`
-- `Common token strings: 49408`
-- `Same token->ID mappings: 49408`
-- `Remapped common tokens: 0`
-- `Apple-only tokens: 0`
-- `Third-only tokens: 0`
-
-For every non-empty case the first divergence was index `1`, and token strings themselves differed, e.g. Apple `a</w>` vs third-party `adi`, Apple `two</w>` vs third-party `two`, and Apple `hello</w>` vs third-party `hello`.
-
-### Root-cause conclusion
-This is not a vocabulary-ID remapping problem. The entire 49,408-token vocabulary has identical token→ID mappings. The incompatibility is in tokenizer algorithm/configuration, especially word-boundary/pre-tokenization/BPE semantics. The Text TFLite binary remains approved because it matches Apple under Apple token IDs.
-
-## 2026-08-30 23:22 +03:00 — User requests complete remaining-error review
-
-### User request
-The user shared another tokenizer audit failure and asked why the errors were not fully fixed and requested a complete review of remaining errors.
-
-### Work performed
-The V4 script/CI path was reviewed instead of treating the red workflow as evidence that the model was broken. The tokenizer parity failure is intentionally a data/parity gate, while earlier runtime exceptions had already been fixed.
-
-A three-way audit was added comparing:
-1. Apple MobileCLIP-S2 runtime tokenizer;
-2. exact third-party tokenizer JSON;
-3. official Apple MobileCLIP-S2/OpenCLIP tokenizer JSON.
-
-## 2026-08-30 — User-provided V6 tokenizer audit result
-
-### User-provided run result
-The user shared `MobileCLIP S2 Tokenizer Differential Audit V6` output. The workflow completed the tokenization comparison and reported:
-- `Third-party divergent cases: 18 / 19`
-- Apple vocabulary size `49408`; third-party vocabulary size `49408`
-- all `49408` token strings were common
-- all `49408` token→ID mappings were identical
-- zero remapped, Apple-only, or third-only tokens
-- representative divergence: Apple `a</w>` vs JSON `adi`, Apple `two</w>` vs JSON `two`, Apple `hello</w>` vs JSON `hello`
-
-### Important tooling gap discovered
-Although the V6 implementation accepted `--official-apple-tokenizer`, the console output only printed the third-party comparison. Therefore a green/red workflow state did not visibly prove the official Apple JSON result. The script needed to print and evaluate the official Apple JSON parity explicitly.
-
-### Remediation
-`tools/mobileclip_oracle/tokenizer_differential_audit.py` was updated to V7 in commit `257d107f7abb550189f536c7b831830cef5e966e`.
-The V7 behavior:
-- compares both third-party and official Apple tokenizer JSON against the authoritative Apple runtime;
-- prints official Apple JSON divergence count;
-- records a production tokenizer verdict;
-- treats third-party divergence as expected diagnostic evidence when official Apple JSON matches the runtime;
-- keeps the workflow red only when official Apple JSON itself diverges or when the official JSON was not supplied.
-
-The workflow already passes `--official-apple-tokenizer` and pins Apple MobileCLIP source plus the exact Hugging Face revisions. The next run must therefore provide the missing decisive number: `Official Apple JSON divergent cases: 0 / 19` or a concrete divergence requiring further investigation.
-
-### Current technical state
-- `mobileclip_s2_image.tflite`: keep; Deep Oracle proved numerical compatibility with Apple.
-- `mobileclip_s2_text.tflite`: keep; Deep Oracle proved numerical compatibility with Apple under identical token IDs.
-- Third-party `tokenizer.json`: not approved for Android production tokenization because its execution differs from Apple despite identical vocabulary mapping.
-- Official Apple tokenizer JSON: awaiting the V7 three-way parity result.
-- Android semantic Image↔Text integration: still blocked pending tokenizer parity.
+### Concrete commits/work
+- `4be11abc8e627a3fcadd9048708650088c28b0b7` — initial OpenCLIP tokenizer implementation.
+- `864307b44fea75bd6cbab775bd932a889733176f` — MobileCLIP-S2 text model manager.
+- `00c87d1a5a6f72ad4cb9b67cff409cb76dd460db` — MobileCLIP-S2 text encoder.
+- `143ced1097bc87120337538c1d1d00a181fe6737` — canonical image model manager.
+- `2298d5907c9f003e2b07b3f9f38db11c8f3fece0` — Apple-compatible semantic image encoder.
+- `9f09dfdb585861db4c217070a3b8559045e4b367` — semantic service wired to Image+Text towers and Text→Image search.
+- `47c8479b970a653a558d1523fc9f5461ce8fac9d` — staged MainActivity import/search behavior.
+- `7745dbb44fb878ca7e941f5b328a36947a886295` — pinned Apple tokenizer asset preparation in Gradle.
+- `0bd436461b6849c66944c6173bc6b9c19b0e3111` — semantic model documentation update.
+- `f93f96634f0c2c0e5aa226944081083713a84eb7` — TextEncoder contract documentation update.
 
 ### Next action
-Run the V7 tokenizer differential workflow, read the report/artifact, verify official Apple JSON parity, then lock the Android tokenizer implementation and rerun the full end-to-end Deep Oracle with the selected tokenizer before resuming semantic search integration.
-
-## 2026-08-30 — Current user turn
-
-### User request
-The user asked to inspect the latest V6 workflow output and continue the audit, with emphasis on why the errors remain and on identifying every remaining issue before proceeding.
-
-### Assistant finding/work
-The latest V6 output is not evidence that the TFLite models are wrong. The vocabulary comparison is exact, while segmentation differs. The actual remaining CI issue is therefore tokenizer parity plus insufficient visibility of the official Apple JSON result in the console output. The audit script was hardened to print and evaluate both JSON variants explicitly and to distinguish a deliberate parity finding from an implementation crash.
-
-### Current gate
-Do not replace either TFLite binary. Do not enable Android semantic search yet. The decisive next evidence is the V7 three-way report, specifically the official Apple JSON divergence count and its token-by-token result.
+Validate the current main branch with Android Build. Any compile/runtime error discovered there must be fixed before adding the tokenizer golden test and declaring the semantic path production-ready.
