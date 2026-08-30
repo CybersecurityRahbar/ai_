@@ -23,6 +23,7 @@ HF_REVISION = "868dc14eb50de4a8347714b019aae242a0778675"
 APPLE_REVISION = "aecfb5453d022e9deff12f81a150ea8f35194baa"
 SOT = 49406
 EOT = 49407
+PAD = 0
 
 
 def sha256(path: Path) -> str:
@@ -55,7 +56,6 @@ def metrics(a: Any, b: Any) -> dict[str, float | int | bool]:
     d = x - y
     n = float(np.linalg.norm(x))
     m = float(np.linalg.norm(y))
-    denom = max(float(x.size), 1.0)
     return {
         "shape_equal": True,
         "dimension": int(x.size),
@@ -74,14 +74,36 @@ def metrics(a: Any, b: Any) -> dict[str, float | int | bool]:
     }
 
 
-def build_clip_ids(ids: list[int]) -> list[int]:
-    body = ids[: CONTEXT - 2]
-    seq = [SOT, *body, EOT]
-    return seq + [0] * (CONTEXT - len(seq))
+def normalize_third_party_encoding(tok: Tokenizer, text: str) -> tuple[list[int], dict[str, Any]]:
+    # Important: tokenizer.json may already contain a PostProcessor that adds
+    # SOT/EOT. Never prepend them blindly. First observe the tokenizer's actual
+    # `encode()` result with add_special_tokens=True (the default).
+    enc = tok.encode(text, add_special_tokens=True)
+    raw_ids = [int(x) for x in enc.ids]
+    vocab = tok.get_vocab()
+    sot = int(vocab.get("<start_of_text>", SOT))
+    eot = int(vocab.get("<end_of_text>", EOT))
 
+    starts_with_specials = len(raw_ids) >= 2 and raw_ids[0] == sot and raw_ids[-1] == eot
+    if starts_with_specials:
+        ids = raw_ids[:CONTEXT]
+    else:
+        body = raw_ids[: CONTEXT - 2]
+        ids = [sot, *body, eot]
 
-def third_party_ids(tok: Tokenizer, text: str) -> list[int]:
-    return build_clip_ids(tok.encode(text).ids)
+    ids = ids[:CONTEXT]
+    ids += [PAD] * (CONTEXT - len(ids))
+    if len(ids) != CONTEXT:
+        raise ValueError(f"third-party token sequence length {len(ids)} != {CONTEXT}")
+
+    return ids, {
+        "raw_ids": raw_ids,
+        "raw_tokens": list(enc.tokens),
+        "special_tokens_were_already_present": starts_with_specials,
+        "sot_id": sot,
+        "eot_id": eot,
+        "tokenizer_added_tokens": list(getattr(enc, "words", [])) if hasattr(enc, "words") else None,
+    }
 
 
 def load_tflite(path: Path) -> tf.lite.Interpreter:
@@ -164,7 +186,7 @@ def main() -> int:
     for prompt in prompts:
         apple_tokens_tensor = tokenizer_apple(prompt)
         apple_ids = [int(x) for x in apple_tokens_tensor[0].tolist()]
-        third_ids = third_party_ids(tokenizer, prompt)
+        third_ids, third_meta = normalize_third_party_encoding(tokenizer, prompt)
         token_equal = apple_ids == third_ids
 
         with torch.no_grad():
@@ -182,6 +204,7 @@ def main() -> int:
             "token_ids_equal": token_equal,
             "apple_token_ids": apple_ids,
             "third_party_token_ids": third_ids,
+            "third_party_encoding_meta": third_meta,
             "apple_vs_tflite_third_party_ids": metrics(apple_text, tflite_third),
             "apple_vs_tflite_apple_ids": metrics(apple_text, tflite_apple),
             "third_party_vs_apple_input_tflite": metrics(tflite_third, tflite_apple),
@@ -201,7 +224,7 @@ def main() -> int:
     tflite_rank_apple = sorted(tflite_scores_apple.items(), key=lambda x: x[1], reverse=True)
 
     result = {
-        "format": "mobileclip-s2-deep-oracle-v1",
+        "format": "mobileclip-s2-deep-oracle-v2",
         "provenance": {
             "apple_repo_commit": APPLE_REVISION,
             "apple_checkpoint": str(args.apple_checkpoint),
@@ -211,6 +234,15 @@ def main() -> int:
             "tflite_text_sha256": sha256(args.tflite_text),
             "tokenizer_sha256": sha256(args.tokenizer),
             "apple_checkpoint_sha256": sha256(args.apple_checkpoint),
+        },
+        "tokenizer_contract": {
+            "third_party_vocab_size": len(tokenizer.get_vocab()),
+            "third_party_post_processor": repr(tokenizer.post_processor),
+            "third_party_added_tokens": [
+                {"id": int(t.id), "content": t.content, "special": bool(t.special)}
+                for t in tokenizer.get_added_tokens_decoder().values()
+            ],
+            "apple_special_token_ids": {"sot": SOT, "eot": EOT},
         },
         "shared_input": {
             "image_tensor_shape": list(shared_image.shape),
@@ -239,7 +271,7 @@ def main() -> int:
     write.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     lines = [
-        "MobileCLIP S2 Deep Oracle Audit V1",
+        "MobileCLIP S2 Deep Oracle Audit V2",
         "===================================",
         f"Apple commit: {APPLE_REVISION}",
         f"TFLite package revision: {HF_REVISION}",
@@ -254,6 +286,7 @@ def main() -> int:
         m2 = row["apple_vs_tflite_apple_ids"]
         lines.append(
             f"{row['prompt']!r}: ids_equal={row['token_ids_equal']} "
+            f"specials_already_present={row['third_party_encoding_meta']['special_tokens_were_already_present']} "
             f"third_cos={m1.get('cosine', float('nan')):.9f} third_max_abs={m1.get('max_abs_diff', float('nan')):.6g} "
             f"apple_ids_cos={m2.get('cosine', float('nan')):.9f} apple_ids_max_abs={m2.get('max_abs_diff', float('nan')):.6g}"
         )
