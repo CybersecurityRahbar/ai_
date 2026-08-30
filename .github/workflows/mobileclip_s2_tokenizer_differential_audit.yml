@@ -44,16 +44,21 @@ jobs:
           git -C .audit/apple_ml_mobileclip rev-parse HEAD
           python -m pip install -e .audit/apple_ml_mobileclip
 
-      - name: Download exact third-party tokenizer
+      - name: Download exact tokenizer files
         env:
           HF_REVISION: 868dc14eb50de4a8347714b019aae242a0778675
+          APPLE_HF_REVISION: a406a1b
         run: |
           set -euo pipefail
           mkdir -p .audit/mobileclip_s2_tokenizer
           curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 \
             -o .audit/mobileclip_s2_tokenizer/tokenizer.json \
             "https://huggingface.co/plainhub/mobileclip-s2-tflite/resolve/${HF_REVISION}/tokenizer.json?download=true"
+          curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 \
+            -o .audit/mobileclip_s2_tokenizer/apple_tokenizer.json \
+            "https://huggingface.co/apple/MobileCLIP-S2-OpenCLIP/resolve/${APPLE_HF_REVISION}/tokenizer.json?download=true"
           sha256sum .audit/mobileclip_s2_tokenizer/tokenizer.json
+          sha256sum .audit/mobileclip_s2_tokenizer/apple_tokenizer.json
 
       - name: Run tokenizer differential audit
         run: |
@@ -61,6 +66,7 @@ jobs:
           mkdir -p .audit/mobileclip_s2_tokenizer/report
           python tools/mobileclip_oracle/tokenizer_differential_audit.py \
             --third-party-tokenizer .audit/mobileclip_s2_tokenizer/tokenizer.json \
+            --official-apple-tokenizer .audit/mobileclip_s2_tokenizer/apple_tokenizer.json \
             --out .audit/mobileclip_s2_tokenizer/report/mobileclip_s2_tokenizer_differential.json
 
       - name: Upload tokenizer differential report
