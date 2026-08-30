@@ -1,0 +1,73 @@
+name: MobileCLIP S2 Tokenizer Differential Audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/mobileclip_s2_tokenizer_differential_audit.yml'
+      - 'tools/mobileclip_oracle/tokenizer_differential_audit.py'
+
+permissions:
+  contents: read
+
+jobs:
+  tokenizer-diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            tools/mobileclip_audit/requirements.txt
+            tools/mobileclip_oracle/requirements.txt
+
+      - name: Install tokenizer audit dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r tools/mobileclip_audit/requirements.txt
+          python -m pip install -r tools/mobileclip_oracle/requirements.txt
+
+      - name: Pin official Apple MobileCLIP reference
+        env:
+          APPLE_REF: aecfb5453d022e9deff12f81a150ea8f35194baa
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/apple/ml-mobileclip.git .audit/apple_ml_mobileclip
+          git -C .audit/apple_ml_mobileclip checkout --quiet "$APPLE_REF"
+          git -C .audit/apple_ml_mobileclip rev-parse HEAD
+          python -m pip install -e .audit/apple_ml_mobileclip
+
+      - name: Download exact third-party tokenizer
+        env:
+          HF_REVISION: 868dc14eb50de4a8347714b019aae242a0778675
+        run: |
+          set -euo pipefail
+          mkdir -p .audit/mobileclip_s2_tokenizer
+          curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 \
+            -o .audit/mobileclip_s2_tokenizer/tokenizer.json \
+            "https://huggingface.co/plainhub/mobileclip-s2-tflite/resolve/${HF_REVISION}/tokenizer.json?download=true"
+          sha256sum .audit/mobileclip_s2_tokenizer/tokenizer.json
+
+      - name: Run tokenizer differential audit
+        run: |
+          set -euo pipefail
+          mkdir -p .audit/mobileclip_s2_tokenizer/report
+          python tools/mobileclip_oracle/tokenizer_differential_audit.py \
+            --third-party-tokenizer .audit/mobileclip_s2_tokenizer/tokenizer.json \
+            --out .audit/mobileclip_s2_tokenizer/report/mobileclip_s2_tokenizer_differential.json
+
+      - name: Upload tokenizer differential report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobileclip-s2-tokenizer-differential-report
+          path: .audit/mobileclip_s2_tokenizer/report/mobileclip_s2_tokenizer_differential.json
+          if-no-files-found: error
+          retention-days: 30
