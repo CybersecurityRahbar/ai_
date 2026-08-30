@@ -51,7 +51,7 @@ class MainActivity : AppCompatActivity() {
             showStatus("لم يتم اختيار نموذج")
             return@registerForActivityResult
         }
-        importMobileClipModel(uri)
+        importNextMobileClipModel(uri)
     }
 
     private val semanticImagePicker = registerForActivityResult(
@@ -98,43 +98,76 @@ class MainActivity : AppCompatActivity() {
         binding.resultsRecyclerView.adapter = adapter
     }
 
-    private fun importMobileClipModel(uri: Uri) {
+    /**
+     * The existing single import button is staged: first import the verified
+     * image tower, then press it again to import the verified text tower.
+     */
+    private fun importNextMobileClipModel(uri: Uri) {
         lifecycleScope.launch {
+            val importImage = !semanticSearchService.isModelInstalled()
+            val importText = !importImage && !semanticSearchService.isTextModelInstalled()
+            if (!importImage && !importText) {
+                showStatus("تم استيراد نموذجي MobileCLIP-S2 بالفعل.")
+                return@launch
+            }
             try {
                 setBusy(true)
                 binding.progressBar.max = 100
                 binding.progressBar.progress = 0
-                binding.modelStatusText.text = "استيراد MobileCLIP-S2 FP16..."
+                binding.modelStatusText.text = if (importImage) {
+                    "استيراد MobileCLIP-S2 Image TFLite..."
+                } else {
+                    "استيراد MobileCLIP-S2 Text TFLite..."
+                }
                 withContext(Dispatchers.IO) {
-                    semanticSearchService.importModel(uri) { copied, total ->
+                    val callback: (Long, Long) -> Unit = { copied, total ->
                         val percent = if (total > 0) ((copied * 100L) / total).toInt().coerceIn(0, 100) else 0
                         runOnUiThread {
                             binding.progressBar.progress = percent
-                            binding.counterText.text = if (total > 0) "استيراد النموذج: $percent%" else "تم استيراد ${(copied / (1024 * 1024))} MB"
+                            binding.counterText.text = if (total > 0) {
+                                "استيراد النموذج: $percent%"
+                            } else {
+                                "تم استيراد ${(copied / (1024 * 1024))} MB"
+                            }
                         }
                     }
+                    if (importImage) semanticSearchService.importImageModel(uri, callback)
+                    else semanticSearchService.importTextModel(uri, callback)
                 }
-                setBusy(false)
                 updateModelStatus()
-                binding.statusText.text = "تم استيراد MobileCLIP-S2. اضغط BUILD VISUAL INDEX لإنشاء البصمات البصرية الدائمة."
+                binding.statusText.text = if (importImage) {
+                    "تم استيراد Image TFLite والتحقق منه. اضغط IMPORT LOCAL TFLITE MODEL مرة أخرى لاستيراد Text TFLite."
+                } else {
+                    "تم استيراد Text TFLite والتحقق منه. يمكنك الآن استخدام البحث الدلالي النصي. أعد BUILD VISUAL INDEX عند الحاجة."
+                }
             } catch (e: Exception) {
+                binding.modelStatusText.text = "○ MobileCLIP غير مكتمل"
+                showStatus("فشل استيراد نموذج MobileCLIP-S2: ${e.message}")
+                Toast.makeText(this@MainActivity, "فشل استيراد نموذج MobileCLIP-S2", Toast.LENGTH_LONG).show()
+            } finally {
                 setBusy(false)
-                binding.modelStatusText.text = "○ نموذج MobileCLIP غير متوفر"
-                showStatus("فشل استيراد النموذج: ${e.message}")
-                Toast.makeText(this@MainActivity, "فشل استيراد النموذج", Toast.LENGTH_LONG).show()
             }
         }
     }
 
     private fun updateModelStatus() {
         lifecycleScope.launch {
-            val installed = semanticSearchService.isModelInstalled()
+            val imageInstalled = semanticSearchService.isModelInstalled()
+            val textInstalled = semanticSearchService.isTextModelInstalled()
             val embeddings = withContext(Dispatchers.IO) { semanticSearchService.imageEmbeddingCount() }
-            binding.modelStatusText.text = if (installed) {
-                val mb = semanticSearchService.modelSizeBytes() / (1024 * 1024)
-                "● MobileCLIP-S2 جاهز • ${mb} MB • بصمات الصور: $embeddings"
-            } else {
-                "○ MobileCLIP-S2 غير مستورد • اختر ملف .tflite"
+            binding.modelStatusText.text = when {
+                imageInstalled && textInstalled -> {
+                    val imageMb = semanticSearchService.modelSizeBytes() / (1024 * 1024)
+                    val textMb = semanticSearchService.textModelSizeBytes() / (1024 * 1024)
+                    "● MobileCLIP-S2 جاهز بالكامل • Image ${imageMb} MB • Text ${textMb} MB • بصمات الصور: $embeddings"
+                }
+                imageInstalled -> {
+                    val mb = semanticSearchService.modelSizeBytes() / (1024 * 1024)
+                    "● Image TFLite جاهز • ${mb} MB • اضغط IMPORT LOCAL TFLITE MODEL لاستيراد Text TFLite"
+                }
+                else -> {
+                    "○ MobileCLIP-S2 غير مستورد • ابدأ بملف Image TFLite"
+                }
             }
         }
     }
@@ -150,7 +183,7 @@ class MainActivity : AppCompatActivity() {
     private fun buildVisualIndex() {
         lifecycleScope.launch {
             if (!semanticSearchService.isModelInstalled()) {
-                showStatus("استورد model.float16.tflite / MobileCLIP-S2 أولًا.")
+                showStatus("استورد Image TFLite من MobileCLIP-S2 أولًا.")
                 return@launch
             }
             val total = withContext(Dispatchers.IO) { database.imageDao().count() }
@@ -171,8 +204,8 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 val finalCount = semanticSearchService.imageEmbeddingCount()
-                binding.modelStatusText.text = "● MobileCLIP-S2 جاهز • بصمات الصور: $finalCount"
-                binding.statusText.text = "اكتمل الفهرس البصري. البحث بالصورة أصبح يعتمد على embeddings محفوظة بدل إعادة تحليل كل الصور."
+                binding.modelStatusText.text = "● MobileCLIP-S2 Image جاهز • بصمات الصور: $finalCount"
+                binding.statusText.text = "اكتمل الفهرس البصري. صور المكتبة الآن ممثلة داخل مساحة MobileCLIP-S2 المشتركة."
             } catch (e: Exception) {
                 showStatus("فشل بناء الفهرس البصري: ${e.message}")
                 Toast.makeText(this@MainActivity, "فشل بناء الفهرس البصري", Toast.LENGTH_LONG).show()
@@ -255,6 +288,27 @@ class MainActivity : AppCompatActivity() {
         }
         lifecycleScope.launch {
             try {
+                if (semanticSearchService.isTextModelInstalled()) {
+                    val embeddings = withContext(Dispatchers.IO) { semanticSearchService.imageEmbeddingCount() }
+                    if (embeddings == 0L) {
+                        showStatus("Text TFLite جاهز، لكن لا توجد بصمات صور. اضغط BUILD VISUAL INDEX أولًا.")
+                        return@launch
+                    }
+                    setBusy(true)
+                    binding.statusText.text = "جاري تشغيل MobileCLIP-S2 Text→Image..."
+                    val semanticResults = withContext(Dispatchers.IO) {
+                        semanticSearchService.searchByText(normalized, limit = 30)
+                    }
+                    adapter.submitList(semanticResults.map { it.image })
+                    binding.counterText.text = "النتائج الدلالية: ${semanticResults.size}"
+                    binding.statusText.text = if (semanticResults.isEmpty()) {
+                        "لم توجد صور مرشحة في المساحة الدلالية لـ: $normalized"
+                    } else {
+                        "${semanticResults.size} نتيجة • MobileCLIP-S2 Text→Image • 512-D cosine ranking"
+                    }
+                    return@launch
+                }
+
                 val results = withContext(Dispatchers.IO) {
                     val exact = database.imageDao().searchTextAndObjects(normalized)
                     val tokens = normalized.lowercase(Locale.getDefault())
@@ -281,9 +335,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 adapter.submitList(results)
                 binding.counterText.text = "النتائج: ${results.size}"
-                binding.statusText.text = if (results.isEmpty()) "لم توجد مطابقة للكلمات أو الكائنات: $normalized" else "${results.size} نتيجة • OCR + YOLO object labels.\nText Encoder مؤجل كما هو مخطط."
+                binding.statusText.text = if (results.isEmpty()) "لم توجد مطابقة للكلمات أو الكائنات: $normalized" else "${results.size} نتيجة • OCR + YOLO object labels.\nText TFLite غير مستورد، لذلك تم استخدام البحث النصي التقليدي."
             } catch (e: Exception) {
                 showStatus("حدث خطأ أثناء البحث: ${e.message}")
+            } finally {
+                setBusy(false)
             }
         }
     }
@@ -292,7 +348,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 if (!semanticSearchService.isModelInstalled()) {
-                    showStatus("استورد نموذج MobileCLIP-S2 أولًا من بطاقة النماذج.")
+                    showStatus("استورد Image TFLite أولًا من بطاقة النماذج.")
                     return@launch
                 }
                 val embeddings = withContext(Dispatchers.IO) { semanticSearchService.imageEmbeddingCount() }
@@ -326,7 +382,7 @@ class MainActivity : AppCompatActivity() {
     private fun setBusy(busy: Boolean) {
         binding.progressBar.visibility = if (busy) View.VISIBLE else View.GONE
         binding.selectButton.isEnabled = !busy
-        binding.importModelButton.isEnabled = !busy
+        binding.importModelButton.isEnabled = !busy && !(semanticSearchService.isModelInstalled() && semanticSearchService.isTextModelInstalled())
         binding.dataCenterButton.isEnabled = !busy
         binding.buildVisualIndexButton.isEnabled = !busy
         binding.buildFaceIndexButton.isEnabled = !busy
