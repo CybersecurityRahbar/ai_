@@ -1,0 +1,95 @@
+name: MobileCLIP S2 Deep Oracle Audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/mobileclip_s2_deep_oracle_audit.yml'
+      - 'tools/mobileclip_oracle/**'
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            tools/mobileclip_audit/requirements.txt
+            tools/mobileclip_oracle/requirements.txt
+
+      - name: Install audit and oracle dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r tools/mobileclip_audit/requirements.txt
+          python -m pip install -r tools/mobileclip_oracle/requirements.txt
+
+      - name: Pin and install official Apple MobileCLIP reference code
+        env:
+          APPLE_REF: aecfb5453d022e9deff12f81a150ea8f35194baa
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/apple/ml-mobileclip.git .audit/apple_ml_mobileclip
+          git -C .audit/apple_ml_mobileclip checkout --quiet "$APPLE_REF"
+          git -C .audit/apple_ml_mobileclip rev-parse HEAD
+          python -m pip install -e .audit/apple_ml_mobileclip
+
+      - name: Download exact model assets with fixed provenance
+        env:
+          HF_REVISION: 868dc14eb50de4a8347714b019aae242a0778675
+          APPLE_CHECKPOINT: https://docs-assets.developer.apple.com/ml-research/datasets/mobileclip/mobileclip_s2.pt
+        run: |
+          set -euo pipefail
+          mkdir -p .audit/mobileclip_s2_oracle
+          curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 \
+            -o .audit/mobileclip_s2_oracle/mobileclip_s2_image.tflite \
+            "https://huggingface.co/plainhub/mobileclip-s2-tflite/resolve/${HF_REVISION}/mobileclip_s2_image.tflite?download=true"
+          curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 \
+            -o .audit/mobileclip_s2_oracle/mobileclip_s2_text.tflite \
+            "https://huggingface.co/plainhub/mobileclip-s2-tflite/resolve/${HF_REVISION}/mobileclip_s2_text.tflite?download=true"
+          curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 \
+            -o .audit/mobileclip_s2_oracle/tokenizer.json \
+            "https://huggingface.co/plainhub/mobileclip-s2-tflite/resolve/${HF_REVISION}/tokenizer.json?download=true"
+          curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 \
+            -o .audit/mobileclip_s2_oracle/mobileclip_s2.pt \
+            "$APPLE_CHECKPOINT"
+          curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 \
+            -o .audit/mobileclip_s2_oracle/reference_diagram.png \
+            "https://raw.githubusercontent.com/apple/ml-mobileclip/${APPLE_REF}/docs/fig_accuracy_latency.png"
+          sha256sum .audit/mobileclip_s2_oracle/*
+          ls -lh .audit/mobileclip_s2_oracle
+
+      - name: Run Deep Oracle Audit
+        env:
+          APPLE_REF: aecfb5453d022e9deff12f81a150ea8f35194baa
+          HF_REVISION: 868dc14eb50de4a8347714b019aae242a0778675
+        run: |
+          set -euo pipefail
+          mkdir -p .audit/mobileclip_s2_oracle/report
+          python tools/mobileclip_oracle/oracle_audit.py \
+            --tflite-image .audit/mobileclip_s2_oracle/mobileclip_s2_image.tflite \
+            --tflite-text .audit/mobileclip_s2_oracle/mobileclip_s2_text.tflite \
+            --tokenizer .audit/mobileclip_s2_oracle/tokenizer.json \
+            --semantic-image .audit/mobileclip_s2_oracle/reference_diagram.png \
+            --apple-checkpoint .audit/mobileclip_s2_oracle/mobileclip_s2.pt \
+            --out .audit/mobileclip_s2_oracle/report
+
+      - name: Upload Deep Oracle report only
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobileclip-s2-deep-oracle-report
+          path: |
+            .audit/mobileclip_s2_oracle/report/mobileclip_s2_oracle_report.json
+            .audit/mobileclip_s2_oracle/report/SUMMARY.txt
+          if-no-files-found: error
+          retention-days: 30
