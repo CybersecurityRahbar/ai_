@@ -16,12 +16,9 @@ from tokenizers import Tokenizer
 
 EXPECTED = {
     "mobileclip_s2_image.tflite": "9190906f0af7c7da7fb64635332d739ace538a0421aacda912a8abe2f946c027",
-    "mobileclip_s2_text.tflite": "92eba285a505df19f13126d373773714b4aae57863c7a6ba277d562ff7ad7182",
-    "tokenizer.json": "166a5e8118fe8ff5?",
+    "mobileclip_s2_text.tflite": "92eba285a505df19f13126d373773714b4aae57863c7a6ba277d562ff7ad718",
+    "tokenizer.json": "166a5e8118fe3aa2f60a1877925a4dd5168ce93c58dd5efabc32a9a9eb8335ec",
 }
-# The tokenizer hash is filled from the known package audit below. Keeping the
-# value in a separate constant makes accidental drift obvious in CI.
-EXPECTED["tokenizer.json"] = "166a5e8118fe3aa2f60a1877925a4dd5168ce93c58dd5efabc32a9a9eb8335ec"
 
 EXPECTED_EMBED_DIM = 512
 EXPECTED_IMAGE_SHAPE = [1, 3, 256, 256]
@@ -177,14 +174,17 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def prepare_image(path: Path) -> np.ndarray:
-    # Official MobileCLIP-S2 preprocessing is Resize(256), CenterCrop(256),
-    # RGB, ToTensor. ToTensor yields float32 in [0,1]; the exported graph is NCHW.
+    # Official MobileCLIP-S2 inference path: resize 256, center crop 256,
+    # RGB, ToTensor -> float32 [0,1], followed by NCHW arrangement.
     with Image.open(path) as src:
         image = src.convert("RGB")
         short = min(image.size)
         scale = 256.0 / float(short)
         resized = image.resize(
-            (max(256, int(round(image.width * scale))), max(256, int(round(image.height * scale)))),
+            (
+                max(256, int(round(image.width * scale))),
+                max(256, int(round(image.height * scale))),
+            ),
             Image.Resampling.BILINEAR,
         )
         left = (resized.width - 256) // 2
@@ -199,7 +199,7 @@ def invoke_image(path: Path, image: np.ndarray) -> tuple[np.ndarray, dict[str, A
     interp.allocate_tensors()
     inputs = interp.get_input_details()
     outputs = interp.get_output_details()
-    if len(inputs) != 1 or inputs[0]["dtype"] is not np.dtype(np.float32):
+    if len(inputs) != 1 or inputs[0]["dtype"] != np.dtype(np.float32):
         raise ValueError(f"unexpected image input contract: {inputs}")
     if list(inputs[0]["shape"]) != EXPECTED_IMAGE_SHAPE:
         raise ValueError(f"unexpected image input shape: {inputs[0]['shape']}")
@@ -224,7 +224,7 @@ def invoke_text(path: Path, tokenizer: Tokenizer, text: str) -> tuple[np.ndarray
     interp.allocate_tensors()
     inputs = interp.get_input_details()
     outputs = interp.get_output_details()
-    if len(inputs) != 1 or inputs[0]["dtype"] is not np.dtype(np.int64):
+    if len(inputs) != 1 or inputs[0]["dtype"] != np.dtype(np.int64):
         raise ValueError(f"unexpected text input contract: {inputs}")
     if list(inputs[0]["shape"]) != EXPECTED_TEXT_SHAPE:
         raise ValueError(f"unexpected text input shape: {inputs[0]['shape']}")
@@ -253,12 +253,12 @@ def smoke_contract(run_path: Path, tokenizer: Tokenizer | None, role: str) -> di
     interp.allocate_tensors()
     inputs = interp.get_input_details()
     outputs = interp.get_output_details()
+    shape = [int(x) for x in inputs[0]["shape"]]
     if tokenizer is not None:
         ids, _ = clip_token_ids(tokenizer, "a photo of a person")
-        value = np.asarray(ids, dtype=inputs[0]["dtype"]).reshape(inputs[0]["shape"])
+        value = np.asarray(ids, dtype=inputs[0]["dtype"]).reshape(shape)
         source = "clip-tokenizer-with-special-tokens"
     else:
-        shape = [int(x) for x in inputs[0]["shape"]]
         value = np.zeros(shape, dtype=inputs[0]["dtype"])
         source = "zero-image-smoke"
     interp.set_tensor(inputs[0]["index"], value)
@@ -268,7 +268,7 @@ def smoke_contract(run_path: Path, tokenizer: Tokenizer | None, role: str) -> di
     norm = float(np.linalg.norm(out)) if out.size else 0.0
     return {
         "role": role,
-        "input": {"name": inputs[0]["name"], "shape": [int(x) for x in inputs[0]["shape"]], "dtype": str(inputs[0]["dtype"]), "source": source},
+        "input": {"name": inputs[0]["name"], "shape": shape, "dtype": str(inputs[0]["dtype"]), "source": source},
         "output": {"name": outputs[0]["name"], "shape": [int(x) for x in out.shape], "dtype": str(out.dtype), "finite": finite, "l2_norm": norm},
         "invoke": "PASS" if finite and norm > 1e-8 else "FAIL",
     }
@@ -334,7 +334,7 @@ def main() -> int:
     if vocab.get("<start_of_text>") != SOT or vocab.get("<end_of_text>") != EOT:
         failures.append("tokenizer_special_tokens")
 
-    semantic: dict[str, Any] = {"status": "NOT_RUN", "reason": None}
+    semantic: dict[str, Any]
     try:
         image_raw, image_meta = invoke_image(args.image_model, prepare_image(args.semantic_image))
         prompts = ["a diagram", "a dog", "a cat", "a landscape", "a person"]
@@ -349,6 +349,11 @@ def main() -> int:
         image_norm = normalize(image_raw)
         scores = {p: float(np.dot(image_norm, normalize(v))) for p, v in text_vectors.items()}
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        pairwise = {}
+        for a in prompts:
+            for b in prompts:
+                if a < b:
+                    pairwise[f"{a} <> {b}"] = cosine(text_vectors[a], text_vectors[b])
         semantic = {
             "status": "PASS" if ranked[0][0] == "a diagram" else "FAIL",
             "image": image_meta,
@@ -356,16 +361,10 @@ def main() -> int:
             "cosine_scores": scores,
             "ranking": ranked,
             "top1_expected": "a diagram",
+            "text_pairwise_cosine": pairwise,
         }
         if semantic["status"] != "PASS":
             failures.append("semantic_cross_modal_ranking")
-
-        pairwise = {}
-        for a in prompts:
-            for b in prompts:
-                if a < b:
-                    pairwise[f"{a} <> {b}"] = cosine(text_vectors[a], text_vectors[b])
-        semantic["text_pairwise_cosine"] = pairwise
         if len({round(x, 6) for x in pairwise.values()}) < 3:
             failures.append("text_embedding_diversity")
     except Exception as exc:
