@@ -1,5 +1,6 @@
 import java.net.URI
 import java.io.InputStream
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     id("com.android.application")
@@ -44,6 +45,7 @@ val prepareMobileClipTokenizer by tasks.registering {
 }
 
 tasks.named("preBuild").configure { dependsOn(prepareMobileClipTokenizer) }
+tasks.withType<Test>().configureEach { dependsOn(prepareMobileClipTokenizer) }
 
 android {
     namespace = "com.example.personalmemoryai"
@@ -88,6 +90,8 @@ dependencies {
 
     implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
     implementation("org.opencv:opencv:4.13.0")
+
+    testImplementation("junit:junit:4.13.2")
 
     androidTestImplementation("androidx.test:core:1.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
