@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'app/src/main/java/com/example/personalmemoryai/semantic/OpenClipTokenizer.kt'
+      - 'app/src/test/**'
       - 'app/src/androidTest/**'
       - 'app/src/main/assets/models/semantic/**'
       - 'app/build.gradle.kts'
@@ -15,6 +16,7 @@ on:
     branches: [ main ]
     paths:
       - 'app/src/main/java/com/example/personalmemoryai/semantic/OpenClipTokenizer.kt'
+      - 'app/src/test/**'
       - 'app/src/androidTest/**'
       - 'app/src/main/assets/models/semantic/**'
       - 'app/build.gradle.kts'
@@ -29,14 +31,14 @@ permissions:
 jobs:
   parity:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -44,32 +46,31 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Prepare Android test platform
+      - name: Run JVM tokenizer golden parity
+        run: ./gradlew :app:testDebugUnitTest --tests com.example.personalmemoryai.semantic.OpenClipTokenizerGoldenJvmTest --stacktrace --no-daemon
+
+      - name: Print compact tokenizer test summary
+        if: always()
         run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "platform-tools" "platforms;android-31" "system-images;android-31;google_apis;x86_64"
+          echo "=== MobileCLIP tokenizer parity summary ==="
+          if find app/build/test-results/testDebugUnitTest -type f -name 'TEST-*.xml' -print -quit | grep -q .; then
+            grep -hE '<testsuite|<failure|<error' app/build/test-results/testDebugUnitTest/TEST-*.xml | head -20 || true
+          else
+            echo "No JUnit XML result was produced."
+          fi
 
-      - name: Run Android tokenizer golden parity
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 31
-          target: google_apis
-          arch: x86_64
-          profile: pixel_5
-          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
-          disable-animations: true
-          script: ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.personalmemoryai.semantic.OpenClipTokenizerGoldenTest --stacktrace
-
-      - name: Upload Android test results
+      - name: Upload JVM test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mobileclip-android-tokenizer-parity-results
           path: |
-            app/build/outputs/androidTest-results/**
-            app/build/reports/androidTests/**
+            app/build/test-results/testDebugUnitTest/**
+            app/build/reports/tests/testDebugUnitTest/**
           if-no-files-found: warn
