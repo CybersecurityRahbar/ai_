@@ -33,8 +33,9 @@ class OpenClipTokenizer(private val context: Context) {
     private val bpeRanks: Map<Pair<String, String>, Int>
     private val cache = ConcurrentHashMap<String, String>()
     private val byteEncoder: Map<Int, Char>
+    /** CLIP/OpenCLIP simple-tokenizer pattern: unicode letters, whole numeric runs, punctuation. */
     private val tokenPattern = Regex(
-        "<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[\\p{L}]+|[\\p{N}]|[^\\s\\p{L}\\p{N}]+",
+        "<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[\\p{L}]+|[\\p{N}]+|[^\\s\\p{L}\\p{N}]+",
         RegexOption.IGNORE_CASE
     )
 
@@ -81,7 +82,8 @@ class OpenClipTokenizer(private val context: Context) {
         ids += SOT_ID
 
         for (piece in tokenPattern.findAll(cleaned)) {
-            when (piece.value.lowercase(Locale.US)) {
+            val lowered = piece.value.lowercase(Locale.US)
+            when (lowered) {
                 SOT_TOKEN -> {
                     if (ids.size < CONTEXT_LENGTH - 1) ids += SOT_ID
                     continue
@@ -92,7 +94,7 @@ class OpenClipTokenizer(private val context: Context) {
                 }
             }
 
-            val bytes = piece.value.toByteArray(Charsets.UTF_8)
+            val bytes = lowered.toByteArray(Charsets.UTF_8)
             val mapped = buildString(bytes.size) {
                 for (b in bytes) append(byteEncoder[b.toInt() and 0xFF])
             }
@@ -115,9 +117,6 @@ class OpenClipTokenizer(private val context: Context) {
     }
 
     private fun normalizeForClip(text: String): String {
-        // Match the relevant OpenCLIP cleaning sequence: HTML unescape +
-        // whitespace normalization + trimming + lowercase. NFC keeps already
-        // normalized Unicode stable without introducing compatibility folds.
         var cleaned = Html.fromHtml(text, Html.FROM_HTML_MODE_LEGACY).toString()
         cleaned = Html.fromHtml(cleaned, Html.FROM_HTML_MODE_LEGACY).toString()
         cleaned = cleaned.replace(Regex("\\s+"), " ").trim()
@@ -191,4 +190,4 @@ class OpenClipTokenizer(private val context: Context) {
         }
         return bs.zip(cs).associate { (b, c) -> b to c.toChar() }
     }
-} 
+}
