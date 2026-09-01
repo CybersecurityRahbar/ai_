@@ -48,11 +48,10 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Create API 31 emulator
+      - name: Prepare Android test platform
         run: |
           yes | sdkmanager --licenses >/dev/null
           sdkmanager "platform-tools" "platforms;android-31" "system-images;android-31;google_apis;x86_64"
-          echo "no" | avdmanager create avd --force --name mobileclip_api31 --package "system-images;android-31;google_apis;x86_64" --device "pixel_5"
 
       - name: Run Android tokenizer golden parity
         uses: reactivecircus/android-emulator-runner@v2
@@ -63,7 +62,7 @@ jobs:
           profile: pixel_5
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
-          script: ./gradlew :app:connectedDebugAndroidTest --tests com.example.personalmemoryai.semantic.OpenClipTokenizerGoldenTest --stacktrace
+          script: ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.personalmemoryai.semantic.OpenClipTokenizerGoldenTest --stacktrace
 
       - name: Upload Android test results
         if: always()
