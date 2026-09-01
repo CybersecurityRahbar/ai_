@@ -16,8 +16,14 @@ import java.util.concurrent.ConcurrentHashMap
  * Production assets are the pinned Apple/OpenCLIP vocab.json + merges.txt.
  * The third-party plainhub tokenizer.json is deliberately not used because
  * the differential audit proved that its serialized execution path diverges.
+ *
+ * The String-based constructor makes the tokenizer independently testable on
+ * the JVM without an Android emulator; the production constructor still reads
+ * the exact same packaged assets from Android AssetManager.
  */
-class OpenClipTokenizer(private val context: Context) {
+class OpenClipTokenizer private constructor(
+    private val assetContentLoader: () -> Pair<String, String>
+) {
     companion object {
         const val CONTEXT_LENGTH = 77
         const val SOT_TOKEN = "<start_of_text>"
@@ -29,20 +35,30 @@ class OpenClipTokenizer(private val context: Context) {
         const val MERGES_ASSET = "models/semantic/openclip/merges.txt"
     }
 
+    constructor(context: Context) : this({
+        context.assets.open(VOCAB_ASSET).use { vocab ->
+            context.assets.open(MERGES_ASSET).use { merges ->
+                vocab.readBytes().toString(Charsets.UTF_8) to
+                    merges.readBytes().toString(Charsets.UTF_8)
+            }
+        }
+    })
+
+    constructor(vocabJson: String, mergesText: String) : this({ vocabJson to mergesText })
+
     private val encoder: Map<String, Int>
     private val bpeRanks: Map<Pair<String, String>, Int>
     private val cache = ConcurrentHashMap<String, String>()
     private val byteEncoder: Map<Int, Char>
-    /** CLIP/OpenCLIP simple-tokenizer pattern: unicode letters, whole numeric runs, punctuation. */
+
+    /** CLIP/OpenCLIP simple-tokenizer pattern: contractions, unicode letters, numeric runs, punctuation. */
     private val tokenPattern = Regex(
         "<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[\\p{L}]+|[\\p{N}]+|[^\\s\\p{L}\\p{N}]+",
         RegexOption.IGNORE_CASE
     )
 
     init {
-        val vocabJson = context.assets.open(VOCAB_ASSET).use {
-            it.readBytes().toString(Charsets.UTF_8)
-        }
+        val (vocabJson, mergesText) = assetContentLoader()
         val json = JSONObject(vocabJson)
         val map = HashMap<String, Int>(json.length())
         val keys = json.keys()
@@ -53,15 +69,13 @@ class OpenClipTokenizer(private val context: Context) {
         encoder = map
 
         val ranks = HashMap<Pair<String, String>, Int>(48896)
-        context.assets.open(MERGES_ASSET).use { raw ->
-            BufferedReader(InputStreamReader(raw, Charsets.UTF_8)).useLines { lines ->
-                var rank = 0
-                lines.forEach { line ->
-                    if (line.isBlank() || line.startsWith("#version:")) return@forEach
-                    val parts = line.trim().split(' ')
-                    if (parts.size == 2) {
-                        ranks[parts[0] to parts[1]] = rank++
-                    }
+        BufferedReader(InputStreamReader(mergesText.byteInputStream(), Charsets.UTF_8)).useLines { lines ->
+            var rank = 0
+            lines.forEach { line ->
+                if (line.isBlank() || line.startsWith("#version:")) return@forEach
+                val parts = line.trim().split(' ')
+                if (parts.size == 2) {
+                    ranks[parts[0] to parts[1]] = rank++
                 }
             }
         }
@@ -98,8 +112,7 @@ class OpenClipTokenizer(private val context: Context) {
             val mapped = buildString(bytes.size) {
                 for (b in bytes) append(byteEncoder[b.toInt() and 0xFF])
             }
-            val bpePieces = bpe(mapped).split(' ')
-            for (symbol in bpePieces) {
+            for (symbol in bpe(mapped).split(' ')) {
                 val id = encoder[symbol]
                     ?: throw IllegalStateException("Missing CLIP vocabulary token: $symbol")
                 if (ids.size >= CONTEXT_LENGTH - 1) break
@@ -129,9 +142,7 @@ class OpenClipTokenizer(private val context: Context) {
 
         var current = token.dropLast(1).map { it.toString() }.toMutableList()
         current += token.last().toString() + "</w>"
-        if (current.size == 1) {
-            return current[0].also { cache[token] = it }
-        }
+        if (current.size == 1) return current[0].also { cache[token] = it }
 
         while (true) {
             var bestFirst = ""
@@ -147,7 +158,6 @@ class OpenClipTokenizer(private val context: Context) {
                     bestSecond = second
                 }
             }
-
             if (bestRank == Int.MAX_VALUE) break
 
             val merged = ArrayList<String>(current.size)
@@ -168,7 +178,6 @@ class OpenClipTokenizer(private val context: Context) {
             current = merged
             if (current.size == 1) break
         }
-
         return current.joinToString(" ").also { cache[token] = it }
     }
 
@@ -177,7 +186,6 @@ class OpenClipTokenizer(private val context: Context) {
         for (i in 33..126) bs += i
         for (i in 161..172) bs += i
         for (i in 174..255) bs += i
-
         val cs = ArrayList<Int>(256)
         cs.addAll(bs)
         var n = 0
