@@ -1,7 +1,6 @@
 package com.example.personalmemoryai.semantic
 
 import android.content.Context
-import android.text.Html
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -74,9 +73,7 @@ class OpenClipTokenizer private constructor(
             lines.forEach { line ->
                 if (line.isBlank() || line.startsWith("#version:")) return@forEach
                 val parts = line.trim().split(' ')
-                if (parts.size == 2) {
-                    ranks[parts[0] to parts[1]] = rank++
-                }
+                if (parts.size == 2) ranks[parts[0] to parts[1]] = rank++
             }
         }
         bpeRanks = ranks
@@ -130,10 +127,28 @@ class OpenClipTokenizer private constructor(
     }
 
     private fun normalizeForClip(text: String): String {
-        var cleaned = Html.fromHtml(text, Html.FROM_HTML_MODE_LEGACY).toString()
-        cleaned = Html.fromHtml(cleaned, Html.FROM_HTML_MODE_LEGACY).toString()
+        var cleaned = decodeHtmlEntities(text)
         cleaned = cleaned.replace(Regex("\\s+"), " ").trim()
         return Normalizer.normalize(cleaned, Normalizer.Form.NFC).lowercase(Locale.US)
+    }
+
+    /** Small JVM-safe HTML entity decoder for the entity forms commonly seen in OCR/text input. */
+    private fun decodeHtmlEntities(text: String): String {
+        return Regex("&(#x[0-9A-Fa-f]+|#[0-9]+|amp|lt|gt|quot|apos|nbsp);?").replace(text) { m ->
+            when {
+                m.value.equals("&amp;", true) -> "&"
+                m.value.equals("&lt;", true) -> "<"
+                m.value.equals("&gt;", true) -> ">"
+                m.value.equals("&quot;", true) -> "\""
+                m.value.equals("&apos;", true) -> "'"
+                m.value.equals("&nbsp;", true) -> " "
+                m.groupValues[1].startsWith("#x", true) ->
+                    m.groupValues[1].substring(2).toIntOrNull(16)?.let { String(Character.toChars(it)) } ?: m.value
+                m.groupValues[1].startsWith("#") ->
+                    m.groupValues[1].substring(1).toIntOrNull()?.let { String(Character.toChars(it)) } ?: m.value
+                else -> m.value
+            }
+        }
     }
 
     private fun bpe(token: String): String {
