@@ -14,6 +14,7 @@ import kotlin.math.sqrt
 class SemanticSearchService(context: Context) : AutoCloseable {
     companion object {
         const val SEMANTIC_SPACE_VERSION = "mobileclip-s2-openclip-space-v1"
+        const val MAX_RESULTS = 200
     }
 
     private val appContext = context.applicationContext
@@ -145,7 +146,8 @@ class SemanticSearchService(context: Context) : AutoCloseable {
     suspend fun indexImage(image: ImageEntity): EmbeddingEntity = withContext(Dispatchers.Default) {
         ensureModel()
         val vector = encoder.encode(Uri.parse(image.uri))
-        require(vector.isNotEmpty() && vector.all(Float::isFinite)) { "MobileCLIP produced an invalid embedding" }
+        require(vector.size == AppleMobileClipImageEncoder.EMBEDDING_DIMENSION) { "MobileCLIP produced ${vector.size}-D output; expected ${AppleMobileClipImageEncoder.EMBEDDING_DIMENSION}" }
+        require(vector.all(Float::isFinite)) { "MobileCLIP produced a non-finite embedding" }
         EmbeddingEntity(
             ownerType = AppleMobileClipImageEncoder.OWNER_TYPE,
             ownerId = image.id,
@@ -164,14 +166,16 @@ class SemanticSearchService(context: Context) : AutoCloseable {
     }
 
     suspend fun searchSimilarImages(queryUri: Uri, limit: Int = 30): List<ScoredImage> = withContext(Dispatchers.Default) {
+        require(limit in 1..MAX_RESULTS) { "عدد النتائج يجب أن يكون بين 1 و$MAX_RESULTS" }
         val run = diagnostics.begin("VISUAL_SEARCH", mapOf("limit" to limit.toString()))
         try {
             ensureModel()
             val query = encoder.encode(queryUri)
+            require(query.size == AppleMobileClipImageEncoder.EMBEDDING_DIMENSION) { "Invalid query embedding dimension: ${query.size}" }
             val embeddings = database.embeddingDao().getAllForImageSearch()
             if (embeddings.isEmpty()) throw IllegalStateException("لا توجد بصمات بصرية. اضغط BUILD VISUAL INDEX أولًا.")
             val images = database.imageDao().getByIds(embeddings.map { it.ownerId }.distinct()).associateBy { it.id }
-            val results = ArrayList<ScoredImage>(embeddings.size)
+            val results = ArrayList<ScoredImage>(minOf(embeddings.size, MAX_RESULTS))
             var compatible = 0
             for (embedding in embeddings) {
                 if (embedding.modelName != AppleMobileClipImageEncoder.MODEL_NAME || embedding.modelVersion != AppleMobileClipImageEncoder.MODEL_VERSION || embedding.dimension != query.size || embedding.vector.size != embedding.dimension || !embedding.vector.all(Float::isFinite)) continue
@@ -191,6 +195,7 @@ class SemanticSearchService(context: Context) : AutoCloseable {
     }
 
     suspend fun searchByText(queryText: String, limit: Int = 30): List<ScoredImage> = withContext(Dispatchers.Default) {
+        require(limit in 1..MAX_RESULTS) { "عدد النتائج يجب أن يكون بين 1 و$MAX_RESULTS" }
         val normalized = queryText.trim()
         require(normalized.isNotEmpty()) { "اكتب وصفًا للبحث الدلالي" }
         val run = diagnostics.begin("SEMANTIC_TEXT_SEARCH", mapOf("limit" to limit.toString(), "queryLength" to normalized.length.toString()))
@@ -201,10 +206,10 @@ class SemanticSearchService(context: Context) : AutoCloseable {
             val embeddings = database.embeddingDao().getAllForImageSearch()
             if (embeddings.isEmpty()) throw IllegalStateException("لا توجد بصمات صور دلالية. اضغط BUILD VISUAL INDEX أولًا.")
             val images = database.imageDao().getByIds(embeddings.map { it.ownerId }.distinct()).associateBy { it.id }
-            val results = ArrayList<ScoredImage>(embeddings.size)
+            val results = ArrayList<ScoredImage>(minOf(embeddings.size, MAX_RESULTS))
             var compatible = 0
             for (embedding in embeddings) {
-                if (embedding.modelName != AppleMobileClipImageEncoder.MODEL_NAME || embedding.modelVersion != AppleMobileClipImageEncoder.MODEL_VERSION || embedding.dimension != 512 || embedding.vector.size != 512 || !embedding.vector.all(Float::isFinite)) continue
+                if (embedding.modelName != AppleMobileClipImageEncoder.MODEL_NAME || embedding.modelVersion != AppleMobileClipImageEncoder.MODEL_VERSION || embedding.dimension != MobileClipTextEncoder.EMBEDDING_DIMENSION || embedding.vector.size != MobileClipTextEncoder.EMBEDDING_DIMENSION || !embedding.vector.all(Float::isFinite)) continue
                 val image = images[embedding.ownerId] ?: continue
                 compatible++
                 val score = cosine(query, embedding.vector)
