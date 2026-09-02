@@ -24,8 +24,8 @@ class OpenClipTokenizer private constructor(
 ) {
     companion object {
         const val CONTEXT_LENGTH = 77
-        const val SOT_TOKEN = "<start_of_text>"
-        const val EOT_TOKEN = "<end_of_text>"
+        const val SOT_TOKEN = "<|startoftext|>"
+        const val EOT_TOKEN = "<|endoftext|>"
         const val SOT_ID = 49406
         const val EOT_ID = 49407
         const val VOCAB_SIZE = 49408
@@ -49,9 +49,9 @@ class OpenClipTokenizer private constructor(
     private val cache = ConcurrentHashMap<String, String>()
     private val byteEncoder: Map<Int, Char>
 
-    /** CLIP/OpenCLIP simple-tokenizer pattern: contractions, unicode letters, numeric runs, punctuation. */
+    /** Exact OpenAI/OpenCLIP SimpleTokenizer token pattern. */
     private val tokenPattern = Regex(
-        "<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[\\p{L}]+|[\\p{N}]+|[^\\s\\p{L}\\p{N}]+",
+        "'s|'t|'re|'ve|'m|'ll|'d|[\\p{L}]+|[\\p{N}]+|[^\\s\\p{L}\\p{N}]+",
         RegexOption.IGNORE_CASE
     )
 
@@ -74,8 +74,12 @@ class OpenClipTokenizer private constructor(
         require(encoder.size == VOCAB_SIZE) {
             "Unexpected CLIP vocabulary size: ${encoder.size}"
         }
-        require(encoder[SOT_TOKEN] == SOT_ID) { "Unexpected SOT id" }
-        require(encoder[EOT_TOKEN] == EOT_ID) { "Unexpected EOT id" }
+        require(encoder[SOT_TOKEN] == SOT_ID) {
+            "Unexpected SOT id: ${encoder[SOT_TOKEN]} for $SOT_TOKEN"
+        }
+        require(encoder[EOT_TOKEN] == EOT_ID) {
+            "Unexpected EOT id: ${encoder[EOT_TOKEN]} for $EOT_TOKEN"
+        }
     }
 
     /** Returns exactly 77 INT64-compatible CLIP token ids, including SOT/EOT. */
@@ -86,17 +90,6 @@ class OpenClipTokenizer private constructor(
 
         for (piece in tokenPattern.findAll(cleaned)) {
             val lowered = piece.value.lowercase(Locale.US)
-            when (lowered) {
-                SOT_TOKEN -> {
-                    if (ids.size < CONTEXT_LENGTH - 1) ids += SOT_ID
-                    continue
-                }
-                EOT_TOKEN -> {
-                    if (ids.size < CONTEXT_LENGTH - 1) ids += EOT_ID
-                    continue
-                }
-            }
-
             val bytes = lowered.toByteArray(Charsets.UTF_8)
             val mapped = buildString(bytes.size) {
                 for (b in bytes) append(byteEncoder[b.toInt() and 0xFF])
@@ -124,7 +117,7 @@ class OpenClipTokenizer private constructor(
         return Normalizer.normalize(cleaned, Normalizer.Form.NFC).lowercase(Locale.US)
     }
 
-    /** Small JVM-safe HTML entity decoder for the entity forms commonly seen in OCR/text input. */
+    /** Small JVM-safe HTML entity decoder for entity forms commonly seen in OCR/text input. */
     private fun decodeHtmlEntities(text: String): String {
         return Regex("&(#x[0-9A-Fa-f]+|#[0-9]+|amp|lt|gt|quot|apos|nbsp);?").replace(text) { m ->
             when {
