@@ -51,7 +51,7 @@ class OpenClipTokenizer private constructor(
 
     /** Exact OpenAI/OpenCLIP SimpleTokenizer token pattern. */
     private val tokenPattern = Regex(
-        "'s|'t|'re|'ve|'m|'ll|'d|[\\p{L}]+|[\\p{N}]+|[^\\s\\p{L}\\p{N}]+",
+        "'s|'t|'re|'ve|'m|'ll|'d|[\\p{L}]+|[\\p{N}]|[^\\s\\p{L}\\p{N}]+",
         RegexOption.IGNORE_CASE
     )
 
