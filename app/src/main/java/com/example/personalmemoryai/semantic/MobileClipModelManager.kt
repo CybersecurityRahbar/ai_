@@ -86,7 +86,7 @@ class MobileClipModelManager(private val context: Context) {
                     val channelsLast = shape.contentEquals(intArrayOf(1, INPUT_RESOLUTION, INPUT_RESOLUTION, INPUT_CHANNELS))
                     val channelsFirst = shape.contentEquals(intArrayOf(1, INPUT_CHANNELS, INPUT_RESOLUTION, INPUT_RESOLUTION))
                     require(channelsLast || channelsFirst) {
-                        "Bنية Image TFLite غير متوافقة مع MobileCLIP-S2: ${shape.contentToString()}"
+                        "بنية Image TFLite غير متوافقة مع MobileCLIP-S2: ${shape.contentToString()}"
                     }
                     require(input.dataType() == DataType.FLOAT32) { "نوع إدخال Image TFLite غير مدعوم: ${input.dataType()}" }
                     val output = interpreter.getOutputTensor(0)
