@@ -46,7 +46,7 @@ Artifact: `mobileclip-s2-tokenizer-differential-report`, ID `9738443724`, digest
 Therefore the production decision is locked: keep both TFLite towers; do not use the third-party tokenizer JSON as the Android production tokenizer; reproduce Apple/OpenCLIP tokenizer semantics locally.
 
 ## 2026-08-30 — Android semantic implementation started
-The semantic subsystem was upgraded from an image-only placeholder to a two-tower runtime:
+The semantic subsystem was upgraded from an image-only placeholder to a two-tower runtime.
 
 ### Tokenizer
 `app/src/main/java/com/example/personalmemoryai/semantic/OpenClipTokenizer.kt`
@@ -83,74 +83,45 @@ The semantic subsystem was upgraded from an image-only placeholder to a two-towe
 - No Room schema migration is required for text queries because only query embeddings are computed transiently.
 
 ### Main UI behavior
-`MainActivity.kt` now stages the existing import button:
-1. first import selects/validates the Image TFLite tower;
-2. pressing the same button again imports the Text TFLite tower;
-3. when Text TFLite is installed, the existing text search button automatically performs MobileCLIP Text→Image semantic search; otherwise it preserves the legacy OCR/object keyword search.
-This avoids adding a parallel UI flow while keeping backward compatibility.
+`MainActivity.kt` stages the existing import button for the two-tower model import and routes the existing text search button to MobileCLIP Text→Image when the Text TFLite is installed; otherwise the legacy OCR/object keyword path remains available.
 
 ### Documentation
-`app/src/main/assets/models/semantic/README.md` now documents the two separate TFLite towers, their contracts, the production tokenizer decision, and the offline runtime flow.
+`app/src/main/assets/models/semantic/README.md` documents the two separate TFLite towers, their contracts, the production tokenizer decision, and the offline runtime flow.
 
-## Important current limitation
-The Android OpenCLIP tokenizer implementation is intentionally a faithful Kotlin implementation using official Apple vocab/merges, but it has not yet been proven token-for-token against Apple runtime on-device. In particular, Android does not provide Python `ftfy`; the current implementation uses Android HTML decoding, whitespace normalization, NFC normalization and lowercasing. A dedicated Kotlin golden-parity test still needs to be added before calling Android semantic search production-equivalent.
+## 2026-09-01 — Android build and tokenizer parity investigation
+### Build result
+Android Build run `#244` on commit `cee4935a60c15603b8eaaec8350d60ba571d99a8` succeeded. `:app:assembleDebug` completed and `personal-memory-ai-debug-apk` artifact was uploaded successfully.
 
-## Current CI / verification gate
-The Android build is required to validate the newly added Kotlin classes and generated tokenizer assets. Do not claim production readiness until the build passes and the Android tokenizer receives golden parity coverage. After that:
-1. run/review Android build;
-2. add deterministic tokenizer golden tests based on the verified Apple IDs;
-3. perform Android Text TFLite smoke test;
-4. perform end-to-end Text→Image ranking against a controlled corpus;
-5. only then enable the semantic subsystem as production-ready.
+The prior compilation failure was caused by positional construction of `EmbeddingEntity`; it was corrected to named schema fields (`ownerType`, `ownerId`, `vector`, `dimension`, `modelName`, `modelVersion`, `normalized`).
 
-## User model-download state
-The user confirmed downloading both `mobileclip_s2_image.tflite` and `mobileclip_s2_text.tflite` to the phone. They should be kept; no binary replacement is currently justified.
+### Initial Android tokenizer parity failure
+The original Instrumentation parity workflow used an x86_64 emulator without KVM and generated large QEMU/ADB logs. This was correctly identified as an unsuitable environment for a pure tokenizer algorithm test.
 
-## 2026-08-30 — Current continuation
-### User request
-Continue the project after the tokenizer parity decision and proceed with implementation.
+The parity workflow was changed to a JVM Unit Test using the same production `vocab.json` and `merges.txt`, eliminating emulator/ADB dependency.
 
-### Assistant work
-Inspected the current Android semantic stack and implemented the Image+Text MobileCLIP runtime, official OpenCLIP tokenizer asset preparation, text-to-image semantic retrieval, staged model import behavior, and Apple-compatible image preprocessing. The old `TextEncoder` placeholder contract was updated to describe the installed implementation. The semantic README was synchronized with the verified two-tower architecture.
+The first JVM run (`MobileCLIP Android Tokenizer Parity` run `#7`, job `99894386753`, workflow run `33519360557`) reached the actual test but failed before tokenization because `OpenClipTokenizer.kt` used `org.json.JSONObject.length()`. Android's mocked `org.json` implementation is not callable in a local JVM test. The compact CI summary showed exactly:
+`java.lang.RuntimeException: Method length in org.json.JSONObject not mocked.`
 
-### Concrete commits/work
-- `4be11abc8e627a3fcadd9048708650088c28b0b7` — initial OpenCLIP tokenizer implementation.
-- `864307b44fea75bd6cbab775bd932a889733176f` — MobileCLIP-S2 text model manager.
-- `00c87d1a5a6f72ad4cb9b67cff409cb76dd460db` — MobileCLIP-S2 text encoder.
-- `143ced1097bc87120337538c1d1d00a181fe6737` — canonical image model manager.
-- `2298d5907c9f003e2b07b3f9f38db11c8f3fece0` — Apple-compatible semantic image encoder.
-- `9f09dfdb585861db4c217070a3b8559045e4b367` — semantic service wired to Image+Text towers and Text→Image search.
-- `47c8479b970a653a558d1523fc9f5461ce8fac9d` — staged MainActivity import/search behavior.
-- `7745dbb44fb878ca7e941f5b328a36947a886295` — pinned Apple tokenizer asset preparation in Gradle.
-- `0bd436461b6849c66944c6173bc6b9c19b0e3111` — semantic model documentation update.
-- `f93f96634f0c2c0e5aa226944081083713a84eb7` — TextEncoder contract documentation update.
+### 2026-09-02 — Current tokenizer fix
+`OpenClipTokenizer.kt` was corrected in commit `17015ec9d16293b3ac2e649e5f565e1f33bd3e2a`:
+- removed the JVM-sensitive `org.json.JSONObject` dependency from the production tokenizer path;
+- added a self-contained flat JSON string→integer parser suitable for both Android and JVM tests;
+- retained the same 49,408 vocabulary contract and SOT/EOT assertions;
+- hardened merges parsing to accept generic whitespace separators.
 
-### Next action
-Validate the current main branch with Android Build. Any compile/runtime error discovered there must be fixed before adding the tokenizer golden test and declaring the semantic path production-ready.
+The tokenizer already uses numeric-run matching (`[\\p{N}]+`) and CLIP-style text spans.
 
-## 2026-08-30 — Build correction and tokenizer hardening
-### User request
-Continue the implementation and close the remaining semantic verification issues.
+## Current full-review findings
+- The immediate JVM blocker is now fixed in the code, but the new commit has not yet produced a completed CI result in the available Actions listing at the time of this entry.
+- `AppleMobileClipImageEncoder` has been reviewed for tensor layout handling, 256×256 preprocessing, RGB packing and 512-D normalization; it correctly supports both NHWC and NCHW input tensors while requiring the verified spatial contract.
+- `MobileClipTextModelManager` has been reviewed for atomic import via a temporary file, minimum-size guard, TFLite tensor-contract validation, finite/non-zero health inference, and cleanup on failure.
+- `MobileClipTextEncoder` has been reviewed for `[1,77]` INT64 input, direct native-order buffer construction, one-output FLOAT32 handling, 512-D normalization, finite-value checks and lifecycle cleanup.
+- `SemanticSearchService` has been reviewed for separate Image/Text managers, compatibility filtering by model name/version/dimension, finite-vector validation, cosine ranking, progress/error isolation during image indexing, and backward-compatible model import/search APIs.
+- Remaining correctness gate: prove Kotlin tokenizer token-for-token against all 19 Apple golden cases. Do not declare semantic production parity until that passes.
 
-### Findings
-- GitHub Actions run `235` (`33334427738`) failed before Kotlin source compilation because `app/build.gradle.kts` used `java.net.URI(...)` inside the Gradle Kotlin DSL task, producing `Unresolved reference: net` and an `openStream().use` type inference error.
-- The Android semantic code itself had already progressed to `AppleMobileClipImageEncoder`, separate text/image managers, `searchByText()`, and staged import behavior.
-- Official Apple/OpenCLIP preprocessing was independently reverified from the current upstream config: image size 256, resize mode `shortest`, bilinear interpolation, mean `[0,0,0]`, std `[1,1,1]`. citeturn579102search0turn579102search2
-- OpenAI/OpenCLIP tokenizer reference confirms `basic_clean`, whitespace normalization, CLIP regex tokenization, byte-to-unicode mapping, BPE, SOT/EOT and 77-token context. citeturn513547search0turn513547search2
-
-### Corrections committed
-- `742ab16a826e779dda66eee98c0ed0676a6b5ef0` — fixed Gradle Kotlin DSL by explicitly importing `java.net.URI` and `java.io.InputStream` for tokenizer asset preparation.
-- `80c2d5790ebfac496f66b7fb27e1bf0c9c782c9d` — tightened `OpenClipTokenizer.kt`: removed unused imports, added explicit special-token handling, preserved 77-token output, and aligned cleaning/BPE structure more closely with OpenCLIP.
-
-### CI evidence after correction
-- New Android Build run `241` (`33334777025`) for commit `742ab16...` passed the previously failing Gradle-script phase and reached `Build debug APK`.
-- New Android Build run `242` (`33334816450`) was automatically triggered by the tokenizer hardening commit and was still in progress when this ledger entry was written.
-- Therefore the Gradle-script failure is fixed, but final Android build success is not yet proven.
-
-### Current gate
-Do not claim production readiness yet. The current order remains:
-1. finish/review Android Build run `242`;
-2. add deterministic Kotlin tokenizer golden-parity tests against verified Apple token IDs;
-3. run Android Text TFLite smoke inference and validate non-zero finite 512-D output;
-4. run controlled end-to-end Text→Image ranking;
-5. only then unlock semantic production status.
+## Next action
+1. Verify CI result for commit `17015ec9d16293b3ac2e649e5f565e1f33bd3e2a` and fix any remaining tokenizer parity failure.
+2. Add/strengthen normalization edge-case golden vectors if the 19 canonical cases pass.
+3. Run a real MobileCLIP-S2 Text TFLite smoke inference using the verified 77-token IDs and assert finite/non-zero normalized 512-D output.
+4. Run controlled end-to-end Text→Image ranking against the existing image embeddings and compare the ranking against the Apple/PyTorch oracle.
+5. Only after all gates pass, mark MobileCLIP semantic search production-ready.
