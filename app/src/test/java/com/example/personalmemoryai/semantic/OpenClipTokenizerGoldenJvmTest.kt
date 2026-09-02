@@ -57,3 +57,5 @@ class OpenClipTokenizerGoldenJvmTest {
         )
     }
 }
+
+// CI trigger: rerun after production tokenizer parser hardening.
