@@ -18,6 +18,9 @@ class MobileClipModelManager(private val context: Context) {
         const val MODEL_FILE_NAME = "mobileclip_s2_image.tflite"
         const val LEGACY_MODEL_FILE_NAME = "mobileclip_s2_fp16.tflite"
         const val MODEL_VERSION = "mobileclip-s2-image-tflite-v1"
+        const val INPUT_CHANNELS = 3
+        const val INPUT_RESOLUTION = 256
+        const val OUTPUT_DIMENSION = 512
         private const val MIN_MODEL_BYTES = 50L * 1024L * 1024L
     }
 
@@ -76,15 +79,21 @@ class MobileClipModelManager(private val context: Context) {
             FileInputStream(file).channel.use { channel ->
                 val mapped = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, channel.size())
                 Interpreter(mapped).use { interpreter ->
-                    require(interpreter.inputTensorCount >= 1) { "Image TFLite لا يحتوي على مدخل صالح" }
+                    require(interpreter.inputTensorCount == 1) { "Image TFLite must expose exactly one input tensor" }
                     require(interpreter.outputTensorCount >= 1) { "Image TFLite لا يحتوي على مخرج صالح" }
                     val input = interpreter.getInputTensor(0)
                     val shape = input.shape()
-                    require(shape.size == 4 && shape[0] == 1) { "بنية Image TFLite غير متوقعة: ${shape.contentToString()}" }
+                    val channelsLast = shape.contentEquals(intArrayOf(1, INPUT_RESOLUTION, INPUT_RESOLUTION, INPUT_CHANNELS))
+                    val channelsFirst = shape.contentEquals(intArrayOf(1, INPUT_CHANNELS, INPUT_RESOLUTION, INPUT_RESOLUTION))
+                    require(channelsLast || channelsFirst) {
+                        "Bنية Image TFLite غير متوافقة مع MobileCLIP-S2: ${shape.contentToString()}"
+                    }
                     require(input.dataType() == DataType.FLOAT32) { "نوع إدخال Image TFLite غير مدعوم: ${input.dataType()}" }
                     val output = interpreter.getOutputTensor(0)
                     require(output.dataType() == DataType.FLOAT32) { "نوع خرج Image TFLite غير مدعوم: ${output.dataType()}" }
-                    require(input.numElements() > 0 && output.numElements() > 0) { "Image TFLite يحتوي على Tensor فارغ" }
+                    require(output.numElements() == OUTPUT_DIMENSION) {
+                        "MobileCLIP-S2 image output must be ${OUTPUT_DIMENSION}-D, got ${output.shape().contentToString()}"
+                    }
                     val inputBuffer = java.nio.ByteBuffer.allocateDirect(input.numElements() * 4).order(java.nio.ByteOrder.nativeOrder())
                     repeat(input.numElements()) { inputBuffer.putFloat(0f) }
                     inputBuffer.rewind()
