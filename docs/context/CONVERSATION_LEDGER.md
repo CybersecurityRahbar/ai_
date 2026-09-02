@@ -109,9 +109,7 @@ The first JVM run (`MobileCLIP Android Tokenizer Parity` run `#7`, job `99894386
 - retained the same 49,408 vocabulary contract and SOT/EOT assertions;
 - hardened merges parsing to accept generic whitespace separators.
 
-The tokenizer already uses numeric-run matching (`[\\p{N}]+`) and CLIP-style text spans.
-
-## 2026-09-02 — Tokenizer parity Run #10 root cause and correction
+### 2026-09-02 — Tokenizer parity Run #10 root cause and correction
 The newer `MobileCLIP Android Tokenizer Parity` Run `#10` (workflow run `33631746758`, job `100252619487`) ran on commit `43a712c4481b31dd6e237a68f6306e08d6998821` and reached the actual JVM golden comparison. The prior `JSONObject` mock failure was therefore resolved.
 
 The single failing golden case was:
@@ -120,17 +118,46 @@ The single failing golden case was:
 - actual first content token ID: `16`
 - failure type: `ArrayComparisonFailure` at `OpenClipTokenizerGoldenJvmTest.kt:28`
 
-Root cause was identified in `OpenClipTokenizer.kt` token regex. The implementation used `[\\p{N}]+`, grouping a complete numeric run into one token. OpenAI/OpenCLIP `SimpleTokenizer` semantics use ` [\\p{N}] ` for this part of the regex, so each numeric Unicode character is tokenized separately before byte/BPE processing. This is required for the verified golden sequence `272,273,274,275,276,277,278,279,280,271`.
+Root cause was identified in `OpenClipTokenizer.kt` token regex. The implementation used `[\\p{N}]+`, grouping a complete numeric run into one token. OpenAI/OpenCLIP `SimpleTokenizer` semantics use `[\\p{N}]` for this part of the regex, so each numeric Unicode character is tokenized separately before byte/BPE processing. This is required for the verified golden sequence `272,273,274,275,276,277,278,279,280,271`.
 
 The production tokenizer was corrected in commit `6c2c6ccb5bc0bd0f65f94dfdbc182c50154f238c` by changing the numeric branch from `[\\p{N}]+` to `[\\p{N}]`, while leaving the letter and punctuation branches unchanged.
 
-The correction is intentionally minimal and follows the verified OpenCLIP tokenizer semantics; no golden expected values were modified.
+## 2026-09-02 — Tokenizer parity Run #11 PASS
+`MobileCLIP Android Tokenizer Parity` Run `#11` (workflow run `33634567519`) succeeded on the corrected tokenizer commit `6c2c6ccb5bc0bd0f65f94dfdbc182c50154f238c`.
 
-Run #10 also showed that compilation succeeds and only the parity assertion fails. The existing warnings (AGP/compileSdk, Room schema export, deprecated UI setters, coroutine opt-ins, unused variables/parameters) are not the cause of the tokenizer failure.
+The decisive CI result was:
+- `BUILD SUCCESSFUL in 3m 13s`
+- JUnit: `tests="1" skipped="0" failures="0" errors="0"`
+- The golden suite contains all 19 verified cases, including `1234567890`.
+
+Therefore the corrected Android/OpenCLIP tokenizer now passes the complete current canonical 19-case JVM parity gate. The remaining CI messages are warnings only (AGP/compileSdk, Room schema export, deprecations, coroutine opt-ins, unused variables/parameters, and GitHub Actions Node-runtime warnings) and did not affect this gate.
+
+## 2026-09-02 — Real Text TFLite smoke gate added
+After Run #11 passed, the next gate was implemented rather than assuming the text tower was operational end-to-end.
+
+Repository commit `d2ee80983aa3b2830b91548406f53b1abed32686` added:
+`app/src/test/java/com/example/personalmemoryai/semantic/MobileClipTextTfliteSmokeJvmTest.kt`
+
+The test:
+- uses the production `OpenClipTokenizer` and production Apple/OpenCLIP assets;
+- executes the actual MobileCLIP-S2 Text TFLite interpreter, not a mock;
+- requires exactly one INT64 input of `[1,77]` and one FLOAT32 output containing 512 elements;
+- exercises representative English, Arabic, numeric, and symbol queries;
+- verifies each 77-token input reaches the real model;
+- checks raw output is finite and non-zero;
+- applies the same 512-D L2 normalization contract as the production encoder and verifies unit norm within `1e-5`;
+- runs each query twice and requires deterministic output.
+
+The parity workflow was then updated in commit `b30b1f9130feffbd5c76e309cd9bcdb89f024246` to add a cryptographically verified model-download step and execute this smoke test in CI.
+
+CI uses the pinned Hugging Face revision `868dc14eb50de4a8347714b019aae242a0778675`, downloads `mobileclip_s2_text.tflite`, and verifies SHA-256 equals `92eba285a505df19f13126d373773714b4aae57863c7a6ba277d562ff7ad718` before the model is passed to the test via `-Dmobileclip.text.model=...`. This prevents a silently substituted model binary from passing the smoke gate. The workflow timeout was increased to 25 minutes because the verified text model is approximately 254 MB.
+
+External provenance checked on 2026-09-02 confirms the pinned Hugging Face revision contains the text tower at 253,874,828 bytes with the same SHA-256. citeturn469750search1turn469750search2
 
 ## Current full-review findings
 - The immediate JVM blocker was fixed in the earlier parser change.
 - Run #10 exposed and isolated a genuine tokenizer-semantic mismatch in numeric tokenization; this is now corrected in `6c2c6ccb5bc0bd0f65f94dfdbc182c50154f238c`.
+- Run #11 proves the canonical tokenizer gate now passes all 19 cases.
 - `AppleMobileClipImageEncoder` has been reviewed for tensor layout handling, 256×256 preprocessing, RGB packing and 512-D normalization; it correctly supports both NHWC and NCHW input tensors while requiring the verified spatial contract.
 - `MobileClipTextModelManager` has been reviewed for atomic import via a temporary file, minimum-size guard, TFLite tensor-contract validation, finite/non-zero health inference, and cleanup on failure.
 - `MobileClipTextEncoder` has been reviewed for `[1,77]` INT64 input, direct native-order buffer construction, one-output FLOAT32 handling, 512-D normalization, finite-value checks and lifecycle cleanup; invalid interpreters are now closed/reset on contract failure.
@@ -138,11 +165,10 @@ Run #10 also showed that compilation succeeds and only the parity assertion fail
 - `SemanticSearchService` now validates result limits (`1..200`), uses the Text Encoder's dimension constant, filters incompatible embeddings, and performs finite-value checks.
 - Remaining architecture risks are not yet production blockers but should be addressed after canonical parity: semantic-space version persistence, full-resolution image decode/OOM protection at large corpus scale, exact preprocessing numerical parity on-device, cryptographic/hash verification of downloaded tokenizer/model artifacts, and replacing full-table embedding scans with a scalable retrieval structure for very large corpora.
 - Tokenizer normalization still needs a broader edge-case corpus beyond the canonical 19 cases; especially Unicode/ftfy-equivalent normalization and escaped Unicode/surrogate edge cases.
-- Do not declare semantic production parity until the corrected tokenizer passes all 19 golden cases on a current CI run.
+- The new real Text TFLite smoke test is present in CI but its first post-change run has not yet been verified in this ledger; do not declare the text tower production-ready until that run passes.
 
 ## Next action
-1. Verify the next `MobileCLIP Android Tokenizer Parity` run after commit `6c2c6ccb5bc0bd0f65f94dfdbc182c50154f238c` and fix any remaining golden mismatch.
-2. Add/strengthen normalization edge-case golden vectors if the 19 canonical cases pass.
-3. Run a real MobileCLIP-S2 Text TFLite smoke inference using the verified 77-token IDs and assert finite/non-zero normalized 512-D output.
-4. Run controlled end-to-end Text→Image ranking against the existing image embeddings and compare the ranking against the Apple/PyTorch oracle.
-5. Only after all gates pass, mark MobileCLIP semantic search production-ready.
+1. Verify the first GitHub Actions run triggered by commit `b30b1f9130feffbd5c76e309cd9bcdb89f024246`; inspect the real Text TFLite smoke step and any failure logs before changing code.
+2. If the smoke gate passes, add broader tokenizer normalization/Unicode edge cases without weakening the canonical 19 golden contract.
+3. Run controlled end-to-end Text→Image ranking against existing persisted IMAGE embeddings and compare ranking against the Apple/PyTorch oracle.
+4. Only after all gates pass, address large-corpus/scalability and artifact-versioning hardening, then mark MobileCLIP semantic search production-ready.
