@@ -1,7 +1,6 @@
 package com.example.personalmemoryai.semantic
 
 import android.content.Context
-import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.text.Normalizer
@@ -58,21 +57,14 @@ class OpenClipTokenizer private constructor(
 
     init {
         val (vocabJson, mergesText) = assetContentLoader()
-        val json = JSONObject(vocabJson)
-        val map = HashMap<String, Int>(json.length())
-        val keys = json.keys()
-        while (keys.hasNext()) {
-            val key = keys.next()
-            map[key] = json.getInt(key)
-        }
-        encoder = map
+        encoder = parseFlatJsonIntMap(vocabJson)
 
         val ranks = HashMap<Pair<String, String>, Int>(48896)
         BufferedReader(InputStreamReader(mergesText.byteInputStream(), Charsets.UTF_8)).useLines { lines ->
             var rank = 0
             lines.forEach { line ->
                 if (line.isBlank() || line.startsWith("#version:")) return@forEach
-                val parts = line.trim().split(' ')
+                val parts = line.trim().split(Regex("\\s+"))
                 if (parts.size == 2) ranks[parts[0] to parts[1]] = rank++
             }
         }
@@ -149,6 +141,93 @@ class OpenClipTokenizer private constructor(
                 else -> m.value
             }
         }
+    }
+
+    private fun parseFlatJsonIntMap(json: String): Map<String, Int> {
+        val result = HashMap<String, Int>(VOCAB_SIZE)
+        var index = 0
+
+        fun skipWhitespace() {
+            while (index < json.length && json[index].isWhitespace()) index++
+        }
+
+        fun expect(ch: Char) {
+            skipWhitespace()
+            require(index < json.length && json[index] == ch) {
+                "Invalid vocabulary JSON: expected '$ch' at offset $index"
+            }
+            index++
+        }
+
+        fun parseString(): String {
+            skipWhitespace()
+            require(index < json.length && json[index] == '"') {
+                "Invalid vocabulary JSON string at offset $index"
+            }
+            index++
+            val out = StringBuilder()
+            while (index < json.length) {
+                val ch = json[index++]
+                when (ch) {
+                    '"' -> return out.toString()
+                    '\\' -> {
+                        require(index < json.length) { "Invalid vocabulary JSON escape" }
+                        when (val esc = json[index++]) {
+                            '"' -> out.append('"')
+                            '\\' -> out.append('\\')
+                            '/' -> out.append('/')
+                            'b' -> out.append('\b')
+                            'f' -> out.append('\u000C')
+                            'n' -> out.append('\n')
+                            'r' -> out.append('\r')
+                            't' -> out.append('\t')
+                            'u' -> {
+                                require(index + 4 <= json.length) { "Invalid unicode escape" }
+                                val hex = json.substring(index, index + 4)
+                                out.append(hex.toIntOrNull(16)?.toChar() ?: error("Invalid unicode escape: $hex"))
+                                index += 4
+                            }
+                            else -> error("Unsupported vocabulary JSON escape: \\$esc")
+                        }
+                    }
+                    else -> out.append(ch)
+                }
+            }
+            error("Unterminated vocabulary JSON string")
+        }
+
+        fun parseInt(): Int {
+            skipWhitespace()
+            val start = index
+            if (index < json.length && (json[index] == '-' || json[index] == '+')) index++
+            while (index < json.length && json[index].isDigit()) index++
+            require(index > start) { "Invalid vocabulary JSON integer at offset $start" }
+            return json.substring(start, index).toIntOrNull()
+                ?: error("Vocabulary integer out of range at offset $start")
+        }
+
+        expect('{')
+        skipWhitespace()
+        if (index < json.length && json[index] == '}') {
+            index++
+            return result
+        }
+
+        while (true) {
+            val key = parseString()
+            expect(':')
+            result[key] = parseInt()
+            skipWhitespace()
+            require(index < json.length) { "Unexpected end of vocabulary JSON" }
+            when (json[index++]) {
+                ',' -> continue
+                '}' -> break
+                else -> error("Invalid vocabulary JSON separator at offset ${index - 1}")
+            }
+        }
+        skipWhitespace()
+        require(index == json.length) { "Trailing data after vocabulary JSON at offset $index" }
+        return result
     }
 
     private fun bpe(token: String): String {
