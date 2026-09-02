@@ -33,28 +33,39 @@ class MobileClipTextEncoder(
             interpreter = Interpreter(mapped, Interpreter.Options().apply { setNumThreads(4) })
         }
         val tflite = interpreter ?: return false
-        require(tflite.inputTensorCount == 1 && tflite.outputTensorCount == 1) {
-            "MobileCLIP-S2 text tower must have one input and one output"
+        try {
+            require(tflite.inputTensorCount == 1 && tflite.outputTensorCount == 1) {
+                "MobileCLIP-S2 text tower must have one input and one output"
+            }
+            val inputTensor = tflite.getInputTensor(0)
+            require(inputTensor.dataType() == DataType.INT64) {
+                "MobileCLIP-S2 text input must be INT64"
+            }
+            require(inputTensor.shape().contentEquals(intArrayOf(1, OpenClipTokenizer.CONTEXT_LENGTH))) {
+                "Unexpected MobileCLIP-S2 text input shape: ${inputTensor.shape().contentToString()}"
+            }
+            val outputTensor = tflite.getOutputTensor(0)
+            require(outputTensor.dataType() == DataType.FLOAT32) {
+                "MobileCLIP-S2 text output must be FLOAT32"
+            }
+            require(outputTensor.numElements() == EMBEDDING_DIMENSION) {
+                "Unexpected MobileCLIP-S2 text output shape: ${outputTensor.shape().contentToString()}"
+            }
+            return true
+        } catch (t: Throwable) {
+            tflite.close()
+            interpreter = null
+            throw t
         }
-        require(tflite.getInputTensor(0).dataType() == DataType.INT64) {
-            "MobileCLIP-S2 text input must be INT64"
-        }
-        require(tflite.getInputTensor(0).shape().contentEquals(intArrayOf(1, OpenClipTokenizer.CONTEXT_LENGTH))) {
-            "Unexpected MobileCLIP-S2 text input shape: ${tflite.getInputTensor(0).shape().contentToString()}"
-        }
-        require(tflite.getOutputTensor(0).dataType() == DataType.FLOAT32) {
-            "MobileCLIP-S2 text output must be FLOAT32"
-        }
-        require(tflite.getOutputTensor(0).shape().fold(1) { a, b -> a * b } == EMBEDDING_DIMENSION) {
-            "Unexpected MobileCLIP-S2 text output shape: ${tflite.getOutputTensor(0).shape().contentToString()}"
-        }
-        return true
     }
 
     override fun encode(text: String): FloatArray {
         check(load()) { "MobileCLIP-S2 text model is not installed" }
         require(text.isNotBlank()) { "Semantic text query must not be blank" }
         val inputIds = tokenizer.encode(text)
+        require(inputIds.size == OpenClipTokenizer.CONTEXT_LENGTH) {
+            "Tokenizer returned ${inputIds.size} ids; expected ${OpenClipTokenizer.CONTEXT_LENGTH}"
+        }
         val input = ByteBuffer.allocateDirect(inputIds.size * Long.SIZE_BYTES).order(ByteOrder.nativeOrder())
         inputIds.forEach(input::putLong)
         input.rewind()
@@ -72,7 +83,7 @@ class MobileClipTextEncoder(
     }
 
     fun tokenizerContractReport(): String =
-        "context=${OpenClipTokenizer.CONTEXT_LENGTH}, vocab=49408, sot=${OpenClipTokenizer.SOT_ID}, eot=${OpenClipTokenizer.EOT_ID}"
+        "context=${OpenClipTokenizer.CONTEXT_LENGTH}, vocab=${OpenClipTokenizer.VOCAB_SIZE}, sot=${OpenClipTokenizer.SOT_ID}, eot=${OpenClipTokenizer.EOT_ID}"
 
     fun tokenIds(text: String): LongArray = tokenizer.encode(text)
 
