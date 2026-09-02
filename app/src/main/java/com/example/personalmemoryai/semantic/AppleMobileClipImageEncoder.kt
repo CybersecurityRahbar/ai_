@@ -26,7 +26,8 @@ class AppleMobileClipImageEncoder(
         const val MODEL_NAME = "MobileCLIP-S2"
         const val MODEL_VERSION = MobileClipModelManager.MODEL_VERSION
         const val OWNER_TYPE = "IMAGE"
-        const val IMAGE_RESOLUTION = 256
+        const val IMAGE_RESOLUTION = MobileClipModelManager.INPUT_RESOLUTION
+        const val EMBEDDING_DIMENSION = MobileClipModelManager.OUTPUT_DIMENSION
     }
 
     private var interpreter: Interpreter? = null
@@ -40,16 +41,32 @@ class AppleMobileClipImageEncoder(
             interpreter = Interpreter(mapped, Interpreter.Options().apply { setNumThreads(4) })
         }
         val loaded = interpreter ?: return false
-        require(loaded.inputTensorCount == 1 && loaded.outputTensorCount >= 1) {
-            "Unexpected MobileCLIP-S2 image tensor counts"
+        try {
+            require(loaded.inputTensorCount == 1 && loaded.outputTensorCount >= 1) {
+                "Unexpected MobileCLIP-S2 image tensor counts"
+            }
+            val input = loaded.getInputTensor(0)
+            val shape = input.shape()
+            require(
+                shape.contentEquals(intArrayOf(1, IMAGE_RESOLUTION, IMAGE_RESOLUTION, 3)) ||
+                    shape.contentEquals(intArrayOf(1, 3, IMAGE_RESOLUTION, IMAGE_RESOLUTION))
+            ) { "Unsupported MobileCLIP-S2 image input shape: ${shape.contentToString()}" }
+            require(input.dataType() == DataType.FLOAT32) {
+                "MobileCLIP-S2 image input must be FLOAT32"
+            }
+            val output = loaded.getOutputTensor(0)
+            require(output.dataType() == DataType.FLOAT32) {
+                "MobileCLIP-S2 image output must be FLOAT32"
+            }
+            require(output.numElements() == EMBEDDING_DIMENSION) {
+                "MobileCLIP-S2 image output must be ${EMBEDDING_DIMENSION}-D"
+            }
+            return true
+        } catch (t: Throwable) {
+            loaded.close()
+            interpreter = null
+            throw t
         }
-        require(loaded.getInputTensor(0).dataType() == DataType.FLOAT32) {
-            "MobileCLIP-S2 image input must be FLOAT32"
-        }
-        require(loaded.getOutputTensor(0).dataType() == DataType.FLOAT32) {
-            "MobileCLIP-S2 image output must be FLOAT32"
-        }
-        return true
     }
 
     fun tensorReport(): String {
@@ -65,22 +82,26 @@ class AppleMobileClipImageEncoder(
 
     fun encode(uri: Uri): FloatArray {
         check(load()) { "MobileCLIP-S2 image model is not installed" }
-        val bitmap = context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(BitmapFactory.decodeStream(input)) { "Unable to decode image: $uri" }
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input)
+        } ?: throw IllegalStateException("Unable to decode or open image: $uri")
+        return try {
+            require(bitmap.width > 0 && bitmap.height > 0) { "Decoded image has invalid dimensions: $uri" }
+            encode(bitmap)
+        } finally {
+            bitmap.recycle()
         }
-        return try { encode(bitmap) } finally { bitmap.recycle() }
     }
 
     fun encode(bitmap: Bitmap): FloatArray {
         check(load())
         val tflite = interpreter!!
         val shape = tflite.getInputTensor(0).shape()
-        val channelsLast = shape.size == 4 && shape[0] == 1 && shape[3] == 3
-        val channelsFirst = shape.size == 4 && shape[0] == 1 && shape[1] == 3
+        val channelsLast = shape.contentEquals(intArrayOf(1, IMAGE_RESOLUTION, IMAGE_RESOLUTION, 3))
+        val channelsFirst = shape.contentEquals(intArrayOf(1, 3, IMAGE_RESOLUTION, IMAGE_RESOLUTION))
         require(channelsLast || channelsFirst) { "Unsupported MobileCLIP input shape: ${shape.contentToString()}" }
-        val height = if (channelsLast) shape[1] else shape[2]
-        val width = if (channelsLast) shape[2] else shape[3]
-        require(height == IMAGE_RESOLUTION && width == IMAGE_RESOLUTION) { "Expected 256x256 image input, got ${width}x$height" }
+        val height = IMAGE_RESOLUTION
+        val width = IMAGE_RESOLUTION
 
         val cropped = resizeShortestSideAndCenterCrop(bitmap, width)
         try {
@@ -95,12 +116,18 @@ class AppleMobileClipImageEncoder(
                 }
             } else {
                 for (c in 0..2) for (p in pixels) input.putFloat(
-                    when (c) { 0 -> ((p ushr 16) and 0xFF) / 255f; 1 -> ((p ushr 8) and 0xFF) / 255f; else -> (p and 0xFF) / 255f }
+                    when (c) {
+                        0 -> ((p ushr 16) and 0xFF) / 255f
+                        1 -> ((p ushr 8) and 0xFF) / 255f
+                        else -> (p and 0xFF) / 255f
+                    }
                 )
             }
             input.rewind()
             val outElements = tflite.getOutputTensor(0).numElements()
-            require(outElements == 512) { "Expected 512-D MobileCLIP output, got $outElements" }
+            require(outElements == EMBEDDING_DIMENSION) {
+                "Expected ${EMBEDDING_DIMENSION}-D MobileCLIP output, got $outElements"
+            }
             val output = ByteBuffer.allocateDirect(outElements * 4).order(ByteOrder.nativeOrder())
             tflite.run(input, output)
             output.rewind()
@@ -108,7 +135,9 @@ class AppleMobileClipImageEncoder(
             normalizeInPlace(vector)
             require(vector.all(Float::isFinite)) { "MobileCLIP image embedding is non-finite" }
             return vector
-        } finally { cropped.recycle() }
+        } finally {
+            cropped.recycle()
+        }
     }
 
     private fun resizeShortestSideAndCenterCrop(bitmap: Bitmap, target: Int): Bitmap {
