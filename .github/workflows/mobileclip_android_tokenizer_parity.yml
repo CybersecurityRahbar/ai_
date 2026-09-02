@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'app/src/main/java/com/example/personalmemoryai/semantic/OpenClipTokenizer.kt'
+      - 'app/src/main/java/com/example/personalmemoryai/semantic/**'
       - 'app/src/test/**'
       - 'app/src/androidTest/**'
       - 'app/src/main/assets/models/semantic/**'
@@ -15,7 +15,7 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'app/src/main/java/com/example/personalmemoryai/semantic/OpenClipTokenizer.kt'
+      - 'app/src/main/java/com/example/personalmemoryai/semantic/**'
       - 'app/src/test/**'
       - 'app/src/androidTest/**'
       - 'app/src/main/assets/models/semantic/**'
@@ -28,10 +28,15 @@ on:
 permissions:
   contents: read
 
+env:
+  MOBILECLIP_TEXT_REVISION: '868dc14eb50de4a8347714b019aae242a0778675'
+  MOBILECLIP_TEXT_SHA256: '92eba285a505df19f13126d373773714b4aae57863c7a6ba277d562ff7ad718'
+  MOBILECLIP_TEXT_URL: 'https://huggingface.co/plainhub/mobileclip-s2-tflite/resolve/868dc14eb50de4a8347714b019aae242a0778675/mobileclip_s2_text.tflite?download=true'
+
 jobs:
   parity:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -52,15 +57,32 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
+      - name: Download and verify pinned MobileCLIP-S2 Text TFLite
+        run: |
+          set -euo pipefail
+          mkdir -p .ci/models
+          curl --fail --location --retry 3 --retry-delay 2 \
+            "$MOBILECLIP_TEXT_URL" \
+            --output .ci/models/mobileclip_s2_text.tflite
+          actual="$(sha256sum .ci/models/mobileclip_s2_text.tflite | awk '{print $1}')"
+          test "$actual" = "$MOBILECLIP_TEXT_SHA256" \
+            || { echo "SHA-256 mismatch: $actual"; exit 1; }
+          echo "Verified revision: $MOBILECLIP_TEXT_REVISION"
+          echo "Verified SHA-256: $actual"
+          ls -lh .ci/models/mobileclip_s2_text.tflite
+
       - name: Run JVM tokenizer golden parity
         run: ./gradlew :app:testDebugUnitTest --tests com.example.personalmemoryai.semantic.OpenClipTokenizerGoldenJvmTest --stacktrace --no-daemon
 
-      - name: Print compact tokenizer test summary
+      - name: Run real Text TFLite smoke inference
+        run: ./gradlew :app:testDebugUnitTest --tests com.example.personalmemoryai.semantic.MobileClipTextTfliteSmokeJvmTest -Dmobileclip.text.model="$GITHUB_WORKSPACE/.ci/models/mobileclip_s2_text.tflite" --stacktrace --no-daemon
+
+      - name: Print compact semantic test summary
         if: always()
         run: |
-          echo "=== MobileCLIP tokenizer parity summary ==="
+          echo "=== MobileCLIP semantic parity summary ==="
           if find app/build/test-results/testDebugUnitTest -type f -name 'TEST-*.xml' -print -quit | grep -q .; then
-            grep -hE '<testsuite|<failure|<error' app/build/test-results/testDebugUnitTest/TEST-*.xml | head -20 || true
+            grep -hE '<testsuite|<failure|<error' app/build/test-results/testDebugUnitTest/TEST-*.xml | head -40 || true
           else
             echo "No JUnit XML result was produced."
           fi
