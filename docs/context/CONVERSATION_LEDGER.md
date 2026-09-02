@@ -37,7 +37,7 @@ Final V7 result from GitHub Actions:
 - All `49,408 / 49,408` vocabulary token strings are common.
 - All `49,408 / 49,408` token→ID mappings are identical.
 - Zero remapped, Apple-only, or third-party-only tokens.
-- Representative segmentation differences: Apple `a</w>` vs third-party `adi`, Apple `two</w>` vs `two`, Apple `hello</w>` vs `hello`.
+- Representative segmentation differences: Apple `a</w>` vs third-party `adi`, Apple `two</w>` vs third-party `two`, Apple `hello</w>` vs third-party `hello`.
 - Official Apple tokenizer JSON: `0 / 19` divergent cases.
 - Production verdict: `USE_OFFICIAL_APPLE_JSON_OR_FAITHFUL_OPENCLIP_IMPLEMENTATION`.
 
@@ -111,16 +111,37 @@ The first JVM run (`MobileCLIP Android Tokenizer Parity` run `#7`, job `99894386
 
 The tokenizer already uses numeric-run matching (`[\\p{N}]+`) and CLIP-style text spans.
 
+## 2026-09-02 — Tokenizer parity Run #10 root cause and correction
+The newer `MobileCLIP Android Tokenizer Parity` Run `#10` (workflow run `33631746758`, job `100252619487`) ran on commit `43a712c4481b31dd6e237a68f6306e08d6998821` and reached the actual JVM golden comparison. The prior `JSONObject` mock failure was therefore resolved.
+
+The single failing golden case was:
+- input: `1234567890`
+- expected first content token ID: `272`
+- actual first content token ID: `16`
+- failure type: `ArrayComparisonFailure` at `OpenClipTokenizerGoldenJvmTest.kt:28`
+
+Root cause was identified in `OpenClipTokenizer.kt` token regex. The implementation used `[\\p{N}]+`, grouping a complete numeric run into one token. OpenAI/OpenCLIP `SimpleTokenizer` semantics use ` [\\p{N}] ` for this part of the regex, so each numeric Unicode character is tokenized separately before byte/BPE processing. This is required for the verified golden sequence `272,273,274,275,276,277,278,279,280,271`.
+
+The production tokenizer was corrected in commit `6c2c6ccb5bc0bd0f65f94dfdbc182c50154f238c` by changing the numeric branch from `[\\p{N}]+` to `[\\p{N}]`, while leaving the letter and punctuation branches unchanged.
+
+The correction is intentionally minimal and follows the verified OpenCLIP tokenizer semantics; no golden expected values were modified.
+
+Run #10 also showed that compilation succeeds and only the parity assertion fails. The existing warnings (AGP/compileSdk, Room schema export, deprecated UI setters, coroutine opt-ins, unused variables/parameters) are not the cause of the tokenizer failure.
+
 ## Current full-review findings
-- The immediate JVM blocker is now fixed in the code, but the new commit has not yet produced a completed CI result in the available Actions listing at the time of this entry.
+- The immediate JVM blocker was fixed in the earlier parser change.
+- Run #10 exposed and isolated a genuine tokenizer-semantic mismatch in numeric tokenization; this is now corrected in `6c2c6ccb5bc0bd0f65f94dfdbc182c50154f238c`.
 - `AppleMobileClipImageEncoder` has been reviewed for tensor layout handling, 256×256 preprocessing, RGB packing and 512-D normalization; it correctly supports both NHWC and NCHW input tensors while requiring the verified spatial contract.
 - `MobileClipTextModelManager` has been reviewed for atomic import via a temporary file, minimum-size guard, TFLite tensor-contract validation, finite/non-zero health inference, and cleanup on failure.
-- `MobileClipTextEncoder` has been reviewed for `[1,77]` INT64 input, direct native-order buffer construction, one-output FLOAT32 handling, 512-D normalization, finite-value checks and lifecycle cleanup.
-- `SemanticSearchService` has been reviewed for separate Image/Text managers, compatibility filtering by model name/version/dimension, finite-vector validation, cosine ranking, progress/error isolation during image indexing, and backward-compatible model import/search APIs.
-- Remaining correctness gate: prove Kotlin tokenizer token-for-token against all 19 Apple golden cases. Do not declare semantic production parity until that passes.
+- `MobileClipTextEncoder` has been reviewed for `[1,77]` INT64 input, direct native-order buffer construction, one-output FLOAT32 handling, 512-D normalization, finite-value checks and lifecycle cleanup; invalid interpreters are now closed/reset on contract failure.
+- `MobileClipModelManager` now enforces the exact verified image input layouts `[1,256,256,3]` or `[1,3,256,256]`, FLOAT32 input, and 512-element FLOAT32 output.
+- `SemanticSearchService` now validates result limits (`1..200`), uses the Text Encoder's dimension constant, filters incompatible embeddings, and performs finite-value checks.
+- Remaining architecture risks are not yet production blockers but should be addressed after canonical parity: semantic-space version persistence, full-resolution image decode/OOM protection at large corpus scale, exact preprocessing numerical parity on-device, cryptographic/hash verification of downloaded tokenizer/model artifacts, and replacing full-table embedding scans with a scalable retrieval structure for very large corpora.
+- Tokenizer normalization still needs a broader edge-case corpus beyond the canonical 19 cases; especially Unicode/ftfy-equivalent normalization and escaped Unicode/surrogate edge cases.
+- Do not declare semantic production parity until the corrected tokenizer passes all 19 golden cases on a current CI run.
 
 ## Next action
-1. Verify CI result for commit `17015ec9d16293b3ac2e649e5f565e1f33bd3e2a` and fix any remaining tokenizer parity failure.
+1. Verify the next `MobileCLIP Android Tokenizer Parity` run after commit `6c2c6ccb5bc0bd0f65f94dfdbc182c50154f238c` and fix any remaining golden mismatch.
 2. Add/strengthen normalization edge-case golden vectors if the 19 canonical cases pass.
 3. Run a real MobileCLIP-S2 Text TFLite smoke inference using the verified 77-token IDs and assert finite/non-zero normalized 512-D output.
 4. Run controlled end-to-end Text→Image ranking against the existing image embeddings and compare the ranking against the Apple/PyTorch oracle.
